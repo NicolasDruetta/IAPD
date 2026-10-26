@@ -15,4 +15,4 @@ st.write(
     "Trabajo Práctico N.º 2 — Procesamiento de Datos. "
     "Aplicación inicial preparada para desarrollar los módulos de forma progresiva."
 )
-st.info("Etapa inicial: interfaz de presentación. Los servicios Apache aún no están integrados.")
+st.info("Interfaz de presentación del laboratorio.")
