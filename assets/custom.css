@@ -3,3 +3,35 @@
 .stSidebar {
     display: none !important;
 }
+
+.log-console {
+    box-sizing: border-box;
+    width: 100%;
+    height: 420px;
+    resize: vertical;
+    overflow-y: scroll;
+    scrollbar-gutter: stable;
+    padding: 0.8rem;
+    border: 0;
+    border-radius: 0.5rem;
+    background: #f0f2f6;
+    color: #a4a9b3;
+    font-family: monospace;
+    font-size: 0.82rem;
+    line-height: 1.55;
+    white-space: pre-wrap;
+}
+
+.log-console::-webkit-scrollbar {
+    -webkit-appearance: none;
+    width: 12px;
+}
+
+.log-console::-webkit-scrollbar-track {
+    background: #dfe3eb;
+}
+
+.log-console::-webkit-scrollbar-thumb {
+    background: #9aa1ad;
+    border-radius: 6px;
+}

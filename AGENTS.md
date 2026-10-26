@@ -60,6 +60,10 @@ El código mantiene una separación clara entre interfaz y procesamiento, un man
 
 Se evita la duplicación de código, las dependencias innecesarias y las abstracciones que no aportan valor. Las soluciones priorizan la reproducibilidad, la legibilidad, la mantenibilidad y la simplicidad técnica.
 
+Los estilos visuales se definen exclusivamente en `assets/custom.css`, que se
+carga desde `main.py`. No se utilizan atributos `style` ni bloques de estilos
+inline en el código Python o en el HTML generado por la aplicación.
+
 ## 9. Portabilidad y reproducibilidad
 
 El proyecto debe poder ejecutarse en Windows y macOS a partir de las dependencias declaradas en `requirements.txt`, sin depender de rutas absolutas, configuraciones locales, certificados instalados manualmente ni estados particulares de una computadora.

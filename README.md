@@ -6,75 +6,115 @@
 **Trabajo:** Trabajo Práctico N.º 2  
 **Autor:** Nicolás Druetta
 
-Apache Big Data Lab es un proyecto académico para estudiar el procesamiento distribuido y el análisis de datos financieros mediante tecnologías de Big Data. La aplicación aborda el recorrido completo de los datos: ingesta, procesamiento, almacenamiento, análisis y visualización.
+Apache Big Data Lab es un proyecto académico orientado al procesamiento de
+datos financieros mediante herramientas de Big Data. La aplicación integra una
+interfaz Streamlit con la obtención de operaciones bursátiles reales desde
+Alpaca Market Data y una integración inicial con Apache Spark para el
+procesamiento local de lotes acotados.
 
-La propuesta utiliza información del mercado estadounidense y relaciona cada componente tecnológico con conceptos de paralelismo, distribución, streaming, persistencia y análisis de datos.
+El proyecto permite observar el ciclo de obtención, persistencia, recuperación
+y visualización de datos financieros, manteniendo separadas la interfaz y la
+lógica específica de cada tecnología.
 
 ## 2. Objetivos
 
 ### Objetivo general
 
-Diseñar y documentar una plataforma modular de procesamiento distribuido aplicada al análisis de datos financieros.
+Analizar un flujo de datos financieros reales y preparar su procesamiento
+mediante herramientas de paralelismo, streaming y Big Data.
 
 ### Objetivos específicos
 
-- Analizar el flujo de datos financieros desde la ingesta hasta la visualización.
-- Experimentar con procesamiento paralelo y distribuido.
-- Integrar eventos en tiempo real y datos históricos reproducibles.
-- Aplicar transformaciones, agregaciones y consultas sobre grandes volúmenes de registros.
-- Estudiar el procesamiento batch y el procesamiento de streaming.
-- Analizar el almacenamiento distribuido y el formato columnar Apache Parquet.
-- Observar particiones, tareas, tiempos de ejecución y métricas de rendimiento.
-- Aplicar técnicas de análisis y Machine Learning sobre datos financieros.
-- Documentar resultados, limitaciones y condiciones de ejecución.
+- Obtener operaciones bursátiles reales mediante una fuente externa.
+- Procesar datos en tiempo real y mediante reproducción histórica.
+- Persistir los eventos recibidos en formato JSONL.
+- Aplicar procesamiento local mediante PySpark sobre lotes acotados.
+- Observar cantidades de registros, particiones y duración de las operaciones.
+- Mantener una interfaz clara para visualizar el estado y los resultados.
+- Establecer una base modular para las tecnologías previstas del trabajo.
 
 ## 3. Tecnologías
 
-### Tecnologías implementadas
+### Implementadas
 
-- **Python:** lenguaje principal.
-- **Streamlit:** interfaz de la aplicación.
-- **Alpaca Market Data:** conexión WebSocket para recibir eventos financieros.
+- **Python 3.15:** lenguaje principal del proyecto.
+- **Streamlit:** interfaz de usuario y actualización periódica de la aplicación.
+- **Alpaca Market Data:** estado de mercado, operaciones LIVE y datos históricos
+  REPLAY.
+- **WebSocket:** recepción de operaciones durante el modo LIVE.
+- **JSONL:** persistencia incremental de eventos y registros de ejecución.
+- **certifi:** almacén de certificados utilizado para las conexiones seguras.
+- **Apache Spark y PySpark:** código de procesamiento local preparado para
+  crear DataFrames y agrupar operaciones por símbolo.
 
-La implementación disponible permite gestionar una conexión de streaming, suscribirse a símbolos financieros y visualizar los eventos recibidos en la interfaz.
+La integración de Spark es parcial. El código está incorporado, pero la
+ejecución actual no está disponible porque el entorno no cuenta con Java. Por
+ese motivo, todavía no se consideran verificadas la creación de una
+`SparkSession`, la ejecución de DataFrames ni la obtención de resultados Spark.
 
-La conexión WebSocket utiliza el almacén de certificados de confianza proporcionado por `certifi`, manteniendo la verificación del certificado del servidor y del nombre de host.
+### Previstas
 
-### Tecnologías previstas
-
-- **Apache Kafka:** ingesta, tópicos, particiones y distribución de eventos.
-- **Apache Hadoop HDFS:** almacenamiento distribuido de datos y resultados.
-- **Apache Parquet:** persistencia columnar eficiente.
-- **Apache Spark y PySpark:** procesamiento distribuido, RDD, DataFrames y tareas paralelas.
+- **Apache Kafka:** ingesta y distribución de eventos mediante tópicos.
+- **Apache Hadoop HDFS:** almacenamiento distribuido.
+- **Apache Parquet:** persistencia columnar.
 - **Apache Spark SQL:** consultas y análisis mediante SQL.
-- **Apache Structured Streaming:** microbatches, ventanas y agregaciones continuas.
-- **Apache Flink:** procesamiento alternativo de flujos de eventos.
+- **Apache Structured Streaming:** procesamiento continuo por microbatches.
+- **Apache Flink:** procesamiento alternativo de flujos.
 - **Apache Airflow:** orquestación de tareas y procesos batch.
-- **Apache Spark MLlib:** preparación, entrenamiento y evaluación de modelos.
+- **Apache Spark MLlib:** análisis y modelos de Machine Learning.
 
-Las tecnologías previstas no se consideran implementadas hasta contar con una integración funcional y verificable.
+Las tecnologías previstas no forman parte de la ejecución funcional actual.
 
 ## 4. Arquitectura general
 
-El flujo conceptual del proyecto es:
+El flujo conceptual considerado por el proyecto es:
 
 ```text
 Alpaca Market Data
         ↓
-Apache Kafka
+Obtención LIVE o descarga histórica REPLAY
         ↓
-Apache Spark / Structured Streaming
+Persistencia local JSONL
         ↓
-Apache Hadoop HDFS / Apache Parquet
+Procesamiento local mediante Apache Spark
         ↓
-Análisis y visualización mediante Streamlit
+Visualización mediante Streamlit
 ```
 
-Apache Flink se contempla como motor alternativo para el procesamiento de eventos. Apache Airflow se contempla como componente de orquestación para tareas batch, validaciones y generación de resultados.
+Kafka, Hadoop HDFS, Parquet, Flink y Airflow forman parte de la arquitectura
+académica prevista, pero todavía no están integrados en la aplicación actual.
 
-La arquitectura mantiene separadas la interfaz, la lógica específica de cada tecnología y la persistencia de los datos.
+## 5. Origen y almacenamiento de datos
 
-## 5. Organización del proyecto
+La carpeta `data/` no se distribuye mediante Git y no contiene un dataset
+obligatorio para ejecutar el proyecto.
+
+Los datos se obtienen directamente desde Alpaca Market Data:
+
+- **LIVE:** recibe operaciones bursátiles reales mediante WebSocket cuando el
+  mercado presenta actividad.
+- **REPLAY:** consulta la API histórica de Alpaca, descarga operaciones reales
+  y las reproduce progresivamente cuando corresponde utilizar datos históricos.
+
+Al presionar «Iniciar streaming», la aplicación consulta el estado de mercado
+proporcionado por Alpaca. Si Alpaca informa que el mercado está abierto, se
+inicia LIVE mediante WebSocket. Si informa que está cerrado, se inicia REPLAY.
+La decisión contempla fines de semana, feriados y cierres especiales mediante
+el estado operativo de Alpaca; no depende de la ausencia temporal de
+operaciones recibidas.
+
+El modo seleccionado queda asociado al RUN y no cambia mientras la ejecución
+está activa. Al refrescar Streamlit, la aplicación recupera el RUN existente y
+no vuelve a consultar el mercado ni crea otra conexión.
+
+REPLAY no depende de archivos históricos incluidos en el repositorio.
+
+Los históricos descargados se almacenan en `data/historical/` y se reutilizan
+como caché local para evitar descargas innecesarias. Cada ejecución genera sus
+propios registros en `data/streaming/`. Estos archivos son datos generados por
+la aplicación y no deben versionarse.
+
+## 6. Organización del proyecto
 
 ```text
 NicolasDruetta_TP2/
@@ -83,74 +123,129 @@ NicolasDruetta_TP2/
 ├── requirements.txt
 ├── AGENTS.md
 ├── pages/
-│   └── 01_alpaca_streaming.py
+│   ├── 01_alpaca_streaming.py
+│   └── 04_apache_spark.py
 ├── data/
-├── outputs/
+│   ├── historical/
+│   └── streaming/
 └── assets/
     └── custom.css
 ```
 
-- `main.py`: interfaz principal de Streamlit y funciones compartidas.
-- `pages/`: funciones específicas de cada tecnología o funcionalidad.
-- `pages/01_alpaca_streaming.py`: conexión, autenticación, suscripción y recepción de eventos de Alpaca Market Data.
-- `data/`: archivos de datos.
-- `outputs/`: resultados generados.
-- `assets/`: recursos visuales.
-- `requirements.txt`: dependencias del proyecto.
+- `main.py`: punto de entrada de Streamlit, controles, métricas, consolas y
+  funciones comunes.
+- `pages/01_alpaca_streaming.py`: conexión LIVE, descarga histórica,
+  reproducción REPLAY, ciclo de vida y persistencia de Alpaca.
+- `pages/04_apache_spark.py`: procesamiento específico de Spark local.
+- `data/historical/`: caché local de históricos descargados desde Alpaca.
+- `data/streaming/`: metadata y eventos generados por cada ejecución.
+- `assets/custom.css`: recurso visual centralizado del proyecto.
+- `requirements.txt`: dependencias Python declaradas.
 - `AGENTS.md`: convenciones técnicas de desarrollo.
 
-## 6. Funcionalidades
+La carpeta `data/` se genera o completa localmente y permanece excluida del
+control de versiones.
 
-El proyecto contempla las siguientes funcionalidades:
+## 7. Funcionalidades actuales
 
-- Streaming financiero en modalidades LIVE y REPLAY.
-- Ingesta de eventos mediante Apache Kafka.
-- Almacenamiento distribuido mediante Hadoop HDFS.
-- Persistencia en formato Apache Parquet.
-- Procesamiento distribuido con Apache Spark y PySpark.
-- Consultas mediante Apache Spark SQL.
-- Procesamiento continuo con Apache Structured Streaming.
-- Procesamiento alternativo mediante Apache Flink.
-- Orquestación con Apache Airflow.
-- Machine Learning con Apache Spark MLlib.
-- Benchmarking de tiempos, velocidad, speedup y eficiencia.
-- Comparación opcional con Python tradicional.
+### Alpaca Streaming
 
-## 7. Ejecución
+- Recepción LIVE mediante WebSocket.
+- Autenticación y suscripción a símbolos financieros.
+- Selección automática entre LIVE y REPLAY mediante el estado de Alpaca.
+- Descarga histórica paginada mediante la API de Alpaca.
+- Caché local de históricos ya descargados.
+- Reproducción progresiva de operaciones históricas.
+- Persistencia incremental de eventos en JSONL.
+- Identificación de cada ejecución mediante `run_id`.
+- Registro visible del ciclo de vida, la conexión, la descarga, los workers y
+  el cierre.
+- Heartbeat de la sesión visual y cierre por inactividad.
+- Recuperación del estado de la ejecución durante los refrescos de Streamlit
+  dentro del mismo proceso.
 
-La ejecución requiere Python 3.15, disponible en Windows y macOS, y las dependencias declaradas en `requirements.txt`.
+### Interfaz Streamlit
 
-La instalación se realiza con:
+La interfaz presenta tres consolas de igual ancho:
+
+1. **Log de ejecución:** ciclo de vida, descarga, workers, heartbeat y cierre.
+2. **Alpaca Streaming:** operaciones recibidas o reproducidas.
+3. **Apache Spark:** estado y resultados del procesamiento Spark disponible.
+
+Las consolas utilizan componentes nativos de Streamlit y se organizan en
+columnas que pueden apilarse en pantallas pequeñas.
+
+### Apache Spark
+
+El módulo de Spark contiene una ejecución local preparada para:
+
+- Reutilizar una única `SparkSession`.
+- Procesar un lote acotado de operaciones.
+- Crear un DataFrame con esquema explícito.
+- Agrupar las operaciones por símbolo.
+- Calcular cantidad de operaciones y volumen total.
+- Informar particiones y duración mediante `time.perf_counter()`.
+
+La ejecución real permanece pendiente porque falta Java en el entorno actual.
+La interfaz informa esta indisponibilidad sin presentar workers, stages, tasks
+ni resultados inventados.
+
+## 8. Ejecución
+
+El entorno virtual Python se prepara fuera del repositorio en cada computadora.
+Luego se clona el repositorio y se instalan las dependencias declaradas:
 
 ```bash
 python -m pip install -r requirements.txt
 ```
 
-La aplicación se inicia mediante Streamlit:
+La aplicación se inicia con:
 
 ```bash
 python -m streamlit run main.py
 ```
 
-La conexión segura con Alpaca utiliza `certifi`, incluido en las dependencias del proyecto. No requiere certificados instalados manualmente ni rutas específicas del sistema operativo.
+Para ejecutar el procesamiento Spark se requiere además una instalación de
+Java compatible con PySpark y disponible para el entorno local. Java no se
+instala mediante `requirements.txt` y su disponibilidad debe verificarse en la
+computadora donde se ejecute el proyecto.
 
-## 8. Convenciones de desarrollo
+La aplicación obtiene los datos desde Alpaca y guarda localmente los históricos
+y registros generados. No se requieren archivos históricos incluidos en Git.
 
-Las convenciones técnicas del proyecto están documentadas en [`AGENTS.md`](AGENTS.md). Allí se establecen los criterios de estilo Python, nomenclatura, organización de funciones, separación entre interfaz y procesamiento, documentación y uso de dependencias.
+## 9. Convenciones de desarrollo
 
-## 9. Estado del proyecto
+Las convenciones de programación, organización del código, nomenclatura,
+imports, separación de líneas, comentarios y uso de decoradores están
+documentadas en [`AGENTS.md`](AGENTS.md).
+
+## 10. Estado del proyecto
 
 ### Implementado
 
-- Estructura base de la aplicación Streamlit.
-- Interfaz principal en `main.py`.
-- Integración de streaming WebSocket con Alpaca Market Data.
-- Suscripción a símbolos financieros.
-- Recepción y visualización acotada de eventos.
-- Inicio y detención de la conexión desde la interfaz.
+- Aplicación Streamlit con `main.py` como punto de entrada.
+- Integración LIVE y REPLAY con Alpaca Market Data.
+- Descarga automática y caché local de datos históricos.
+- Persistencia incremental de ejecuciones y eventos en JSONL.
+- Logs de ejecución, consola de operaciones y consola Spark.
+- Selección automática del modo mediante el estado de mercado de Alpaca.
+- Módulo de procesamiento Spark local preparado para lotes acotados.
+
+### Parcialmente implementado
+
+- Apache Spark está incorporado en el código y en la interfaz, pero no puede
+  ejecutarse en el entorno actual porque falta Java.
+- No se verificó todavía una ejecución exitosa de `SparkSession`, DataFrame y
+  agregación.
 
 ### Previsto
 
-- Integración de Apache Kafka, Hadoop HDFS, Apache Spark, Spark SQL, Structured Streaming, Flink, Airflow y Spark MLlib.
-- Persistencia distribuida y análisis de datos históricos.
-- Métricas de rendimiento, benchmarking y comparación con Python tradicional.
+- Apache Kafka.
+- Apache Hadoop HDFS.
+- Apache Parquet.
+- Apache Spark SQL.
+- Apache Structured Streaming.
+- Apache Flink.
+- Apache Airflow.
+- Apache Spark MLlib.
+- Procesamiento distribuido multinodo y benchmarking comparativo.
