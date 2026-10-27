@@ -32,6 +32,16 @@ _LAST_RESULT: dict[str, Any] = {
     "rows": [],
 }
 
+def get_snapshot() -> dict[str, Any]:
+    """Devuelvo el último resultado real del procesamiento Spark."""
+
+    with _SPARK_LOCK:
+        return {
+            "status": _LAST_RESULT["status"],
+            "logs": list(_LAST_RESULT["logs"]),
+            "rows": list(_LAST_RESULT["rows"]),
+        }
+
 def get_spark_session() -> Any:
     """Obtengo una única SparkSession local reutilizable."""
 
@@ -149,13 +159,3 @@ def process_events(events: list[Any]) -> dict[str, Any]:
             "rows": [],
         }
     return _LAST_RESULT
-
-def get_snapshot() -> dict[str, Any]:
-    """Devuelvo el último resultado real del procesamiento Spark."""
-
-    with _SPARK_LOCK:
-        return {
-            "status": _LAST_RESULT["status"],
-            "logs": list(_LAST_RESULT["logs"]),
-            "rows": list(_LAST_RESULT["rows"]),
-        }

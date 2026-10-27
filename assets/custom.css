@@ -114,77 +114,6 @@ h1#apache-big-data-lab {
 
 /* Clases Custom y de Streamlit. */
 
-.stMainBlockContainer {
-    padding: 2rem 3rem !important; /* Custom Nico. No tocar. */
-}
-
-.stSidebar {
-    display: none !important; /* Custom Nico. No tocar. */
-}
-
-.st-key-header-icon img {
-    transform: translateY(10px);
-}
-
-.st-key-start-button button {
-    background: #198754;
-    border-color: #198754;
-    color: #ffffff;
-}
-
-    .st-key-start-button button:hover {
-        background: #157347;
-        border-color: #146c43;
-        color: #ffffff;
-    }
-
-.st-key-stop-button button {
-    background: #dc3545;
-    border-color: #dc3545;
-    color: #ffffff;
-}
-
-    .st-key-stop-button button:hover {
-        background: #bb2d3b;
-        border-color: #b02a37;
-        color: #ffffff;
-    }
-
-.metric-card {
-    box-sizing: border-box;
-    width: 100%;
-    padding: 0.5rem 1rem;
-    border: 1px solid var(--border-color);
-    border-radius: 0.5rem;
-    background: var(--card-background);
-    color: var(--text-color);
-    display: flex;
-    align-items: center;
-}
-
-    .metric-card p {
-        width: 100%;
-        margin: 0;
-    }
-
-.stMetric {
-    min-height: 108px;
-    padding: 0.8rem 1rem;
-    border: 1px solid var(--border-color);
-    border-radius: 0.5rem;
-    background: var(--card-background);
-    color: var(--text-color);
-}
-
-.stMetricLabel p {
-    font-size: 0.85rem;
-}
-
-.stMetricValue {
-    font-size: 1.75rem;
-    line-height: 1.2;
-}
-
 .log-console {
     box-sizing: border-box;
     width: 100%;
@@ -217,6 +146,81 @@ h1#apache-big-data-lab {
         background: var(--scrollbar-thumb);
         border-radius: 6px;
     }
+
+.metric-card {
+    box-sizing: border-box;
+    width: 100%;
+    padding: 0.5rem 1rem;
+    border: 1px solid var(--border-color);
+    border-radius: 0.5rem;
+    background: var(--card-background);
+    color: var(--text-color);
+    display: flex;
+    align-items: center;
+}
+
+    .metric-card p {
+        width: 100%;
+        margin: 0;
+    }
+
+.st-key-card-symbols input {
+    background: var(--card-background) !important;
+}
+
+.st-key-header-icon img {
+    transform: translateY(10px);
+}
+
+.st-key-start-button button {
+    background: #198754;
+    border-color: #198754;
+    color: #ffffff;
+}
+
+    .st-key-start-button button:hover {
+        background: #157347;
+        border-color: #146c43;
+        color: #ffffff;
+    }
+
+.st-key-stop-button button {
+    background: #dc3545;
+    border-color: #dc3545;
+    color: #ffffff;
+}
+
+    .st-key-stop-button button:hover {
+        background: #bb2d3b;
+        border-color: #b02a37;
+        color: #ffffff;
+    }
+
+.stMainBlockContainer {
+    padding: 2rem 3rem !important; /* Custom Nico. No tocar. */
+}
+
+.stMetric {
+    min-height: 108px;
+    padding: 0.8rem 1rem;
+    border: 1px solid var(--border-color);
+    border-radius: 0.5rem;
+    background: var(--card-background);
+    color: var(--text-color);
+}
+
+.stMetricLabel p {
+    font-size: 0.85rem;
+}
+
+.stMetricValue {
+    font-size: 1.75rem;
+    line-height: 1.2;
+}
+
+.stSidebar {
+    display: none !important; /* Custom Nico. No tocar. */
+}
 
 /* Media Queries. */
 

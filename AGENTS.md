@@ -76,6 +76,10 @@ La carpeta `data/` contiene los datos de entrada y generados localmente,
 `outputs/` contiene los resultados generados y `assets/` contiene los recursos
 visuales.
 
+Las funciones de nivel superior se ordenan alfabéticamente por nombre dentro
+de cada módulo. Esta regla se aplica a `main.py` y a todos los módulos de
+`pages/`, sin mezclar funciones entre archivos.
+
 ## 8. Buenas prácticas de desarrollo
 
 El código mantiene una separación clara entre interfaz y procesamiento, un
