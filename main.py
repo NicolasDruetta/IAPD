@@ -2,19 +2,41 @@
 
 import html
 import importlib.util
+import json
 import streamlit as st
 import sys
 
 from datetime import datetime, timezone
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 def load_page_module(module_name: str) -> ModuleType:
     """Cargo un módulo de procesamiento sin construir su interfaz."""
 
-    if module_name in sys.modules:
-        return sys.modules[module_name]
     module_path = Path(__file__).parent / "pages" / f"{module_name}.py"
+    source_mtime_ns = module_path.stat().st_mtime_ns
+    cached_module = sys.modules.get(module_name)
+    if cached_module is not None:
+        cached_mtime_ns = getattr(
+            cached_module,
+            "_SOURCE_MTIME_NS",
+            None,
+        )
+        active_service = getattr(
+            cached_module,
+            "get_active_service",
+            lambda: None,
+        )()
+        if (
+            cached_mtime_ns == source_mtime_ns
+            or (
+                active_service is not None
+                and active_service.is_active()
+            )
+        ):
+            return cached_module
+        sys.modules.pop(module_name, None)
     spec = importlib.util.spec_from_file_location(
         module_name, module_path
     )
@@ -24,6 +46,7 @@ def load_page_module(module_name: str) -> ModuleType:
     sys.modules[module_name] = module
     try:
         spec.loader.exec_module(module)
+        module._SOURCE_MTIME_NS = source_mtime_ns
     except Exception:
         sys.modules.pop(module_name, None)
         raise
@@ -55,6 +78,31 @@ def render_log_console(lines: list[str], console_id: str) -> None:
         """,
         unsafe_allow_javascript=True,
     )
+
+def read_all_streaming_events(
+    streaming_module: ModuleType,
+    run_id: str | None,
+) -> list[Any]:
+    """Leo todos los eventos persistidos sin aplicar un límite."""
+
+    if run_id is None:
+        return []
+    events_path = streaming_module.DATA_DIRECTORY / f"{run_id}.jsonl"
+    if not events_path.exists():
+        return []
+    events = []
+    try:
+        with events_path.open(encoding="utf-8") as events_file:
+            for line in events_file:
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(record, dict):
+                    events.append(streaming_module.event_from_record(record))
+    except OSError:
+        return []
+    return events
 
 def load_custom_css() -> None:
     """Cargo los estilos visuales administrados en el archivo del proyecto."""
@@ -140,17 +188,18 @@ def render_streaming() -> None:
         vertical_alignment="bottom",
     )
     with symbols_col:
-        symbols_text = st.text_input(
-            "",
-            value=default_symbols,
-            label_visibility="collapsed",
-            disabled=bool(
-                snapshot["is_active"]
-                or st.session_state.start_pending
-                or st.session_state.stop_pending
-            ),
-            width="stretch",
-        )
+        with st.container(key="card-symbols"):
+            symbols_text = st.text_input(
+                "",
+                value=default_symbols,
+                label_visibility="collapsed",
+                disabled=bool(
+                    snapshot["is_active"]
+                    or st.session_state.start_pending
+                    or st.session_state.stop_pending
+                ),
+                width="stretch",
+            )
     stop_clicked = False
     with actions_col:
         start_col, stop_col, spacer_col = st.columns(
@@ -241,7 +290,9 @@ def render_streaming() -> None:
         snapshot["started_at"],
         snapshot["ended_at"],
     )
-    if snapshot["is_active"]:
+    if snapshot["run_id"] is None:
+        status_text = "Listo para ejecutar."
+    elif snapshot["is_active"]:
         status_text = f"{status_text} {elapsed_text}."
     else:
         last_execution_at = snapshot["ended_at"] or snapshot["started_at"]
@@ -254,40 +305,52 @@ def render_streaming() -> None:
             f"{status_text}. Transcurrido: {elapsed_text}. "
             f"Última ejecución: {last_execution_text}."
         )
-    run_col, mode_col, count_col, status_col = st.columns(
-        [2, 2, 2, 6],
+    metrics_col, status_col = st.columns(
+        [6, 6],
         gap="small",
     )
-    with run_col:
-        run_id = snapshot["run_id"] or "-"
-        with st.container(border=True):
+    with metrics_col:
+        run_col, mode_col, count_col = st.columns(
+            [2, 2, 2],
+            gap="small",
+        )
+        with run_col:
+            run_id = snapshot["run_id"] or "-"
             render_html(
-                f"<p><strong>RUN:</strong> {html.escape(run_id[:12])}</p>"
+                f'<div class="metric-card"><p><strong>RUN:</strong> '
+                f'{html.escape(run_id[:12])}</p></div>'
             )
-    with mode_col:
-        with st.container(border=True):
+        with mode_col:
             render_html(
-                f"<p><strong>Modo:</strong> "
-                f"{html.escape(snapshot['mode'])}</p>"
+                f'<div class="metric-card"><p><strong>Modo:</strong> '
+                f'{html.escape(snapshot["mode"])}</p></div>'
             )
-    with count_col:
-        with st.container(border=True):
+        with count_col:
             render_html(
-                f"<p><strong>Eventos recibidos:</strong> "
-                f"{snapshot['event_count']}</p>"
+                f'<div class="metric-card"><p>'
+                f'<strong>Eventos recibidos:</strong> '
+                f'{snapshot["event_count"]}</p></div>'
             )
     with status_col:
-        with st.container(border=True):
-            render_html(
-                f"<p><strong>Estado:</strong> {html.escape(status_text)}</p>"
-            )
+        render_html(
+            f'<div class="metric-card"><p><strong>Estado:</strong> '
+            f'{html.escape(status_text)}</p></div>'
+        )
 
     if snapshot["error"]:
         st.error(snapshot["error"])
 
     render_html("<hr />")
 
-    events = streaming_module.get_recent_events(snapshot["run_id"], 100)
+    try:
+        events = streaming_module.get_recent_events(snapshot["run_id"])
+    except TypeError as error:
+        if "required positional argument: 'limit'" not in str(error):
+            raise
+        events = read_all_streaming_events(
+            streaming_module,
+            snapshot["run_id"],
+        )
     spark_result = spark_module.process_events(events)
     execution_column, alpaca_column, spark_column = st.columns(
         3,
@@ -300,10 +363,7 @@ def render_streaming() -> None:
         render_html(
             "<p>Ciclo de vida, conexión y procesamiento del RUN actual</p>",
         )
-        log_lines = streaming_module.get_recent_logs(
-            snapshot["run_id"],
-            100,
-        )
+        log_lines = snapshot.get("logs", [])
         render_log_console(log_lines, "execution-log-console")
     with alpaca_column:
         render_html("<h5>Alpaca Streaming</h5>")

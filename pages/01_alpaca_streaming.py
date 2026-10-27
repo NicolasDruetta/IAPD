@@ -33,8 +33,6 @@ MARKET_CLOCK_URLS = (
 )
 HEARTBEAT_TIMEOUT_SECONDS = 30
 SUPERVISOR_INTERVAL_SECONDS = 1
-VISIBLE_EVENT_LIMIT = 100
-LOG_LIMIT = 200
 REPLAY_SPEEDS = {
     "1 evento por segundo": 1.0,
     "10 eventos por segundo": 0.1,
@@ -112,8 +110,8 @@ class AlpacaStreamingService:
         self._feed = feed
         self._mode = mode
         self._replay_speed = replay_speed
-        self._events: deque[AlpacaEvent] = deque(maxlen=VISIBLE_EVENT_LIMIT)
-        self._logs: deque[str] = deque(maxlen=LOG_LIMIT)
+        self._events: deque[AlpacaEvent] = deque()
+        self._logs: deque[str] = deque()
         self._stop_event = threading.Event()
         self._lock = threading.RLock()
         self._stream_thread: threading.Thread | None = None
@@ -121,7 +119,7 @@ class AlpacaStreamingService:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._task: asyncio.Task[None] | None = None
         self._websocket: ClientConnection | None = None
-        self._status = "Detenido"
+        self._status = "Listo para ejecutar"
         self._error: str | None = None
         self._end_reason: str | None = None
         self._started_at: str | None = None
@@ -246,17 +244,11 @@ class AlpacaStreamingService:
                 "is_active": self.is_active(),
             }
 
-    def get_recent_events(self, limit: int) -> list[AlpacaEvent]:
-        """Devuelvo únicamente los últimos eventos mantenidos en memoria."""
+    def get_recent_events(self) -> list[AlpacaEvent]:
+        """Devuelvo todos los eventos mantenidos en memoria."""
 
         with self._lock:
-            return list(self._events)[-limit:]
-
-    def get_recent_logs(self, limit: int) -> list[str]:
-        """Devuelvo los mensajes recientes del ciclo de ejecución."""
-
-        with self._lock:
-            return list(self._logs)[-limit:]
+            return list(self._events)
 
     def _run_stream(self) -> None:
         """Ejecuto el ciclo asincrónico del WebSocket en un hilo propio."""
@@ -674,6 +666,8 @@ def get_historical_dataset(
                 and int(metadata.get("event_count", 0)) > 0
                 and historical_path.exists()
             ):
+                if not metadata.get("ordered_by_timestamp", False):
+                    normalize_historical_dataset(historical_path, metadata)
                 if progress_callback is not None:
                     progress_callback(
                         f"REPLAY | caché local reutilizado: {date_text} | "
@@ -720,80 +714,85 @@ def download_historical_dataset(
     next_page_token: str | None = None
     event_count = 0
     page_number = 0
+    records: list[dict[str, Any]] = []
     ensure_historical_directory()
     ssl_context = ssl.create_default_context(cafile=certifi.where())
     try:
-        with temporary_path.open("w", encoding="utf-8") as historical_file:
-            while True:
-                page_number += 1
-                query = {
-                    "symbols": query_symbols,
-                    "start": f"{date_text}T00:00:00Z",
-                    "end": f"{date_text}T23:59:59Z",
-                    "feed": feed,
-                    "limit": "10000",
-                }
-                if next_page_token:
-                    query["page_token"] = next_page_token
-                url = f"{HISTORICAL_API_URL}?{urllib.parse.urlencode(query)}"
-                request = urllib.request.Request(
-                    url,
-                    headers={
-                        "APCA-API-KEY-ID": api_key,
-                        "APCA-API-SECRET-KEY": api_secret,
-                    },
-                )
-                try:
-                    with urllib.request.urlopen(
-                        request,
-                        timeout=30,
-                        context=ssl_context,
-                    ) as response:
-                        payload = json.load(response)
-                except urllib.error.HTTPError as error:
-                    if error.code in {401, 403}:
-                        raise RuntimeError(
-                            "Alpaca rechazó el acceso al histórico."
-                        ) from error
+        while True:
+            page_number += 1
+            query = {
+                "symbols": query_symbols,
+                "start": f"{date_text}T00:00:00Z",
+                "end": f"{date_text}T23:59:59Z",
+                "feed": feed,
+                "limit": "10000",
+            }
+            if next_page_token:
+                query["page_token"] = next_page_token
+            url = f"{HISTORICAL_API_URL}?{urllib.parse.urlencode(query)}"
+            request = urllib.request.Request(
+                url,
+                headers={
+                    "APCA-API-KEY-ID": api_key,
+                    "APCA-API-SECRET-KEY": api_secret,
+                },
+            )
+            try:
+                with urllib.request.urlopen(
+                    request,
+                    timeout=30,
+                    context=ssl_context,
+                ) as response:
+                    payload = json.load(response)
+            except urllib.error.HTTPError as error:
+                if error.code in {401, 403}:
                     raise RuntimeError(
-                        f"Alpaca devolvió HTTP {error.code}."
+                        "Alpaca rechazó el acceso al histórico."
                     ) from error
-                trades_by_symbol = payload.get("trades", {})
-                for symbol, trades in trades_by_symbol.items():
-                    for trade in trades:
-                        record = {
-                            "symbol": symbol,
-                            "event_type": "TRADE",
-                            "timestamp": trade.get("t"),
-                            "price": trade.get("p"),
-                            "size": trade.get("s"),
-                            "mode": "REPLAY",
-                            "source": "alpaca_historical",
-                            "raw": trade,
-                        }
-                        historical_file.write(
-                            json.dumps(record, ensure_ascii=False) + "\n"
-                        )
-                        event_count += 1
-                if progress_callback is not None:
-                    progress_callback(
-                        f"REPLAY | descarga página={page_number} | "
-                        f"eventos acumulados={event_count}"
-                    )
-                next_page_token = payload.get("next_page_token")
-                if not next_page_token:
-                    break
-            historical_file.flush()
-            os.fsync(historical_file.fileno())
+                raise RuntimeError(
+                    f"Alpaca devolvió HTTP {error.code}."
+                ) from error
+            trades_by_symbol = payload.get("trades", {})
+            for symbol, trades in trades_by_symbol.items():
+                for trade in trades:
+                    record = {
+                        "symbol": symbol,
+                        "event_type": "TRADE",
+                        "timestamp": trade.get("t"),
+                        "price": trade.get("p"),
+                        "size": trade.get("s"),
+                        "mode": "REPLAY",
+                        "source": "alpaca_historical",
+                        "raw": trade,
+                    }
+                    records.append(record)
+                    event_count += 1
+            if progress_callback is not None:
+                progress_callback(
+                    f"REPLAY | descarga página={page_number} | "
+                    f"eventos acumulados={event_count}"
+                )
+            next_page_token = payload.get("next_page_token")
+            if not next_page_token:
+                break
         if event_count == 0:
             temporary_path.unlink(missing_ok=True)
             return 0
+        records.sort(key=lambda record: record["timestamp"])
+        with temporary_path.open("w", encoding="utf-8") as historical_file:
+            for record in records:
+                historical_file.write(
+                    json.dumps(record, ensure_ascii=False) + "\n"
+                )
+            historical_file.flush()
+            os.fsync(historical_file.fileno())
         temporary_path.replace(historical_path)
         write_json(
             historical_metadata_path(historical_path),
             {
                 "complete": True,
                 "event_count": event_count,
+                "ordered_by_timestamp": True,
                 "feed": feed,
                 "symbols": symbols,
                 "date": date_text,
@@ -826,6 +825,25 @@ def historical_metadata_path(historical_path: Path) -> Path:
     """Obtengo la ruta de metadata asociada a un histórico."""
 
     return historical_path.with_suffix(".json")
+
+def normalize_historical_dataset(
+    historical_path: Path,
+    metadata: dict[str, Any],
+) -> None:
+    """Guardo una vez el histórico existente ordenado por timestamp."""
+
+    temporary_path = historical_path.with_suffix(".sorted.tmp")
+    with historical_path.open(encoding="utf-8") as historical_file:
+        records = [json.loads(line) for line in historical_file]
+    records.sort(key=lambda record: record["timestamp"])
+    with temporary_path.open("w", encoding="utf-8") as sorted_file:
+        for record in records:
+            sorted_file.write(json.dumps(record, ensure_ascii=False) + "\n")
+        sorted_file.flush()
+        os.fsync(sorted_file.fileno())
+    temporary_path.replace(historical_path)
+    metadata["ordered_by_timestamp"] = True
+    write_json(historical_metadata_path(historical_path), metadata)
 
 def get_latest_metadata() -> dict[str, Any] | None:
     """Obtengo el RUN más reciente sin cargar sus eventos completos."""
@@ -876,15 +894,15 @@ def to_number(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
 
-def read_recent_events(run_id: str, limit: int) -> list[AlpacaEvent]:
-    """Leo solamente las últimas líneas JSONL requeridas por la consola."""
+def read_recent_events(run_id: str) -> list[AlpacaEvent]:
+    """Leo todas las líneas JSONL requeridas por la consola."""
 
     events_path = DATA_DIRECTORY / f"{run_id}.jsonl"
     if not events_path.exists():
         return []
     try:
         with events_path.open(encoding="utf-8") as events_file:
-            lines = deque(events_file, maxlen=limit)
+            lines = list(events_file)
     except OSError:
         return []
     events: list[AlpacaEvent] = []
@@ -964,7 +982,7 @@ def get_run_snapshot() -> dict[str, Any]:
         "symbols": [],
         "mode": "LIVE",
         "replay_speed": 1.0,
-        "status": "Detenido",
+        "status": "Listo para ejecutar",
         "error": None,
         "event_count": 0,
         "replay_position": 0,
@@ -983,39 +1001,15 @@ def register_heartbeat(run_id: str) -> bool:
     service = get_active_service()
     return service.heartbeat(run_id) if service is not None else False
 
-def get_recent_events(run_id: str | None, limit: int) -> list[AlpacaEvent]:
-    """Devuelvo eventos activos o persistidos sin cargar el log completo."""
+def get_recent_events(run_id: str | None) -> list[AlpacaEvent]:
+    """Devuelvo todos los eventos activos o persistidos."""
 
     if run_id is None:
         return []
     service = get_active_service()
     if service is not None and service.get_snapshot()["run_id"] == run_id:
-        return service.get_recent_events(limit)
-    return read_recent_events(run_id, limit)
-
-def get_recent_logs(run_id: str | None, limit: int) -> list[str]:
-    """Devuelvo logs activos o persistidos sin duplicar mensajes."""
-
-    if run_id is None:
-        return []
-    service = get_active_service()
-    if service is not None and service.get_snapshot()["run_id"] == run_id:
-        return service.get_recent_logs(limit)
-    metadata = get_latest_metadata()
-    if metadata is None or metadata.get("run_id") != run_id:
-        return []
-    return [
-        format_log_line(line)
-        for line in list(metadata.get("logs", []))[-limit:]
-    ]
-
-def format_log_line(line: str) -> str:
-    """Adapto un log persistido al formato horario visible."""
-
-    timestamp, separator, message = line.partition(" | ")
-    if separator and "T" in timestamp:
-        return f"{format_display_timestamp(timestamp)} | {message}"
-    return line
+        return service.get_recent_events()
+    return read_recent_events(run_id)
 
 def shutdown_active_run() -> None:
     """Cierro el RUN administrado cuando finaliza el proceso Python."""

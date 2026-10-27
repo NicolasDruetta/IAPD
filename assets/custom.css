@@ -1,5 +1,11 @@
 /* Estilos centralizados. */
 
+hr {
+    border: 0 !important;
+    border-top: 1px solid #dfe3eb !important;
+    margin: 1.5rem 0 !important;
+}
+
 .stMainBlockContainer {
     padding: 1rem 3rem !important;
 }
@@ -32,22 +38,20 @@
     color: #ffffff;
 }
 
-@media (max-width: 991.98px) {
-    .stHorizontalBlock {
-        flex-wrap: wrap !important;
-    }
-
-    .stHorizontalBlock > .stColumn {
-        flex: 1 1 calc(50% - 0.5rem) !important;
-        min-width: calc(50% - 0.5rem) !important;
-    }
+.metric-card {
+    box-sizing: border-box;
+    width: 100%;
+    padding: 0.5rem 1rem;
+    border: 1px solid #dfe3eb;
+    border-radius: 0.5rem;
+    background: #ffffff;
+    display: flex;
+    align-items: center;
 }
 
-@media (max-width: 767.98px) {
-    .stHorizontalBlock > .stColumn {
-        flex: 1 1 100% !important;
-        min-width: 100% !important;
-    }
+.metric-card p {
+    width: 100%;
+    margin: 0;
 }
 
 .stMetric {
@@ -97,4 +101,22 @@
 .log-console::-webkit-scrollbar-thumb {
     background: #9aa1ad;
     border-radius: 6px;
+}
+
+@media (max-width: 991.98px) {
+    .stHorizontalBlock {
+        flex-wrap: wrap !important;
+    }
+
+    .stHorizontalBlock > .stColumn {
+        flex: 1 1 calc(50% - 0.5rem) !important;
+        min-width: calc(50% - 0.5rem) !important;
+    }
+}
+
+@media (max-width: 767.98px) {
+    .stHorizontalBlock > .stColumn {
+        flex: 1 1 100% !important;
+        min-width: 100% !important;
+    }
 }
