@@ -410,12 +410,13 @@ initialize_state()
 
 icon_path = Path(__file__).parent / "assets" / "icon.png"
 icon_col, title_col = st.columns(
-    [0.65, 11.35],
+    [0.4, 11.6],
     gap="small",
     vertical_alignment="center",
 )
 with icon_col:
-    st.image(str(icon_path), width=50)
+    with st.container(key="header-icon"):
+        st.image(str(icon_path), width=40)
 with title_col:
     render_html("<h1>Apache Big Data Lab</h1>")
 render_html("<h4>Procesamiento distribuido y análisis de mercados financieros</h4>")

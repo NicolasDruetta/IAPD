@@ -1,0 +1,14 @@
+services:
+  streamlit:
+    command:
+      - streamlit
+      - run
+      - main.py
+      - --server.address=0.0.0.0
+      - --server.port=8501
+      - --server.headless=true
+      - --server.fileWatcherType=poll
+      - --server.runOnSave=true
+    volumes:
+      - .:/app
+      - lab-data:/app/data

@@ -236,6 +236,31 @@ docker compose down
 Los datos se conservan en el volumen Docker `lab-data`, montado en `/app/data`.
 No se incorporan datasets históricos al repositorio.
 
+### Desarrollo con actualización automática
+
+Para desarrollar sin reconstruir la imagen en cada cambio, Docker Compose carga
+automáticamente `compose.override.yaml`. Ese archivo monta el repositorio local
+en `/app`, mantiene los datos exclusivamente en el volumen `lab-data` montado
+en `/app/data` y configura Streamlit para detectar cambios mediante polling.
+Este mecanismo funciona con volúmenes compartidos de Docker Desktop en macOS y
+Windows.
+
+Se inicia con:
+
+```bash
+docker compose up
+```
+
+Los cambios en `main.py`, `pages/`, `assets/` y los recursos del proyecto se
+reflejan al guardar y actualizar el navegador. El Master y los Workers no se
+reconstruyen ni se reinician por esos cambios. La imagen solo debe
+reconstruirse cuando cambien `requirements.txt`, `docker/Dockerfile` u otra
+configuración de dependencias:
+
+```bash
+docker compose up --build
+```
+
 ## 10. Estado del proyecto
 
 ### Implementado

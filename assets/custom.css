@@ -52,6 +52,10 @@ hr {
     display: none !important;
 }
 
+.st-key-header-icon img {
+    transform: translateY(10px);
+}
+
 .st-key-start-button button {
     background: #198754;
     border-color: #198754;
