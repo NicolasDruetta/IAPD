@@ -7,12 +7,11 @@
 **Autor:** Nicolás Druetta
 
 Apache Big Data Lab es un proyecto académico orientado al procesamiento de
-datos financieros mediante herramientas de Big Data. La aplicación integra una
-interfaz Streamlit con la obtención de operaciones bursátiles reales desde
-Alpaca Market Data y una integración inicial con Apache Spark para el
-procesamiento local de lotes acotados.
+datos financieros mediante herramientas de Big Data. La aplicación integra
+una interfaz Streamlit con Alpaca Market Data para obtener operaciones reales y
+con Apache Spark para preparar el procesamiento local de lotes.
 
-El proyecto permite observar el ciclo de obtención, persistencia, recuperación
+El sistema permite observar el ciclo de obtención, persistencia, recuperación
 y visualización de datos financieros, manteniendo separadas la interfaz y la
 lógica específica de cada tecnología.
 
@@ -38,14 +37,15 @@ mediante herramientas de paralelismo, streaming y Big Data.
 ### Implementadas
 
 - **Python 3.15:** lenguaje principal del proyecto.
-- **Streamlit:** interfaz de usuario y actualización periódica de la aplicación.
-- **Alpaca Market Data:** estado de mercado, operaciones LIVE y datos históricos
-  REPLAY.
+- **Streamlit:** interfaz de usuario y actualización periódica de la
+  aplicación.
+- **Alpaca Market Data:** estado del mercado, operaciones LIVE y datos
+  históricos REPLAY.
 - **WebSocket:** recepción de operaciones durante el modo LIVE.
 - **JSONL:** persistencia incremental de eventos y registros de ejecución.
-- **certifi:** almacén de certificados utilizado para las conexiones seguras.
-- **Apache Spark y PySpark:** código de procesamiento local preparado para
-  crear DataFrames y agrupar operaciones por símbolo.
+- **certifi:** almacén de certificados utilizado para conexiones seguras.
+- **Apache Spark y PySpark:** procesamiento local preparado para crear
+  DataFrames y agrupar operaciones por símbolo.
 
 La integración de Spark es parcial. El código está incorporado, pero la
 ejecución actual no está disponible porque el entorno no cuenta con Java. Por
@@ -65,7 +65,7 @@ ese motivo, todavía no se consideran verificadas la creación de una
 
 Las tecnologías previstas no forman parte de la ejecución funcional actual.
 
-## 4. Arquitectura general
+## 4. Arquitectura del proyecto
 
 El flujo conceptual considerado por el proyecto es:
 
@@ -84,7 +84,7 @@ Visualización mediante Streamlit
 Kafka, Hadoop HDFS, Parquet, Flink y Airflow forman parte de la arquitectura
 académica prevista, pero todavía no están integrados en la aplicación actual.
 
-## 5. Origen y almacenamiento de datos
+## 5. Procesamiento de datos
 
 La carpeta `data/` no se distribuye mediante Git y no contiene un dataset
 obligatorio para ejecutar el proyecto.
@@ -94,10 +94,11 @@ Los datos se obtienen directamente desde Alpaca Market Data:
 - **LIVE:** recibe operaciones bursátiles reales mediante WebSocket cuando el
   mercado presenta actividad.
 - **REPLAY:** consulta la API histórica de Alpaca, descarga operaciones reales
-  y las reproduce progresivamente cuando corresponde utilizar datos históricos.
+  y las reproduce progresivamente cuando corresponde utilizar datos
+  históricos.
 
-Al presionar «Iniciar streaming», la aplicación consulta el estado de mercado
-proporcionado por Alpaca. Si Alpaca informa que el mercado está abierto, se
+Al presionar «Iniciar streaming», la aplicación consulta el estado oficial del
+mercado proporcionado por Alpaca. Si informa que el mercado está abierto, se
 inicia LIVE mediante WebSocket. Si informa que está cerrado, se inicia REPLAY.
 La decisión contempla fines de semana, feriados y cierres especiales mediante
 el estado operativo de Alpaca; no depende de la ausencia temporal de
@@ -107,10 +108,9 @@ El modo seleccionado queda asociado al RUN y no cambia mientras la ejecución
 está activa. Al refrescar Streamlit, la aplicación recupera el RUN existente y
 no vuelve a consultar el mercado ni crea otra conexión.
 
-REPLAY no depende de archivos históricos incluidos en el repositorio.
-
-Los históricos descargados se almacenan en `data/historical/` y se reutilizan
-como caché local para evitar descargas innecesarias. Cada ejecución genera sus
+REPLAY no depende de archivos históricos incluidos en el repositorio. Los
+históricos descargados se almacenan en `data/historical/` y se reutilizan como
+caché local para evitar descargas innecesarias. Cada ejecución genera sus
 propios registros en `data/streaming/`. Estos archivos son datos generados por
 la aplicación y no deben versionarse.
 
@@ -132,8 +132,8 @@ NicolasDruetta_TP2/
     └── custom.css
 ```
 
-- `main.py`: punto de entrada de Streamlit, controles, métricas, consolas y
-  funciones comunes.
+- `main.py`: punto de entrada de Streamlit, controles, tarjetas de estado,
+  consolas y funciones comunes.
 - `pages/01_alpaca_streaming.py`: conexión LIVE, descarga histórica,
   reproducción REPLAY, ciclo de vida y persistencia de Alpaca.
 - `pages/04_apache_spark.py`: procesamiento específico de Spark local.
@@ -146,36 +146,47 @@ NicolasDruetta_TP2/
 La carpeta `data/` se genera o completa localmente y permanece excluida del
 control de versiones.
 
-## 7. Funcionalidades actuales
+## 7. Interfaz de usuario
 
-### Alpaca Streaming
+La interfaz presenta un encabezado con el nombre del laboratorio, la
+descripción del trabajo y los datos académicos del autor. Debajo se ubican el
+selector de símbolos y los controles de ejecución. La organización mantiene
+una distribución responsive para evitar que los textos y botones se compriman
+en pantallas pequeñas.
 
-- Recepción LIVE mediante WebSocket.
-- Autenticación y suscripción a símbolos financieros.
-- Selección automática entre LIVE y REPLAY mediante el estado de Alpaca.
-- Descarga histórica paginada mediante la API de Alpaca.
-- Caché local de históricos ya descargados.
-- Reproducción progresiva de operaciones históricas.
-- Persistencia incremental de eventos en JSONL.
-- Identificación de cada ejecución mediante `run_id`.
-- Registro visible del ciclo de vida, la conexión, la descarga, los workers y
-  el cierre.
-- Heartbeat de la sesión visual y cierre por inactividad.
-- Recuperación del estado de la ejecución durante los refrescos de Streamlit
-  dentro del mismo proceso.
+Los símbolos predeterminados son `AAPL, MSFT, NVDA, SPY, TSLA, META, SPCX,
+GLD, BTC, OXY`. El campo se deshabilita durante una ejecución activa, un
+inicio pendiente o una detención pendiente.
 
-### Interfaz Streamlit
+La fila de controles utiliza una distribución de seis unidades para símbolos y
+seis unidades para acciones. Dentro del área de acciones, iniciar, detener y
+el espacio de reserva se distribuyen en proporciones `2, 2, 2`. Las tarjetas
+de estado se presentan en el orden `RUN`, `Modo`, `Eventos recibidos` y
+`Estado`, con proporciones `2, 2, 2, 6`.
 
-La interfaz presenta tres consolas de igual ancho:
+El botón de iniciar se identifica visualmente con color verde y un icono de
+play. El botón de detener utiliza color rojo y un icono de stop. Durante las
+transiciones se muestran los estados `Iniciando...`, `Ejecutando streaming...`
+y `Deteniendo...` junto con un indicador de carga. El botón detener solo se
+presenta cuando existe una ejecución activa o una detención pendiente.
 
-1. **Log de ejecución:** ciclo de vida, descarga, workers, heartbeat y cierre.
-2. **Alpaca Streaming:** operaciones recibidas o reproducidas.
+La tarjeta de estado informa el estado actual, el tiempo transcurrido y, cuando
+corresponde, la fecha y hora de la última ejecución. El RUN identifica la
+ejecución activa o la última ejecución disponible.
+
+La interfaz presenta tres consolas:
+
+1. **Log de ejecución:** ciclo de vida, conexión, descarga, workers, heartbeat
+   y cierre.
+2. **Alpaca Streaming:** operaciones actuales en LIVE u operaciones históricas
+   en REPLAY.
 3. **Apache Spark:** estado y resultados del procesamiento Spark disponible.
 
-Las consolas utilizan componentes nativos de Streamlit y se organizan en
-columnas que pueden apilarse en pantallas pequeñas.
+Las consolas se actualizan junto con el estado del RUN y mantienen una
+presentación uniforme. En pantallas reducidas, las columnas se reorganizan
+mediante media queries clásicas para conservar la legibilidad.
 
-### Apache Spark
+## 8. Apache Spark
 
 El módulo de Spark contiene una ejecución local preparada para:
 
@@ -190,7 +201,7 @@ La ejecución real permanece pendiente porque falta Java en el entorno actual.
 La interfaz informa esta indisponibilidad sin presentar workers, stages, tasks
 ni resultados inventados.
 
-## 8. Ejecución
+## 9. Entorno de ejecución
 
 El entorno virtual Python se prepara fuera del repositorio en cada computadora.
 Luego se clona el repositorio y se instalan las dependencias declaradas:
@@ -213,22 +224,16 @@ computadora donde se ejecute el proyecto.
 La aplicación obtiene los datos desde Alpaca y guarda localmente los históricos
 y registros generados. No se requieren archivos históricos incluidos en Git.
 
-## 9. Convenciones de desarrollo
-
-Las convenciones de programación, organización del código, nomenclatura,
-imports, separación de líneas, comentarios y uso de decoradores están
-documentadas en [`AGENTS.md`](AGENTS.md).
-
 ## 10. Estado del proyecto
 
 ### Implementado
 
 - Aplicación Streamlit con `main.py` como punto de entrada.
 - Integración LIVE y REPLAY con Alpaca Market Data.
+- Consulta del estado oficial del mercado para seleccionar el modo.
 - Descarga automática y caché local de datos históricos.
 - Persistencia incremental de ejecuciones y eventos en JSONL.
 - Logs de ejecución, consola de operaciones y consola Spark.
-- Selección automática del modo mediante el estado de mercado de Alpaca.
 - Módulo de procesamiento Spark local preparado para lotes acotados.
 
 ### Parcialmente implementado
@@ -249,3 +254,9 @@ documentadas en [`AGENTS.md`](AGENTS.md).
 - Apache Airflow.
 - Apache Spark MLlib.
 - Procesamiento distribuido multinodo y benchmarking comparativo.
+
+## 11. Convenciones de desarrollo
+
+Las convenciones de programación, organización del código, nomenclatura,
+imports, separación de líneas, comentarios y uso de decoradores están
+documentadas en [`AGENTS.md`](AGENTS.md).

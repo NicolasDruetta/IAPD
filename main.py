@@ -5,6 +5,7 @@ import importlib.util
 import streamlit as st
 import sys
 
+from datetime import datetime, timezone
 from pathlib import Path
 from types import ModuleType
 
@@ -60,13 +61,57 @@ def load_custom_css() -> None:
 
     css_path = Path(__file__).parent / "assets" / "custom.css"
     css_content = css_path.read_text(encoding="utf-8")
-    st.markdown(f"<style>{css_content}</style>", unsafe_allow_html=True)
+    render_html(f"<style>{css_content}</style>")
+
+def render_html(content: str) -> None:
+    """Renderizo HTML habilitado desde un único punto."""
+
+    st.markdown(content, unsafe_allow_html=True)
+
+def format_elapsed_time(
+    started_at: str | None,
+    ended_at: str | None = None,
+) -> str:
+    """Formateo el tiempo transcurrido desde el inicio del RUN."""
+
+    if not started_at:
+        return "00:00:00"
+    try:
+        started_timestamp = datetime.fromisoformat(
+            started_at.replace("Z", "+00:00")
+        )
+        end_timestamp = datetime.fromisoformat(
+            ended_at.replace("Z", "+00:00")
+        ) if ended_at else datetime.now(timezone.utc)
+    except ValueError:
+        return "00:00:00"
+    elapsed_seconds = max(
+        0,
+        int((end_timestamp - started_timestamp).total_seconds()),
+    )
+    hours, remainder = divmod(elapsed_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 def initialize_state() -> None:
     """Creo el estado para conservar referencias visuales del RUN."""
 
     if "alpaca_run_id" not in st.session_state:
         st.session_state.alpaca_run_id = None
+    if "start_pending" not in st.session_state:
+        st.session_state.start_pending = False
+    if "stop_pending" not in st.session_state:
+        st.session_state.stop_pending = False
+
+def mark_start_pending() -> None:
+    """Marco que el usuario acaba de solicitar el inicio."""
+
+    st.session_state.start_pending = True
+
+def mark_stop_pending() -> None:
+    """Marco que el usuario acaba de solicitar la detención."""
+
+    st.session_state.stop_pending = True
 
 def render_streaming() -> None:
     """Muestro las consolas de Alpaca y el estado de Spark."""
@@ -84,15 +129,67 @@ def render_streaming() -> None:
         snapshot = streaming_module.get_run_snapshot()
 
     default_symbols = ", ".join(snapshot["symbols"])
-    symbols_col, start_col, stop_col = st.columns(
-        [6, 1.4, 1.4],
+    if not snapshot["is_active"]:
+        default_symbols = (
+            "AAPL, MSFT, NVDA, SPY, TSLA, META, SPCX, GLD, BTC, OXY"
+        )
+    render_html("<h5>Símbolos</h5>")
+    symbols_col, actions_col = st.columns(
+        [6, 6],
+        gap="small",
         vertical_alignment="bottom",
     )
     with symbols_col:
         symbols_text = st.text_input(
-            "Símbolos",
-            value=default_symbols or "AAPL, MSFT, NVDA, SPY",
+            "",
+            value=default_symbols,
+            label_visibility="collapsed",
+            disabled=bool(
+                snapshot["is_active"]
+                or st.session_state.start_pending
+                or st.session_state.stop_pending
+            ),
+            width="stretch",
         )
+    stop_clicked = False
+    with actions_col:
+        start_col, stop_col, spacer_col = st.columns(
+            [2, 2, 2],
+            gap="small",
+            vertical_alignment="bottom",
+        )
+        with start_col:
+            with st.container(key="start-button"):
+                start_clicked = st.button(
+                    "⟳ Iniciando..."
+                    if st.session_state.start_pending
+                    else (
+                        "⟳ Ejecutando streaming..."
+                        if snapshot["is_active"]
+                        else "▶ Iniciar streaming"
+                    ),
+                    type="secondary",
+                    disabled=bool(
+                        snapshot["is_active"]
+                        or st.session_state.start_pending
+                    ),
+                    on_click=mark_start_pending,
+                    width="stretch",
+                )
+        if snapshot["is_active"] or st.session_state.stop_pending:
+            with stop_col:
+                with st.container(key="stop-button"):
+                    stop_clicked = st.button(
+                        "⟳ Deteniendo..."
+                        if st.session_state.stop_pending
+                        else "■ Detener streaming",
+                        type="secondary",
+                        disabled=st.session_state.stop_pending,
+                        on_click=mark_stop_pending,
+                        width="stretch",
+                    )
+        with spacer_col:
+            st.empty()
     symbols = sorted(
         {
             symbol.strip().upper()
@@ -100,22 +197,10 @@ def render_streaming() -> None:
             if symbol.strip()
         }
     )
-    with start_col:
-        start_clicked = st.button(
-            "Ejecutando streaming..."
-            if snapshot["is_active"]
-            else "Iniciar streaming",
-            type="primary",
-            disabled=bool(snapshot["is_active"]),
-        )
-    with stop_col:
-        stop_clicked = st.button(
-            "Detener streaming",
-            disabled=not bool(snapshot["is_active"]),
-        )
     selected_replay_speed = 1.0
 
-    if start_clicked:
+    if start_clicked or st.session_state.start_pending:
+        st.session_state.start_pending = False
         if (
             not streaming_module.ALPACA_API_KEY
             or not streaming_module.ALPACA_SECRET_KEY
@@ -145,24 +230,62 @@ def render_streaming() -> None:
                 )
                 snapshot = streaming_module.get_run_snapshot()
 
-    if stop_clicked:
+    if stop_clicked or st.session_state.stop_pending:
+        st.session_state.stop_pending = False
         streaming_module.stop_active_run("manual_stop")
         snapshot = streaming_module.get_run_snapshot()
 
     status = snapshot["status"]
-    status_col, count_col, mode_col, run_col = st.columns(4)
-    with status_col:
-        st.metric("Estado", status)
-    with count_col:
-        st.metric("Eventos recibidos", snapshot["event_count"])
-    with mode_col:
-        st.metric("Modo", snapshot["mode"])
+    status_text = "Ejecutando..." if snapshot["is_active"] else status
+    elapsed_text = format_elapsed_time(
+        snapshot["started_at"],
+        snapshot["ended_at"],
+    )
+    if snapshot["is_active"]:
+        status_text = f"{status_text} {elapsed_text}."
+    else:
+        last_execution_at = snapshot["ended_at"] or snapshot["started_at"]
+        last_execution_text = (
+            streaming_module.format_display_timestamp(last_execution_at)
+            if last_execution_at
+            else "-"
+        )
+        status_text = (
+            f"{status_text}. Transcurrido: {elapsed_text}. "
+            f"Última ejecución: {last_execution_text}."
+        )
+    run_col, mode_col, count_col, status_col = st.columns(
+        [2, 2, 2, 6],
+        gap="small",
+    )
     with run_col:
         run_id = snapshot["run_id"] or "-"
-        st.metric("RUN", run_id[:12])
+        with st.container(border=True):
+            render_html(
+                f"<p><strong>RUN:</strong> {html.escape(run_id[:12])}</p>"
+            )
+    with mode_col:
+        with st.container(border=True):
+            render_html(
+                f"<p><strong>Modo:</strong> "
+                f"{html.escape(snapshot['mode'])}</p>"
+            )
+    with count_col:
+        with st.container(border=True):
+            render_html(
+                f"<p><strong>Eventos recibidos:</strong> "
+                f"{snapshot['event_count']}</p>"
+            )
+    with status_col:
+        with st.container(border=True):
+            render_html(
+                f"<p><strong>Estado:</strong> {html.escape(status_text)}</p>"
+            )
 
     if snapshot["error"]:
         st.error(snapshot["error"])
+
+    render_html("<hr />")
 
     events = streaming_module.get_recent_events(snapshot["run_id"], 100)
     spark_result = spark_module.process_events(events)
@@ -173,31 +296,35 @@ def render_streaming() -> None:
         wrap=True,
     )
     with execution_column:
-        st.header("Log de ejecución")
-        st.caption("Ciclo de vida, conexión y procesamiento del RUN actual")
+        render_html("<h5>Log de ejecución</h5>")
+        render_html(
+            "<p>Ciclo de vida, conexión y procesamiento del RUN actual</p>",
+        )
         log_lines = streaming_module.get_recent_logs(
             snapshot["run_id"],
             100,
         )
         render_log_console(log_lines, "execution-log-console")
     with alpaca_column:
-        st.header(f"Alpaca Streaming")
-        st.caption(
-            "LIVE: operaciones actuales; REPLAY: operaciones históricas."
+        render_html("<h5>Alpaca Streaming</h5>")
+        render_html(
+            "<p>LIVE: operaciones actuales; REPLAY: operaciones históricas.</p>",
         )
         event_lines = [
             event.to_display_line()
             for event in events
         ]
         render_log_console(event_lines, "alpaca-log-console")
-        if not event_lines and status == "conectado":
+        if not event_lines and status == "Conectado":
             st.info(
                 "Conexión activa; todavía no se recibieron operaciones. "
                 "El mercado puede estar cerrado."
             )
     with spark_column:
-        st.header("Apache Spark")
-        st.caption("Procesamiento local de un lote acotado por símbolo")
+        render_html("<h5>Apache Spark</h5>")
+        render_html(
+            "<p>Procesamiento local de un lote acotado por símbolo</p>",
+        )
         spark_lines = list(spark_result["logs"])
         if spark_result["rows"]:
             spark_lines.append("")
@@ -221,7 +348,8 @@ st.set_page_config(
 load_custom_css()
 initialize_state()
 
-st.title("Apache Big Data Lab")
-st.subheader("Procesamiento distribuido y análisis de mercados financieros")
+render_html("<h1>Apache Big Data Lab</h1>")
+render_html("<h4>Procesamiento distribuido y análisis de mercados financieros</h4>")
+render_html("<label>Alumno: Nicolás Druetta. Materia: IAPD. Año: 2026.</label><hr />")
 render_streaming_fragment = st.fragment(render_streaming, run_every="5s")
 render_streaming_fragment()

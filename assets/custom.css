@@ -1,7 +1,70 @@
 /* Estilos centralizados. */
 
+.stMainBlockContainer {
+    padding: 1rem 3rem !important;
+}
+
 .stSidebar {
     display: none !important;
+}
+
+.st-key-start-button button {
+    background: #198754;
+    border-color: #198754;
+    color: #ffffff;
+}
+
+.st-key-start-button button:hover {
+    background: #157347;
+    border-color: #146c43;
+    color: #ffffff;
+}
+
+.st-key-stop-button button {
+    background: #dc3545;
+    border-color: #dc3545;
+    color: #ffffff;
+}
+
+.st-key-stop-button button:hover {
+    background: #bb2d3b;
+    border-color: #b02a37;
+    color: #ffffff;
+}
+
+@media (max-width: 991.98px) {
+    .stHorizontalBlock {
+        flex-wrap: wrap !important;
+    }
+
+    .stHorizontalBlock > .stColumn {
+        flex: 1 1 calc(50% - 0.5rem) !important;
+        min-width: calc(50% - 0.5rem) !important;
+    }
+}
+
+@media (max-width: 767.98px) {
+    .stHorizontalBlock > .stColumn {
+        flex: 1 1 100% !important;
+        min-width: 100% !important;
+    }
+}
+
+.stMetric {
+    min-height: 108px;
+    padding: 0.8rem 1rem;
+    border: 1px solid #dfe3eb;
+    border-radius: 0.5rem;
+    background: #ffffff;
+}
+
+.stMetricLabel p {
+    font-size: 0.85rem;
+}
+
+.stMetricValue {
+    font-size: 1.75rem;
+    line-height: 1.2;
 }
 
 .log-console {

@@ -121,7 +121,7 @@ class AlpacaStreamingService:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._task: asyncio.Task[None] | None = None
         self._websocket: ClientConnection | None = None
-        self._status = "detenido"
+        self._status = "Detenido"
         self._error: str | None = None
         self._end_reason: str | None = None
         self._started_at: str | None = None
@@ -142,9 +142,9 @@ class AlpacaStreamingService:
             if self.is_active():
                 return False
             self._status = (
-                "descargando_historico"
+                "Descargando histórico"
                 if self._mode == "REPLAY"
-                else "conectando"
+                else "Conectando"
             )
             self._started_at = get_utc_timestamp()
             self._last_heartbeat_at = self._started_at
@@ -185,7 +185,7 @@ class AlpacaStreamingService:
         with self._lock:
             if self._finished:
                 return
-            self._status = "finalizando"
+            self._status = "Finalizando"
             self._end_reason = end_reason
             self._stop_event.set()
             self._add_log(f"{self._mode} | detención solicitada: {end_reason}")
@@ -206,17 +206,17 @@ class AlpacaStreamingService:
                 pass
         self._join_threads()
         if not self.is_running():
-            self._finish("detenido", end_reason)
+            self._finish("Detenido", end_reason)
 
     def is_active(self) -> bool:
         """Indico si el RUN sigue aceptando heartbeats."""
 
         return not self._finished and self._status in {
-            "conectando",
-            "conectado",
-            "descargando_historico",
-            "reproduciendo",
-            "finalizando",
+            "Conectando",
+            "Conectado",
+            "Descargando histórico",
+            "Reproduciendo",
+            "Finalizando",
         }
 
     def is_running(self) -> bool:
@@ -272,14 +272,14 @@ class AlpacaStreamingService:
         except Exception as error:
             if not self._stop_event.is_set():
                 self._finish(
-                    "error",
+                    "Error",
                     "connection_error",
                     self._safe_error(error),
                 )
         finally:
             self._clear_async_resources()
             if self._stop_event.is_set():
-                self._finish("detenido", self._end_reason or "manual_stop")
+                self._finish("Detenido", self._end_reason or "manual_stop")
 
     def _run_replay(self) -> None:
         """Descargo y reproduzco eventos históricos de forma progresiva."""
@@ -294,7 +294,7 @@ class AlpacaStreamingService:
         )
         with self._lock:
             self._historical_date = historical_date
-            self._status = "reproduciendo"
+            self._status = "Reproduciendo"
             self._add_log(
                 f"REPLAY | histórico listo: {historical_date} | "
                 f"archivo={historical_path.name}"
@@ -315,7 +315,7 @@ class AlpacaStreamingService:
                     self._replay_speed
                 ):
                     return
-        self._finish("completado", "replay_completed")
+        self._finish("Completado", "replay_completed")
 
     async def _receive_events(self) -> None:
         """Autentico, suscribo y recibo los eventos de Alpaca."""
@@ -343,7 +343,7 @@ class AlpacaStreamingService:
                     }
                 )
             )
-            self._set_status("conectado", None)
+            self._set_status("Conectado", None)
             self._add_log(
                 f"LIVE | suscripción activa: {', '.join(self._symbols)}"
             )
@@ -393,7 +393,7 @@ class AlpacaStreamingService:
             event_type = payload.get("T")
             if event_type == "error":
                 self._finish(
-                    "error",
+                    "Error",
                     "alpaca_error",
                     self._format_server_error(payload),
                 )
@@ -473,7 +473,7 @@ class AlpacaStreamingService:
     def _add_log(self, message: str) -> None:
         """Agrego un mensaje operativo al log visible del RUN."""
 
-        timestamp = get_utc_timestamp()
+        timestamp = format_display_timestamp()
         with self._lock:
             self._logs.append(f"{timestamp} | {message}")
 
@@ -540,9 +540,7 @@ class AlpacaStreamingService:
     def _format_timestamp(self, value: Any) -> str:
         """Formateo el horario del evento para la consola."""
 
-        if not value:
-            return datetime.now().astimezone().strftime("%H:%M:%S")
-        return str(value)[11:19]
+        return format_display_timestamp(value)
 
     def _number(self, value: Any) -> float | None:
         """Convierto un valor numérico recibido desde el WebSocket."""
@@ -571,6 +569,21 @@ def get_utc_timestamp() -> str:
     """Genero una marca temporal UTC reproducible para cada registro."""
 
     return datetime.now(timezone.utc).isoformat()
+
+def format_display_timestamp(value: Any = None) -> str:
+    """Formateo las marcas visibles sin milisegundos ni zona horaria."""
+
+    if isinstance(value, datetime):
+        timestamp = value
+    elif value:
+        text = str(value).replace("Z", "+00:00")
+        try:
+            timestamp = datetime.fromisoformat(text)
+        except ValueError:
+            timestamp = datetime.now(timezone.utc)
+    else:
+        timestamp = datetime.now(timezone.utc)
+    return timestamp.strftime("%Y-%m-%d %H:%M:%S")
 
 def write_json(path: Path, content: dict[str, Any]) -> None:
     """Reemplazo la metadata de forma atómica y consistente."""
@@ -831,7 +844,7 @@ def mark_interrupted_run() -> dict[str, Any] | None:
     metadata = get_latest_metadata()
     if metadata is None or not metadata.get("is_active"):
         return metadata
-    metadata["status"] = "incompleto"
+    metadata["status"] = "Incompleto"
     metadata["is_active"] = False
     metadata["end_reason"] = "process_restart"
     metadata["ended_at"] = get_utc_timestamp()
@@ -847,7 +860,7 @@ def event_from_record(
     """Reconstruyo un evento persistido para mostrarlo en la consola."""
 
     return AlpacaEvent(
-        timestamp=str(record.get("timestamp", "-")),
+        timestamp=format_display_timestamp(record.get("timestamp")),
         symbol=str(record.get("symbol", "-")),
         event_type=str(record.get("event_type", "-")),
         price=to_number(record.get("price")),
@@ -951,7 +964,7 @@ def get_run_snapshot() -> dict[str, Any]:
         "symbols": [],
         "mode": "LIVE",
         "replay_speed": 1.0,
-        "status": "detenido",
+        "status": "Detenido",
         "error": None,
         "event_count": 0,
         "replay_position": 0,
@@ -991,7 +1004,18 @@ def get_recent_logs(run_id: str | None, limit: int) -> list[str]:
     metadata = get_latest_metadata()
     if metadata is None or metadata.get("run_id") != run_id:
         return []
-    return list(metadata.get("logs", []))[-limit:]
+    return [
+        format_log_line(line)
+        for line in list(metadata.get("logs", []))[-limit:]
+    ]
+
+def format_log_line(line: str) -> str:
+    """Adapto un log persistido al formato horario visible."""
+
+    timestamp, separator, message = line.partition(" | ")
+    if separator and "T" in timestamp:
+        return f"{format_display_timestamp(timestamp)} | {message}"
+    return line
 
 def shutdown_active_run() -> None:
     """Cierro el RUN administrado cuando finaliza el proceso Python."""
