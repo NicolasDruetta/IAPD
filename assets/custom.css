@@ -1,8 +1,46 @@
-/* Estilos centralizados. */
+/* Estilos centralizados y adaptables al tema del sistema. */
+
+:root {
+    color-scheme: light;
+    --page-background: #ffffff;
+    --text-color: #2f3342;
+    --muted-text-color: #68707f;
+    --border-color: #dfe3eb;
+    --card-background: #ffffff;
+    --console-background: #f0f2f6;
+    --console-text: #a4a9b3;
+    --scrollbar-track: #dfe3eb;
+    --scrollbar-thumb: #9aa1ad;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        color-scheme: dark;
+        --page-background: #0e1016;
+        --text-color: #f1f3f8;
+        --muted-text-color: #b6bdca;
+        --border-color: #3b404d;
+        --card-background: #171a22;
+        --console-background: #1d212b;
+        --console-text: #aeb6c5;
+        --scrollbar-track: #292e39;
+        --scrollbar-thumb: #596273;
+    }
+}
+
+html, body, .stApp {
+    background: var(--page-background) !important;
+    color: var(--text-color) !important;
+}
+
+h1, h2, h3, h4, h5, h6, p,
+label, .stMarkdown, .stText {
+    color: var(--text-color) !important;
+}
 
 hr {
     border: 0 !important;
-    border-top: 1px solid #dfe3eb !important;
+    border-top: 1px solid var(--border-color) !important;
     margin: 1.5rem 0 !important;
 }
 
@@ -42,9 +80,10 @@ hr {
     box-sizing: border-box;
     width: 100%;
     padding: 0.5rem 1rem;
-    border: 1px solid #dfe3eb;
+    border: 1px solid var(--border-color);
     border-radius: 0.5rem;
-    background: #ffffff;
+    background: var(--card-background);
+    color: var(--text-color);
     display: flex;
     align-items: center;
 }
@@ -57,9 +96,10 @@ hr {
 .stMetric {
     min-height: 108px;
     padding: 0.8rem 1rem;
-    border: 1px solid #dfe3eb;
+    border: 1px solid var(--border-color);
     border-radius: 0.5rem;
-    background: #ffffff;
+    background: var(--card-background);
+    color: var(--text-color);
 }
 
 .stMetricLabel p {
@@ -81,8 +121,9 @@ hr {
     padding: 0.8rem;
     border: 0;
     border-radius: 0.5rem;
-    background: #f0f2f6;
-    color: #a4a9b3;
+    border: 1px solid var(--border-color);
+    background: var(--console-background);
+    color: var(--console-text);
     font-family: monospace;
     font-size: 0.82rem;
     line-height: 1.55;
@@ -95,12 +136,29 @@ hr {
 }
 
 .log-console::-webkit-scrollbar-track {
-    background: #dfe3eb;
+    background: var(--scrollbar-track);
 }
 
 .log-console::-webkit-scrollbar-thumb {
-    background: #9aa1ad;
+    background: var(--scrollbar-thumb);
     border-radius: 6px;
+}
+
+input,
+textarea,
+button {
+    color-scheme: inherit;
+}
+
+input,
+textarea {
+    border-color: var(--border-color) !important;
+    color: var(--text-color) !important;
+}
+
+input:disabled,
+textarea:disabled {
+    color: var(--muted-text-color) !important;
 }
 
 @media (max-width: 991.98px) {

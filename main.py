@@ -303,7 +303,7 @@ def render_streaming() -> None:
         )
         status_text = (
             f"{status_text}. Transcurrido: {elapsed_text}. "
-            f"Última ejecución: {last_execution_text}."
+            f"Ejecución: {last_execution_text}."
         )
     metrics_col, status_col = st.columns(
         [6, 6],
