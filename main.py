@@ -381,7 +381,12 @@ def render_streaming() -> None:
                 "El mercado puede estar cerrado."
             )
     with spark_column:
-        render_html("<h5>Apache Spark</h5>")
+        render_html(
+            '<h5>Apache Spark - <a class="spark-ui-link" href="http://localhost:8080/" '
+            'target="_blank" rel="noopener noreferrer"><small>Spark Master</small> '
+            '<span class="spark-ui-link-icon" aria-hidden="true">↗</span>'
+            '</a></h5>'
+        )
         render_html(
             "<p>Procesamiento local de un lote acotado por símbolo</p>",
         )
