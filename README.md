@@ -110,6 +110,19 @@ caché local para evitar descargas innecesarias. Cada ejecución genera sus
 propios registros en `data/streaming/`. Estos archivos son datos generados por
 la aplicación y no deben versionarse.
 
+Cuando el campo de símbolos está vacío, REPLAY obtiene los activos de acciones
+activos de Alpaca y utiliza el último día hábil con operaciones disponibles.
+La descarga se divide en ventanas temporales de 15 minutos y grupos de símbolos
+con un máximo de cuatro solicitudes HTTP concurrentes. Cada solicitud respeta
+la paginación de Alpaca, el límite de 10.000 registros y reintenta HTTP 429 con
+espera progresiva.
+
+Cada símbolo de una ventana se persiste en un temporal efímero y luego se
+mezcla mediante un merge cronológico acotado. Así las operaciones se emiten
+progresivamente mientras continúa la descarga de ventanas posteriores. Los
+temporales no forman parte de la caché permanente: el histórico solo se
+promueve al archivo final cuando está completo.
+
 ## 6. Organización del proyecto
 
 ```text
@@ -214,6 +227,23 @@ El único requisito del anfitrión es Docker Desktop, disponible para macOS
 Apple Silicon, macOS Intel y Windows x86-64. Python, PySpark y Java se
 instalan dentro de la imagen del proyecto.
 
+### Límites de recursos Docker
+
+Los límites se aplican exclusivamente en `compose.yaml` y mantienen los cuatro
+servicios activos:
+
+| Servicio | CPU máxima | Memoria máxima |
+| --- | ---: | ---: |
+| Streamlit / Spark Driver | 1.5 | 2 GiB |
+| Spark Master | 0.5 | 512 MiB |
+| Spark Worker 1 | 1 | 1 GiB |
+| Spark Worker 2 | 1 | 1 GiB |
+
+Los Workers conservan un core cada uno y disponen de 768 MiB para la memoria
+de Spark. El Driver utiliza 1 GiB de memoria de JVM y los Executors 512 MiB,
+con 256 MiB de overhead. El límite total de los contenedores es de 4.5 GiB y
+no requiere modificar Windows, WSL ni Docker Desktop.
+
 Desde la raíz del repositorio se ejecuta:
 
 ```bash
@@ -269,7 +299,12 @@ docker compose up --build
 - Integración LIVE y REPLAY con Alpaca Market Data.
 - Consulta del estado oficial del mercado para seleccionar el modo.
 - Descarga automática y caché local de datos históricos.
+- REPLAY incremental por ventanas temporales, con cuatro solicitudes HTTP
+  concurrentes como máximo y reintentos acotados para HTTP 429.
+- Emisión progresiva y merge cronológico global sin cargar el día completo en
+  memoria.
 - Persistencia incremental de ejecuciones y eventos en JSONL.
+- Buffer reciente limitado a 1.000 eventos y lotes Spark limitados a 100.
 - Logs de ejecución, consola de operaciones y consola Spark.
 - Imagen Docker reproducible con Python 3.15, PySpark 4.2.0 y Java 17.
 - Compose con Streamlit/Driver, Master y dos Workers.

@@ -9,6 +9,10 @@ services:
   spark-master:
     <<: *lab-image
     hostname: spark-master
+    cpus: "0.5"
+    mem_limit: 512m
+    mem_reservation: 256m
+    memswap_limit: 512m
     command:
       - spark-class
       - org.apache.spark.deploy.master.Master
@@ -18,6 +22,8 @@ services:
       - "7077"
       - --webui-port
       - "8080"
+    environment:
+      SPARK_DAEMON_MEMORY: 384m
     ports:
       - "8080:8080"
     healthcheck:
@@ -38,6 +44,10 @@ services:
   spark-worker-1:
     <<: *lab-image
     hostname: spark-worker-1
+    cpus: "1.0"
+    mem_limit: 1g
+    mem_reservation: 768m
+    memswap_limit: 1g
     command:
       - spark-class
       - org.apache.spark.deploy.worker.Worker
@@ -48,7 +58,8 @@ services:
       - "8081"
     environment:
       SPARK_WORKER_CORES: "1"
-      SPARK_WORKER_MEMORY: 1g
+      SPARK_WORKER_MEMORY: 768m
+      SPARK_DAEMON_MEMORY: 384m
     depends_on:
       spark-master:
         condition: service_healthy
@@ -73,6 +84,10 @@ services:
   spark-worker-2:
     <<: *lab-image
     hostname: spark-worker-2
+    cpus: "1.0"
+    mem_limit: 1g
+    mem_reservation: 768m
+    memswap_limit: 1g
     command:
       - spark-class
       - org.apache.spark.deploy.worker.Worker
@@ -83,7 +98,8 @@ services:
       - "8082"
     environment:
       SPARK_WORKER_CORES: "1"
-      SPARK_WORKER_MEMORY: 1g
+      SPARK_WORKER_MEMORY: 768m
+      SPARK_DAEMON_MEMORY: 384m
     depends_on:
       spark-master:
         condition: service_healthy
@@ -108,6 +124,10 @@ services:
   streamlit:
     <<: *lab-image
     hostname: spark-driver
+    cpus: "1.5"
+    mem_limit: 2g
+    mem_reservation: 1g
+    memswap_limit: 2g
     command:
       - streamlit
       - run
@@ -120,6 +140,8 @@ services:
       SPARK_DRIVER_HOST: spark-driver
       SPARK_DRIVER_PORT: "4041"
       SPARK_BLOCK_MANAGER_PORT: "4042"
+      SPARK_DRIVER_MEMORY: 1g
+      SPARK_EXECUTOR_MEMORY: 512m
     depends_on:
       spark-master:
         condition: service_healthy

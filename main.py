@@ -2,14 +2,12 @@
 
 import html
 import importlib.util
-import json
 import streamlit as st
 import sys
 
 from datetime import datetime, timezone
 from pathlib import Path
 from types import ModuleType
-from typing import Any
 
 def format_elapsed_time(
     started_at: str | None,
@@ -105,31 +103,6 @@ def mark_stop_pending() -> None:
     """Marco que el usuario acaba de solicitar la detención."""
 
     st.session_state.stop_pending = True
-
-def read_all_streaming_events(
-    streaming_module: ModuleType,
-    run_id: str | None,
-) -> list[Any]:
-    """Leo todos los eventos persistidos para la interfaz."""
-
-    if run_id is None:
-        return []
-    events_path = streaming_module.DATA_DIRECTORY / f"{run_id}.jsonl"
-    if not events_path.exists():
-        return []
-    events: list[Any] = []
-    try:
-        with events_path.open(encoding="utf-8") as events_file:
-            for line in events_file:
-                try:
-                    record = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(record, dict):
-                    events.append(streaming_module.event_from_record(record))
-    except OSError:
-        return []
-    return events
 
 def render_log_console(lines: list[str], console_id: str) -> None:
     """Muestro el log y desplazo el scroll hasta el último registro."""
@@ -356,7 +329,7 @@ def render_streaming() -> None:
                 st.text(snapshot["mode"])
         with count_col:
             with st.container(border=True):
-                st.caption("Eventos recibidos")
+                st.caption("Eventos recibidos Alpaca")
                 st.text(str(snapshot["event_count"]))
     with status_col:
         with st.container(border=True):
@@ -373,15 +346,7 @@ def render_streaming() -> None:
     except TypeError as error:
         if "required positional argument: 'limit'" not in str(error):
             raise
-        events = read_all_streaming_events(
-            streaming_module,
-            snapshot["run_id"],
-        )
-    if not events and snapshot["run_id"] is not None:
-        events = read_all_streaming_events(
-            streaming_module,
-            snapshot["run_id"],
-        )
+        events = streaming_module.read_recent_events(snapshot["run_id"])
     spark_result = spark_module.process_events(events)
     execution_column, alpaca_column, spark_column = st.columns(
         3,

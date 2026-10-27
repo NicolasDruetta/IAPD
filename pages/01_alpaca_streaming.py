@@ -3,9 +3,12 @@
 import asyncio
 import atexit
 import certifi
+import heapq
 import json
 import os
+import queue
 import ssl
+import tempfile
 import threading
 import time
 import urllib.error
@@ -14,6 +17,7 @@ import urllib.request
 import uuid
 
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -37,6 +41,11 @@ MARKET_CLOCK_URLS = (
     "https://paper-api.alpaca.markets/v2/clock",
 )
 HEARTBEAT_TIMEOUT_SECONDS = 30
+HTTP_MAX_RETRIES = 5
+MAX_HTTP_CONCURRENCY = 4
+MAX_RECENT_EVENTS = 1000
+REPLAY_BATCH_SIZE = 100
+REPLAY_WINDOW_MINUTES = 15
 SUPERVISOR_INTERVAL_SECONDS = 1
 REPLAY_SPEEDS = {
     "1 evento por segundo": 1.0,
@@ -115,7 +124,7 @@ class AlpacaStreamingService:
         self._feed = feed
         self._mode = mode
         self._replay_speed = replay_speed
-        self._events: deque[AlpacaEvent] = deque()
+        self._events: deque[AlpacaEvent] = deque(maxlen=MAX_RECENT_EVENTS)
         self._logs: deque[str] = deque()
         self._stop_event = threading.Event()
         self._lock = threading.RLock()
@@ -282,37 +291,125 @@ class AlpacaStreamingService:
         """Descargo y reproduzco eventos históricos de forma progresiva."""
 
         self._add_log("REPLAY | buscando histórico local o remoto")
-        historical_path, historical_date = get_historical_dataset(
-            self._api_key,
-            self._api_secret,
-            self._symbols,
-            self._feed,
-            progress_callback=self._add_log,
+        batch_queue: queue.Queue[list[AlpacaEvent] | None] = queue.Queue(
+            maxsize=4
         )
+        result_queue: queue.Queue[object] = queue.Queue(maxsize=1)
+
+        def enqueue_batch(events: list[AlpacaEvent]) -> None:
+            """Entrego un lote al consumidor respetando la presión."""
+
+            while not self._stop_event.is_set():
+                try:
+                    batch_queue.put(events, timeout=0.5)
+                    return
+                except queue.Full:
+                    continue
+            raise InterruptedError("Descarga REPLAY detenida.")
+
+        def download() -> None:
+            """Descargo en segundo plano mientras consumo lotes."""
+
+            try:
+                result_queue.put(
+                    get_historical_dataset(
+                        self._api_key,
+                        self._api_secret,
+                        self._symbols,
+                        self._feed,
+                        progress_callback=self._add_log,
+                        event_callback=enqueue_batch,
+                        stop_event=self._stop_event,
+                    )
+                )
+            except BaseException as error:
+                result_queue.put(error)
+            finally:
+                batch_queue.put(None)
+
+        download_thread = threading.Thread(
+            target=download,
+            daemon=True,
+            name=f"alpaca-download-{self._run_id}",
+        )
+        download_thread.start()
+        streamed = False
+        while True:
+            batch = batch_queue.get()
+            if batch is None:
+                break
+            streamed = True
+            self._emit_replay_batch(batch)
+        download_thread.join()
+        result = result_queue.get()
+        if isinstance(result, BaseException):
+            raise result
+        historical_path, historical_date, downloaded_streamed = result
+        streamed = streamed or downloaded_streamed
         with self._lock:
             self._historical_date = historical_date
-            self._status = "Reproduciendo"
             self._add_log(
                 f"REPLAY | histórico listo: {historical_date} | "
                 f"archivo={historical_path.name}"
             )
             self._persist_metadata_locked()
+        if not streamed:
+            self._replay_cached_file(historical_path)
+        self._finish("Completado", "replay_completed")
+
+    def _emit_replay_batch(self, events: list[AlpacaEvent]) -> None:
+        """Persisto y publico un lote cronológico con ritmo controlado."""
+
+        for start in range(0, len(events), REPLAY_BATCH_SIZE):
+            if self._stop_event.is_set():
+                return
+            batch = events[start:start + REPLAY_BATCH_SIZE]
+            self._persist_event_batch(batch)
+            if self._replay_speed > 0 and self._stop_event.wait(
+                self._replay_speed
+            ):
+                return
+
+    def _persist_event_batch(self, events: list[AlpacaEvent]) -> None:
+        """Persisto un lote completo sin sincronizar una vez por evento."""
+
+        if not events:
+            return
+        with self._lock:
+            ensure_data_directory()
+            with self._events_path.open("a", encoding="utf-8") as event_file:
+                for event in events:
+                    record = event.to_record(self._run_id)
+                    event_file.write(
+                        json.dumps(record, ensure_ascii=False) + "\n"
+                    )
+                event_file.flush()
+                os.fsync(event_file.fileno())
+            self._events.extend(events)
+            self._event_count += len(events)
+            self._replay_position += len(events)
+            self._status = "Reproduciendo"
+            self._persist_metadata_locked()
+            self._add_log(
+                f"REPLAY | eventos emitidos={self._event_count}"
+            )
+
+    def _replay_cached_file(self, historical_path: Path) -> None:
+        """Reproduzco una caché completa usando lotes acotados."""
+
+        batch: list[AlpacaEvent] = []
         with historical_path.open(encoding="utf-8") as historical_file:
-            for position, line in enumerate(historical_file, start=1):
+            for line in historical_file:
                 if self._stop_event.is_set():
                     return
-                record = json.loads(line)
-                event = event_from_record(record, mode="REPLAY")
-                self._persist_event(event, replay_position=position)
-                if position == 1 or position % 100 == 0:
-                    self._add_log(
-                        f"REPLAY | eventos emitidos={position}"
-                    )
-                if self._replay_speed > 0 and self._stop_event.wait(
-                    self._replay_speed
-                ):
-                    return
-        self._finish("Completado", "replay_completed")
+                batch.append(
+                    event_from_record(json.loads(line), mode="REPLAY")
+                )
+                if len(batch) == REPLAY_BATCH_SIZE:
+                    self._emit_replay_batch(batch)
+                    batch = []
+            if batch:
+                self._emit_replay_batch(batch)
 
     async def _receive_events(self) -> None:
         """Autentico, suscribo y recibo los eventos de Alpaca."""
@@ -565,7 +662,9 @@ def download_historical_dataset(
     date_text: str,
     historical_path: Path,
     progress_callback: Callable[[str], None] | None = None,
-) -> int:
+    event_callback: Callable[[list[AlpacaEvent]], None] | None = None,
+    stop_event: threading.Event | None = None,
+) -> tuple[int, bool]:
     """Descargo páginas de operaciones y guardo una copia JSONL completa."""
 
     temporary_path = historical_path.with_suffix(".tmp")
@@ -578,50 +677,104 @@ def download_historical_dataset(
         market_symbols[index:index + 100]
         for index in range(0, len(market_symbols), 100)
     ]
+    if not symbol_groups:
+        return 0, False
     event_count = 0
-    page_number = 0
-    records: list[dict[str, Any]] = []
     ensure_historical_directory()
     ssl_context = ssl.create_default_context(cafile=certifi.where())
-    try:
-        for symbol_group in symbol_groups:
-            next_page_token: str | None = None
+
+    def request_page(query: dict[str, str]) -> dict[str, Any]:
+        """Obtengo una página respetando límites y reintentos de Alpaca."""
+
+        for attempt in range(HTTP_MAX_RETRIES):
+            if stop_event is not None and stop_event.is_set():
+                raise InterruptedError("Descarga REPLAY detenida.")
+            url = f"{HISTORICAL_API_URL}?{urllib.parse.urlencode(query)}"
+            request = urllib.request.Request(
+                url,
+                headers={
+                    "APCA-API-KEY-ID": api_key,
+                    "APCA-API-SECRET-KEY": api_secret,
+                },
+            )
+            try:
+                with urllib.request.urlopen(
+                    request,
+                    timeout=30,
+                    context=ssl_context,
+                ) as response:
+                    return json.load(response)
+            except urllib.error.HTTPError as error:
+                if error.code in {401, 403}:
+                    raise RuntimeError(
+                        "Alpaca rechazó el acceso al histórico."
+                    ) from error
+                if error.code != 429 or attempt == HTTP_MAX_RETRIES - 1:
+                    raise RuntimeError(
+                        f"Alpaca devolvió HTTP {error.code}."
+                    ) from error
+                retry_after = error.headers.get("Retry-After")
+                try:
+                    delay = float(retry_after) if retry_after else 2**attempt
+                except ValueError:
+                    delay = 2**attempt
+                if stop_event is not None:
+                    if stop_event.wait(min(delay, 60)):
+                        raise InterruptedError(
+                            "Descarga REPLAY detenida."
+                        )
+                else:
+                    time.sleep(min(delay, 60))
+        raise RuntimeError("Alpaca agotó los reintentos del histórico.")
+
+    def download_group(
+        group_index: int,
+        symbol_group: list[str],
+        window_start: datetime,
+        window_end: datetime,
+        temporary_directory: str,
+    ) -> tuple[int, list[tuple[int, Path]], int, int]:
+        """Descargo un grupo y separo sus símbolos en temporales."""
+
+        symbol_positions = {
+            symbol: position
+            for position, symbol in enumerate(symbol_group)
+        }
+        handles: dict[str, Any] = {}
+        group_paths: dict[str, Path] = {}
+        event_count = 0
+        page_count = 0
+        next_page_token: str | None = None
+        try:
             while True:
-                page_number += 1
                 query = {
                     "symbols": ",".join(symbol_group),
-                    "start": f"{date_text}T00:00:00Z",
-                    "end": f"{date_text}T23:59:59Z",
+                    "start": window_start.isoformat().replace("+00:00", "Z"),
+                    "end": (
+                        (window_end - timedelta(seconds=1)).strftime(
+                            "%Y-%m-%dT%H:%M:%S"
+                        )
+                        + ".999999999Z"
+                    ),
                     "feed": feed,
                     "limit": "10000",
                 }
                 if next_page_token:
                     query["page_token"] = next_page_token
-                url = f"{HISTORICAL_API_URL}?{urllib.parse.urlencode(query)}"
-                request = urllib.request.Request(
-                    url,
-                    headers={
-                        "APCA-API-KEY-ID": api_key,
-                        "APCA-API-SECRET-KEY": api_secret,
-                    },
-                )
-                try:
-                    with urllib.request.urlopen(
-                        request,
-                        timeout=30,
-                        context=ssl_context,
-                    ) as response:
-                        payload = json.load(response)
-                except urllib.error.HTTPError as error:
-                    if error.code in {401, 403}:
-                        raise RuntimeError(
-                            "Alpaca rechazó el acceso al histórico."
-                        ) from error
-                    raise RuntimeError(
-                        f"Alpaca devolvió HTTP {error.code}."
-                    ) from error
-                trades_by_symbol = payload.get("trades", {})
-                for symbol, trades in trades_by_symbol.items():
+                payload = request_page(query)
+                page_count += 1
+                for symbol, trades in payload.get("trades", {}).items():
+                    if symbol not in handles:
+                        group_path = Path(temporary_directory) / (
+                            f"group_{group_index:05d}_"
+                            f"{symbol_positions.get(symbol, 0):03d}.jsonl"
+                        )
+                        group_paths[symbol] = group_path
+                        handles[symbol] = group_path.open(
+                            "w",
+                            encoding="utf-8",
+                        )
+                    group_file = handles[symbol]
                     for trade in trades:
                         record = {
                             "symbol": symbol,
@@ -633,27 +786,152 @@ def download_historical_dataset(
                             "source": "alpaca_historical",
                             "raw": trade,
                         }
-                        records.append(record)
+                        group_file.write(
+                            json.dumps(record, ensure_ascii=False) + "\n"
+                        )
                         event_count += 1
-                if progress_callback is not None:
-                    progress_callback(
-                        f"REPLAY | descarga página={page_number} | "
-                        f"eventos acumulados={event_count}"
-                    )
                 next_page_token = payload.get("next_page_token")
                 if not next_page_token:
                     break
-        if event_count == 0:
-            temporary_path.unlink(missing_ok=True)
-            return 0
-        records.sort(key=lambda record: record["timestamp"])
-        with temporary_path.open("w", encoding="utf-8") as historical_file:
-            for record in records:
+        finally:
+            for group_file in handles.values():
+                group_file.close()
+        return (
+            group_index,
+            [
+                (group_index * 100 + symbol_positions[symbol], path)
+                for symbol, path in group_paths.items()
+            ],
+            event_count,
+            page_count,
+        )
+
+    def record_key(record: dict[str, Any], group_index: int) -> tuple[str, str, str, int]:
+        """Genero un desempate estable para timestamps iguales."""
+
+        raw = record.get("raw")
+        trade_id = raw.get("i", "") if isinstance(raw, dict) else ""
+        return (
+            str(record.get("timestamp", "")),
+            str(record.get("symbol", "")),
+            str(trade_id),
+            group_index,
+        )
+
+    def merge_window(
+        group_paths: list[tuple[int, Path]],
+        historical_file: Any,
+    ) -> tuple[int, list[AlpacaEvent]]:
+        """Mezclo archivos temporales sin cargar la ventana completa."""
+
+        handles: dict[int, Any] = {}
+        heap: list[tuple[tuple[str, str, str, int], int, dict[str, Any]]] = []
+        batch: list[AlpacaEvent] = []
+        merged_count = 0
+        try:
+            for group_index, group_path in group_paths:
+                handle = group_path.open(encoding="utf-8")
+                handles[group_index] = handle
+                line = handle.readline()
+                if line:
+                    record = json.loads(line)
+                    heapq.heappush(
+                        heap,
+                        (record_key(record, group_index), group_index, record),
+                    )
+            while heap:
+                _, group_index, record = heapq.heappop(heap)
                 historical_file.write(
                     json.dumps(record, ensure_ascii=False) + "\n"
                 )
-            historical_file.flush()
-            os.fsync(historical_file.fileno())
+                merged_count += 1
+                if event_callback is not None:
+                    batch.append(event_from_record(record, mode="REPLAY"))
+                    if len(batch) == REPLAY_BATCH_SIZE:
+                        event_callback(batch)
+                        batch = []
+                line = handles[group_index].readline()
+                if line:
+                    next_record = json.loads(line)
+                    heapq.heappush(
+                        heap,
+                        (
+                            record_key(next_record, group_index),
+                            group_index,
+                            next_record,
+                        ),
+                    )
+        finally:
+            for handle in handles.values():
+                handle.close()
+        return merged_count, batch
+
+    try:
+        with tempfile.TemporaryDirectory(
+            dir=HISTORICAL_DIRECTORY
+        ) as temporary_directory:
+            with temporary_path.open("w", encoding="utf-8") as historical_file:
+                window_start = datetime.fromisoformat(
+                    f"{date_text}T00:00:00+00:00"
+                )
+                day_end = window_start + timedelta(days=1)
+                while window_start < day_end:
+                    if stop_event is not None and stop_event.is_set():
+                        raise InterruptedError("Descarga REPLAY detenida.")
+                    window_end = min(
+                        window_start + timedelta(minutes=REPLAY_WINDOW_MINUTES),
+                        day_end,
+                    )
+                    group_paths: list[tuple[int, Path]] = []
+                    window_downloaded = 0
+                    window_pages = 0
+                    with ThreadPoolExecutor(
+                        max_workers=MAX_HTTP_CONCURRENCY
+                    ) as executor:
+                        futures = [
+                            executor.submit(
+                                download_group,
+                                group_index,
+                                symbol_group,
+                                window_start,
+                                window_end,
+                                temporary_directory,
+                            )
+                            for group_index, symbol_group in enumerate(
+                                symbol_groups
+                            )
+                        ]
+                        for future in as_completed(futures):
+                            (
+                                group_index,
+                                symbol_paths,
+                                group_count,
+                                group_pages,
+                            ) = future.result()
+                            group_paths.extend(symbol_paths)
+                            window_downloaded += group_count
+                            window_pages += group_pages
+                    group_paths.sort()
+                    merged_count, pending_batch = merge_window(
+                        group_paths,
+                        historical_file,
+                    )
+                    event_count += merged_count
+                    if event_callback is not None and pending_batch:
+                        event_callback(pending_batch)
+                    historical_file.flush()
+                    os.fsync(historical_file.fileno())
+                    if progress_callback is not None:
+                        progress_callback(
+                            f"REPLAY | ventana={window_start.isoformat()} | "
+                            f"páginas={window_pages} | "
+                            f"descargados={window_downloaded} | "
+                            f"emitidos={event_count}"
+                        )
+                    window_start = window_end
+        if event_count == 0:
+            temporary_path.unlink(missing_ok=True)
+            return 0, False
         temporary_path.replace(historical_path)
         write_json(
             historical_metadata_path(historical_path),
@@ -667,7 +945,7 @@ def download_historical_dataset(
                 "events_file": historical_path.name,
             },
         )
-        return event_count
+        return event_count, event_callback is not None
     except Exception:
         temporary_path.unlink(missing_ok=True)
         raise
@@ -724,7 +1002,9 @@ def get_historical_dataset(
     symbols: list[str],
     feed: str,
     progress_callback: Callable[[str], None] | None = None,
-) -> tuple[Path, str]:
+    event_callback: Callable[[list[AlpacaEvent]], None] | None = None,
+    stop_event: threading.Event | None = None,
+) -> tuple[Path, str, bool]:
     """Obtengo un histórico válido o reutilizo una copia local completa."""
 
     ensure_historical_directory()
@@ -739,19 +1019,18 @@ def get_historical_dataset(
             if (
                 metadata is not None
                 and metadata.get("complete") is True
+                and metadata.get("ordered_by_timestamp") is True
                 and int(metadata.get("event_count", 0)) > 0
                 and historical_path.exists()
             ):
-                if not metadata.get("ordered_by_timestamp", False):
-                    normalize_historical_dataset(historical_path, metadata)
                 if progress_callback is not None:
                     progress_callback(
                         f"REPLAY | caché local reutilizado: {date_text} | "
                         f"eventos={metadata['event_count']}"
                     )
-                return historical_path, date_text
+                return historical_path, date_text, False
             try:
-                event_count = download_historical_dataset(
+                event_count, streamed = download_historical_dataset(
                     api_key,
                     api_secret,
                     symbols,
@@ -759,9 +1038,11 @@ def get_historical_dataset(
                     date_text,
                     historical_path,
                     progress_callback,
+                    event_callback,
+                    stop_event,
                 )
                 if event_count > 0:
-                    return historical_path, date_text
+                    return historical_path, date_text, streamed
             except (OSError, RuntimeError, urllib.error.URLError) as error:
                 last_error = error
             checked_dates += 1
@@ -953,25 +1234,6 @@ def mark_interrupted_run() -> dict[str, Any] | None:
         write_json(DATA_DIRECTORY / f"{run_id}.json", metadata)
     return metadata
 
-def normalize_historical_dataset(
-    historical_path: Path,
-    metadata: dict[str, Any],
-) -> None:
-    """Guardo una vez el histórico existente ordenado por timestamp."""
-
-    temporary_path = historical_path.with_suffix(".sorted.tmp")
-    with historical_path.open(encoding="utf-8") as historical_file:
-        records = [json.loads(line) for line in historical_file]
-    records.sort(key=lambda record: record["timestamp"])
-    with temporary_path.open("w", encoding="utf-8") as sorted_file:
-        for record in records:
-            sorted_file.write(json.dumps(record, ensure_ascii=False) + "\n")
-        sorted_file.flush()
-        os.fsync(sorted_file.fileno())
-    temporary_path.replace(historical_path)
-    metadata["ordered_by_timestamp"] = True
-    write_json(historical_metadata_path(historical_path), metadata)
-
 def read_json(path: Path) -> dict[str, Any] | None:
     """Leo la metadata de un RUN cuando el archivo es válido."""
 
@@ -988,20 +1250,19 @@ def read_recent_events(run_id: str) -> list[AlpacaEvent]:
     events_path = DATA_DIRECTORY / f"{run_id}.jsonl"
     if not events_path.exists():
         return []
+    events: deque[AlpacaEvent] = deque(maxlen=MAX_RECENT_EVENTS)
     try:
         with events_path.open(encoding="utf-8") as events_file:
-            lines = list(events_file)
+            for line in events_file:
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(record, dict):
+                    events.append(event_from_record(record))
     except OSError:
         return []
-    events: list[AlpacaEvent] = []
-    for line in lines:
-        try:
-            record = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(record, dict):
-            events.append(event_from_record(record))
-    return events
+    return list(events)
 
 def register_heartbeat(run_id: str) -> bool:
     """Valido y registro el heartbeat de una sesión visual activa."""
