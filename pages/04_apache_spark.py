@@ -1,5 +1,6 @@
 """Procesamiento local de lotes de operaciones mediante Apache Spark."""
 
+import os
 import threading
 import time
 
@@ -9,7 +10,16 @@ from pyspark.sql.types import DoubleType, StringType, StructField, StructType
 from typing import Any
 
 SPARK_APP_NAME = "Apache Big Data Lab"
-SPARK_MASTER = "local[2]"
+SPARK_MASTER = os.getenv(
+    "SPARK_MASTER_URL",
+    "spark://spark-master:7077",
+)
+SPARK_DRIVER_HOST = os.getenv("SPARK_DRIVER_HOST", "spark-driver")
+SPARK_DRIVER_PORT = os.getenv("SPARK_DRIVER_PORT", "4041")
+SPARK_BLOCK_MANAGER_PORT = os.getenv(
+    "SPARK_BLOCK_MANAGER_PORT",
+    "4042",
+)
 MAX_BATCH_SIZE = 100
 
 _SPARK_LOCK = threading.RLock()
@@ -32,12 +42,25 @@ def get_spark_session() -> Any:
         if _SPARK_ERROR is not None:
             return None
         try:
-            _SPARK_SESSION = (
+            builder = (
                 SparkSession.builder
                 .master(SPARK_MASTER)
                 .appName(SPARK_APP_NAME)
-                .getOrCreate()
             )
+            if SPARK_MASTER.startswith("spark://"):
+                builder = (
+                    builder
+                    .config("spark.driver.host", SPARK_DRIVER_HOST)
+                    .config("spark.driver.bindAddress", "0.0.0.0")
+                    .config("spark.driver.port", SPARK_DRIVER_PORT)
+                    .config(
+                        "spark.blockManager.port",
+                        SPARK_BLOCK_MANAGER_PORT,
+                    )
+                    .config("spark.executor.cores", "1")
+                    .config("spark.cores.max", "2")
+                )
+            _SPARK_SESSION = builder.getOrCreate()
             _SPARK_SESSION.sparkContext.setLogLevel("WARN")
         except Exception as error:
             _SPARK_ERROR = f"No se pudo iniciar Spark: {error}"
@@ -93,7 +116,10 @@ def process_events(events: list[Any]) -> dict[str, Any]:
     )
     started_at = time.perf_counter()
     try:
-        data_frame = spark.createDataFrame(rows, schema=schema)
+        data_frame = (
+            spark.createDataFrame(rows, schema=schema)
+            .repartition(4, "symbol")
+        )
         grouped = (
             data_frame.groupBy("symbol")
             .agg(
@@ -108,7 +134,7 @@ def process_events(events: list[Any]) -> dict[str, Any]:
         _LAST_RESULT = {
             "status": "completado",
             "logs": [
-                "Spark | modo local: local[2]",
+                f"Spark | master: {SPARK_MASTER}",
                 f"Spark | registros procesados={len(batch)}",
                 f"Spark | particiones utilizadas={partitions}",
                 f"Spark | duración={duration:.4f} s",

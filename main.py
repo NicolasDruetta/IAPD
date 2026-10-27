@@ -190,7 +190,7 @@ def render_streaming() -> None:
     with symbols_col:
         with st.container(key="card-symbols"):
             symbols_text = st.text_input(
-                "",
+                "Símbolos",
                 value=default_symbols,
                 label_visibility="collapsed",
                 disabled=bool(
@@ -401,14 +401,23 @@ def render_streaming() -> None:
 
 st.set_page_config(
     page_title="Apache Big Data Lab",
-    page_icon="📊",
+    page_icon="assets/icon.png",
     layout="wide",
 )
 
 load_custom_css()
 initialize_state()
 
-render_html("<h1>Apache Big Data Lab</h1>")
+icon_path = Path(__file__).parent / "assets" / "icon.png"
+icon_col, title_col = st.columns(
+    [0.65, 11.35],
+    gap="small",
+    vertical_alignment="center",
+)
+with icon_col:
+    st.image(str(icon_path), width=50)
+with title_col:
+    render_html("<h1>Apache Big Data Lab</h1>")
 render_html("<h4>Procesamiento distribuido y análisis de mercados financieros</h4>")
 render_html("<label>Alumno: Nicolás Druetta. Materia: IAPD. Año: 2026.</label><hr />")
 render_streaming_fragment = st.fragment(render_streaming, run_every="5s")

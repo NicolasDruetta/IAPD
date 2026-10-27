@@ -1,0 +1,137 @@
+x-lab-image: &lab-image
+  build:
+    context: .
+    dockerfile: docker/Dockerfile
+  image: apache-big-data-lab:local
+  restart: unless-stopped
+
+services:
+  spark-master:
+    <<: *lab-image
+    hostname: spark-master
+    command:
+      - spark-class
+      - org.apache.spark.deploy.master.Master
+      - --host
+      - spark-master
+      - --port
+      - "7077"
+      - --webui-port
+      - "8080"
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import json, urllib.request;
+          payload=json.load(urllib.request.urlopen(
+          "http://localhost:8080/json/", timeout=2));
+          assert "workers" in payload
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+  spark-worker-1:
+    <<: *lab-image
+    hostname: spark-worker-1
+    command:
+      - spark-class
+      - org.apache.spark.deploy.worker.Worker
+      - spark://spark-master:7077
+      - --host
+      - spark-worker-1
+      - --webui-port
+      - "8081"
+    environment:
+      SPARK_WORKER_CORES: "1"
+      SPARK_WORKER_MEMORY: 1g
+    depends_on:
+      spark-master:
+        condition: service_healthy
+    ports:
+      - "8081:8081"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import json, socket, urllib.request;
+          payload=json.load(urllib.request.urlopen(
+          "http://spark-master:8080/json/", timeout=2));
+          assert any(worker.get("host") == socket.gethostname()
+          for worker in payload.get("workers", []))
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+  spark-worker-2:
+    <<: *lab-image
+    hostname: spark-worker-2
+    command:
+      - spark-class
+      - org.apache.spark.deploy.worker.Worker
+      - spark://spark-master:7077
+      - --host
+      - spark-worker-2
+      - --webui-port
+      - "8082"
+    environment:
+      SPARK_WORKER_CORES: "1"
+      SPARK_WORKER_MEMORY: 1g
+    depends_on:
+      spark-master:
+        condition: service_healthy
+    ports:
+      - "8082:8082"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import json, socket, urllib.request;
+          payload=json.load(urllib.request.urlopen(
+          "http://spark-master:8080/json/", timeout=2));
+          assert any(worker.get("host") == socket.gethostname()
+          for worker in payload.get("workers", []))
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+  streamlit:
+    <<: *lab-image
+    hostname: spark-driver
+    command:
+      - streamlit
+      - run
+      - main.py
+      - --server.address=0.0.0.0
+      - --server.port=8501
+      - --server.headless=true
+    environment:
+      SPARK_MASTER_URL: spark://spark-master:7077
+      SPARK_DRIVER_HOST: spark-driver
+      SPARK_DRIVER_PORT: "4041"
+      SPARK_BLOCK_MANAGER_PORT: "4042"
+    depends_on:
+      spark-master:
+        condition: service_healthy
+      spark-worker-1:
+        condition: service_healthy
+      spark-worker-2:
+        condition: service_healthy
+    ports:
+      - "8501:8501"
+    volumes:
+      - lab-data:/app/data
+
+volumes:
+  lab-data:
+

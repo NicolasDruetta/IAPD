@@ -9,7 +9,7 @@
 Apache Big Data Lab es un proyecto académico orientado al procesamiento de
 datos financieros mediante herramientas de Big Data. La aplicación integra
 una interfaz Streamlit con Alpaca Market Data para obtener operaciones reales y
-con Apache Spark para preparar el procesamiento local de lotes.
+con Apache Spark distribuido dentro de Docker.
 
 El sistema permite observar el ciclo de obtención, persistencia, recuperación
 y visualización de datos financieros, manteniendo separadas la interfaz y la
@@ -44,13 +44,9 @@ mediante herramientas de paralelismo, streaming y Big Data.
 - **WebSocket:** recepción de operaciones durante el modo LIVE.
 - **JSONL:** persistencia incremental de eventos y registros de ejecución.
 - **certifi:** almacén de certificados utilizado para conexiones seguras.
-- **Apache Spark y PySpark:** procesamiento local preparado para crear
-  DataFrames y agrupar operaciones por símbolo.
-
-La integración de Spark es parcial. El código está incorporado, pero la
-ejecución actual no está disponible porque el entorno no cuenta con Java. Por
-ese motivo, todavía no se consideran verificadas la creación de una
-`SparkSession`, la ejecución de DataFrames ni la obtención de resultados Spark.
+- **Apache Spark y PySpark:** procesamiento distribuido mediante un Driver,
+  un Master y dos Workers dentro de Docker.
+- **Docker Compose:** orquestación reproducible de la aplicación y del clúster.
 
 ### Previstas
 
@@ -70,19 +66,19 @@ Las tecnologías previstas no forman parte de la ejecución funcional actual.
 El flujo conceptual considerado por el proyecto es:
 
 ```text
-Alpaca Market Data
-        ↓
-Obtención LIVE o descarga histórica REPLAY
-        ↓
-Persistencia local JSONL
-        ↓
-Procesamiento local mediante Apache Spark
-        ↓
-Visualización mediante Streamlit
+Navegador
+    ↓
+Streamlit + Alpaca + Spark Driver
+    ↓
+Spark Master
+    ├── Spark Worker 1
+    └── Spark Worker 2
+
+Alpaca Market Data → Persistencia JSONL → Lotes PySpark → Streamlit
 ```
 
 Kafka, Hadoop HDFS, Parquet, Flink y Airflow forman parte de la arquitectura
-académica prevista, pero todavía no están integrados en la aplicación actual.
+académica prevista, pero todavía no están integrados.
 
 ## 5. Procesamiento de datos
 
@@ -122,6 +118,10 @@ NicolasDruetta_TP2/
 ├── README.md
 ├── requirements.txt
 ├── AGENTS.md
+├── compose.yaml
+├── .dockerignore
+├── docker/
+│   └── Dockerfile
 ├── pages/
 │   ├── 01_alpaca_streaming.py
 │   └── 04_apache_spark.py
@@ -136,7 +136,10 @@ NicolasDruetta_TP2/
   consolas y funciones comunes.
 - `pages/01_alpaca_streaming.py`: conexión LIVE, descarga histórica,
   reproducción REPLAY, ciclo de vida y persistencia de Alpaca.
-- `pages/04_apache_spark.py`: procesamiento específico de Spark local.
+- `pages/04_apache_spark.py`: procesamiento específico de Spark distribuido.
+- `compose.yaml`: servicios Streamlit/Driver, Master y dos Workers.
+- `docker/Dockerfile`: imagen común con Python, PySpark y Java.
+- `.dockerignore`: archivos excluidos del contexto de construcción.
 - `data/historical/`: caché local de históricos descargados desde Alpaca.
 - `data/streaming/`: metadata y eventos generados por cada ejecución.
 - `assets/custom.css`: recurso visual centralizado del proyecto.
@@ -188,41 +191,50 @@ mediante media queries clásicas para conservar la legibilidad.
 
 ## 8. Apache Spark
 
-El módulo de Spark contiene una ejecución local preparada para:
+El módulo de Spark utiliza un Driver dentro del contenedor de Streamlit y se
+conecta al Master mediante `spark://spark-master:7077`. El clúster está
+compuesto por dos Workers.
 
-- Reutilizar una única `SparkSession`.
-- Procesar un lote acotado de operaciones.
-- Crear un DataFrame con esquema explícito.
-- Agrupar las operaciones por símbolo.
-- Calcular cantidad de operaciones y volumen total.
-- Informar particiones y duración mediante `time.perf_counter()`.
+El procesamiento realiza lo siguiente:
 
-La ejecución real permanece pendiente porque falta Java en el entorno actual.
-La interfaz informa esta indisponibilidad sin presentar workers, stages, tasks
-ni resultados inventados.
+- Reutiliza una única `SparkSession` distribuida.
+- Procesa un lote acotado de operaciones.
+- Crea un DataFrame con esquema explícito.
+- Reparte el lote por símbolo.
+- Agrupa las operaciones por símbolo.
+- Calcula cantidad de operaciones y volumen total.
+- Informa particiones y duración mediante `time.perf_counter()`.
+
+Los lotes se procesan sin crear un job por cada evento individual. Los
+resultados reales se muestran en la consola Spark.
 
 ## 9. Entorno de ejecución
 
-El entorno virtual Python se prepara fuera del repositorio en cada computadora.
-Luego se clona el repositorio y se instalan las dependencias declaradas:
+El único requisito del anfitrión es Docker Desktop, disponible para macOS
+Apple Silicon, macOS Intel y Windows x86-64. Python, PySpark y Java se
+instalan dentro de la imagen del proyecto.
+
+Desde la raíz del repositorio se ejecuta:
 
 ```bash
-python -m pip install -r requirements.txt
+docker compose up --build
 ```
 
-La aplicación se inicia con:
+La aplicación queda disponible en:
+
+- Streamlit: `http://localhost:8501`
+- Spark Master UI: `http://localhost:8080`
+- Spark Worker 1 UI: `http://localhost:8081`
+- Spark Worker 2 UI: `http://localhost:8082`
+
+Para detener los servicios:
 
 ```bash
-python -m streamlit run main.py
+docker compose down
 ```
 
-Para ejecutar el procesamiento Spark se requiere además una instalación de
-Java compatible con PySpark y disponible para el entorno local. Java no se
-instala mediante `requirements.txt` y su disponibilidad debe verificarse en la
-computadora donde se ejecute el proyecto.
-
-La aplicación obtiene los datos desde Alpaca y guarda localmente los históricos
-y registros generados. No se requieren archivos históricos incluidos en Git.
+Los datos se conservan en el volumen Docker `lab-data`, montado en `/app/data`.
+No se incorporan datasets históricos al repositorio.
 
 ## 10. Estado del proyecto
 
@@ -234,14 +246,17 @@ y registros generados. No se requieren archivos históricos incluidos en Git.
 - Descarga automática y caché local de datos históricos.
 - Persistencia incremental de ejecuciones y eventos en JSONL.
 - Logs de ejecución, consola de operaciones y consola Spark.
-- Módulo de procesamiento Spark local preparado para lotes acotados.
+- Imagen Docker reproducible con Python 3.15, PySpark 4.2.0 y Java 17.
+- Compose con Streamlit/Driver, Master y dos Workers.
+- Configuración de Spark distribuido mediante `spark://spark-master:7077`.
+- Volumen persistente para `data/`.
 
-### Parcialmente implementado
+### Pendiente de verificación en Docker
 
-- Apache Spark está incorporado en el código y en la interfaz, pero no puede
-  ejecutarse en el entorno actual porque falta Java.
-- No se verificó todavía una ejecución exitosa de `SparkSession`, DataFrame y
-  agregación.
+- Registro efectivo de ambos Workers en el Master.
+- Creación de `SparkSession` dentro del contenedor Streamlit.
+- Ejecución distribuida de DataFrame, Jobs, Stages y Tasks.
+- Confirmación de que ambos Workers ejecutan tareas reales.
 
 ### Previsto
 
