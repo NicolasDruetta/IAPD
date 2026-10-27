@@ -109,12 +109,7 @@ def load_custom_css() -> None:
 
     css_path = Path(__file__).parent / "assets" / "custom.css"
     css_content = css_path.read_text(encoding="utf-8")
-    render_html(f"<style>{css_content}</style>")
-
-def render_html(content: str) -> None:
-    """Renderizo HTML habilitado desde un único punto."""
-
-    st.markdown(content, unsafe_allow_html=True)
+    st.markdown(f"<style>{css_content}</style>", unsafe_allow_html=True)
 
 def format_elapsed_time(
     started_at: str | None,
@@ -144,6 +139,8 @@ def format_elapsed_time(
 def initialize_state() -> None:
     """Creo el estado para conservar referencias visuales del RUN."""
 
+    if "dark_mode" not in st.session_state:
+        st.session_state.dark_mode = False
     if "alpaca_run_id" not in st.session_state:
         st.session_state.alpaca_run_id = None
     if "start_pending" not in st.session_state:
@@ -181,7 +178,7 @@ def render_streaming() -> None:
         default_symbols = (
             "AAPL, MSFT, NVDA, SPY, TSLA, META, SPCX, GLD, BTC, OXY"
         )
-    render_html("<h5>Símbolos</h5>")
+    st.subheader("Símbolos")
     symbols_col, actions_col = st.columns(
         [6, 6],
         gap="small",
@@ -316,31 +313,26 @@ def render_streaming() -> None:
         )
         with run_col:
             run_id = snapshot["run_id"] or "-"
-            render_html(
-                f'<div class="metric-card"><p><strong>RUN:</strong> '
-                f'{html.escape(run_id[:12])}</p></div>'
-            )
+            with st.container(border=True):
+                st.caption("RUN")
+                st.text(run_id[:12])
         with mode_col:
-            render_html(
-                f'<div class="metric-card"><p><strong>Modo:</strong> '
-                f'{html.escape(snapshot["mode"])}</p></div>'
-            )
+            with st.container(border=True):
+                st.caption("Modo")
+                st.text(snapshot["mode"])
         with count_col:
-            render_html(
-                f'<div class="metric-card"><p>'
-                f'<strong>Eventos recibidos:</strong> '
-                f'{snapshot["event_count"]}</p></div>'
-            )
+            with st.container(border=True):
+                st.caption("Eventos recibidos Alpaca")
+                st.text(str(snapshot["event_count"]))
     with status_col:
-        render_html(
-            f'<div class="metric-card"><p><strong>Estado:</strong> '
-            f'{html.escape(status_text)}</p></div>'
-        )
+        with st.container(border=True):
+            st.caption("Estado")
+            st.text(status_text)
 
     if snapshot["error"]:
         st.error(snapshot["error"])
 
-    render_html("<hr />")
+    st.divider()
 
     try:
         events = streaming_module.get_recent_events(snapshot["run_id"])
@@ -359,17 +351,13 @@ def render_streaming() -> None:
         wrap=True,
     )
     with execution_column:
-        render_html("<h5>Log de ejecución</h5>")
-        render_html(
-            "<p>Ciclo de vida, conexión y procesamiento del RUN actual</p>",
-        )
+        st.subheader("Log de ejecución")
+        st.caption("Ciclo de vida, conexión y procesamiento del RUN actual")
         log_lines = snapshot.get("logs", [])
         render_log_console(log_lines, "execution-log-console")
     with alpaca_column:
-        render_html("<h5>Alpaca Streaming</h5>")
-        render_html(
-            "<p>LIVE: operaciones actuales; REPLAY: operaciones históricas.</p>",
-        )
+        st.subheader("Alpaca Streaming")
+        st.caption("LIVE: operaciones actuales; REPLAY: operaciones históricas.")
         event_lines = [
             event.to_display_line()
             for event in events
@@ -381,15 +369,8 @@ def render_streaming() -> None:
                 "El mercado puede estar cerrado."
             )
     with spark_column:
-        render_html(
-            '<h5>Apache Spark - <a class="spark-ui-link" href="http://localhost:8080/" '
-            'target="_blank" rel="noopener noreferrer"><small>Spark Master</small> '
-            '<span class="spark-ui-link-icon" aria-hidden="true">↗</span>'
-            '</a></h5>'
-        )
-        render_html(
-            "<p>Procesamiento local de un lote acotado por símbolo</p>",
-        )
+        st.subheader("Apache Spark - [Spark Master ↗](http://localhost:8080/)")
+        st.caption("Procesamiento local de un lote acotado por símbolo")
         spark_lines = list(spark_result["logs"])
         if spark_result["rows"]:
             spark_lines.append("")
@@ -414,17 +395,27 @@ load_custom_css()
 initialize_state()
 
 icon_path = Path(__file__).parent / "assets" / "icon.png"
-icon_col, title_col = st.columns(
-    [0.4, 11.6],
-    gap="small",
-    vertical_alignment="center",
-)
-with icon_col:
-    with st.container(key="header-icon"):
-        st.image(str(icon_path), width=40)
-with title_col:
-    render_html("<h1>Apache Big Data Lab</h1>")
-render_html("<h4>Procesamiento distribuido y análisis de mercados financieros</h4>")
-render_html("<label>Alumno: Nicolás Druetta. Materia: IAPD. Año: 2026.</label><hr />")
+theme_key = "theme-dark" if st.session_state.dark_mode else "theme-light"
+with st.container(key=theme_key):
+    st.empty()
+
+with st.container(width="content"):
+    icon_col, title_col, theme_col = st.columns(
+        [0.8, 4.8, 0.5],
+        gap="small",
+        vertical_alignment="center",
+    )
+    with icon_col:
+        st.image(str(icon_path), width=65)
+    with title_col:
+        st.title("Apache Big Data Lab")
+    with theme_col:
+        with st.container(key="theme-toggle"):
+            if st.button("◐", width="stretch"):
+                st.session_state.dark_mode = not st.session_state.dark_mode
+                st.rerun()
+st.subheader("Procesamiento distribuido y análisis de mercados financieros")
+st.caption("Alumno: Nicolás Druetta. Materia: IAPD. Año: 2026.")
+st.divider()
 render_streaming_fragment = st.fragment(render_streaming, run_every="5s")
 render_streaming_fragment()

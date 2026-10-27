@@ -1,5 +1,7 @@
 /* Estilos centralizados y adaptables al tema del sistema. */
 
+/* Light / Dark */
+
 :root {
     color-scheme: light;
     --page-background: #ffffff;
@@ -28,6 +30,49 @@
     }
 }
 
+.stApp:has(.st-key-theme-light) {
+    color-scheme: light;
+    --page-background: #ffffff;
+    --text-color: #2f3342;
+    --muted-text-color: #68707f;
+    --border-color: #dfe3eb;
+    --card-background: #ffffff;
+    --console-background: #f0f2f6;
+    --console-text: #a4a9b3;
+}
+
+.stApp:has(.st-key-theme-dark) {
+    color-scheme: dark;
+    --page-background: #0e1016;
+    --text-color: #f1f3f8;
+    --muted-text-color: #b6bdca;
+    --border-color: #3b404d;
+    --card-background: #171a22;
+    --console-background: #1d212b;
+    --console-text: #aeb6c5;
+}
+
+.st-key-theme-toggle button {
+    min-width: 2.25rem;
+    width: 2.25rem;
+    height: 2.25rem;
+    padding: 0;
+    border: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    color: #246bfd !important;
+    font-size: 1.45rem;
+    line-height: 1;
+}
+
+    .st-key-theme-toggle button:hover {
+        border: 0 !important;
+        background: var(--console-background) !important;
+        color: #246bfd !important;
+    }
+
+/* Etiquetas clásicas de HTML. */
+
 html, body, .stApp {
     background: var(--page-background) !important;
     color: var(--text-color) !important;
@@ -44,12 +89,37 @@ hr {
     margin: 1.5rem 0 !important;
 }
 
+input,
+textarea,
+button {
+    color-scheme: inherit;
+}
+
+input,
+textarea {
+    border-color: var(--border-color) !important;
+    color: var(--text-color) !important;
+}
+
+    input:disabled,
+    textarea:disabled {
+        color: var(--muted-text-color) !important;
+    }
+
+/* IDs específicos. */
+
+h1#apache-big-data-lab {
+    margin-top: -28px !important; /* Custom Nico. No tocar. */
+}
+
+/* Clases Custom y de Streamlit. */
+
 .stMainBlockContainer {
-    padding: 1rem 3rem !important;
+    padding: 2rem 3rem !important; /* Custom Nico. No tocar. */
 }
 
 .stSidebar {
-    display: none !important;
+    display: none !important; /* Custom Nico. No tocar. */
 }
 
 .st-key-header-icon img {
@@ -62,11 +132,11 @@ hr {
     color: #ffffff;
 }
 
-.st-key-start-button button:hover {
-    background: #157347;
-    border-color: #146c43;
-    color: #ffffff;
-}
+    .st-key-start-button button:hover {
+        background: #157347;
+        border-color: #146c43;
+        color: #ffffff;
+    }
 
 .st-key-stop-button button {
     background: #dc3545;
@@ -74,11 +144,11 @@ hr {
     color: #ffffff;
 }
 
-.st-key-stop-button button:hover {
-    background: #bb2d3b;
-    border-color: #b02a37;
-    color: #ffffff;
-}
+    .st-key-stop-button button:hover {
+        background: #bb2d3b;
+        border-color: #b02a37;
+        color: #ffffff;
+    }
 
 .metric-card {
     box-sizing: border-box;
@@ -92,10 +162,10 @@ hr {
     align-items: center;
 }
 
-.metric-card p {
-    width: 100%;
-    margin: 0;
-}
+    .metric-card p {
+        width: 100%;
+        margin: 0;
+    }
 
 .stMetric {
     min-height: 108px;
@@ -134,50 +204,35 @@ hr {
     white-space: pre-wrap;
 }
 
-.log-console::-webkit-scrollbar {
-    -webkit-appearance: none;
-    width: 12px;
-}
+    .log-console::-webkit-scrollbar {
+        -webkit-appearance: none;
+        width: 12px;
+    }
 
-.log-console::-webkit-scrollbar-track {
-    background: var(--scrollbar-track);
-}
+    .log-console::-webkit-scrollbar-track {
+        background: var(--scrollbar-track);
+    }
 
-.log-console::-webkit-scrollbar-thumb {
-    background: var(--scrollbar-thumb);
-    border-radius: 6px;
-}
+    .log-console::-webkit-scrollbar-thumb {
+        background: var(--scrollbar-thumb);
+        border-radius: 6px;
+    }
 
-input,
-textarea,
-button {
-    color-scheme: inherit;
-}
-
-input,
-textarea {
-    border-color: var(--border-color) !important;
-    color: var(--text-color) !important;
-}
-
-input:disabled,
-textarea:disabled {
-    color: var(--muted-text-color) !important;
-}
+/* Media Queries. */
 
 @media (max-width: 991.98px) {
     .stHorizontalBlock {
         flex-wrap: wrap !important;
     }
 
-    .stHorizontalBlock > .stColumn {
-        flex: 1 1 calc(50% - 0.5rem) !important;
-        min-width: calc(50% - 0.5rem) !important;
-    }
+        .stHorizontalBlock:not(:has(.st-key-theme-toggle)) > .stColumn {
+            flex: 1 1 100% !important;
+            min-width: 100% !important;
+        }
 }
 
 @media (max-width: 767.98px) {
-    .stHorizontalBlock > .stColumn {
+    .stHorizontalBlock:not(:has(.st-key-theme-toggle)) > .stColumn {
         flex: 1 1 100% !important;
         min-width: 100% !important;
     }
