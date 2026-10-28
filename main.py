@@ -10,6 +10,11 @@ from types import ModuleType
 from typing import Any
 from zoneinfo import ZoneInfo
 
+ALL_SYMBOLS_OPTION = "Todos los símbolos del S&P 500"
+BIG_7SEVEN_SYMBOLS = ("AAPL", "AMZN", "GOOGL", "META", "MSFT", "NVDA", "TSLA")
+TOP_LIQUID_SYMBOLS = ("AAPL", "AMD", "AMZN", "GOOGL", "IWM", "META", "MSFT", "NVDA", "QQQ", "SPY")
+TOP_VOLUME_SYMBOLS = ("AMD", "AMZN", "BKNG", "GOOGL", "IWM", "META", "MU", "NVDA", "SNDK", "SPY")
+
 CONSOLE_TRANSFER_BATCH_SIZE = 256
 LOG_CONSOLE_COMPONENT = st.components.v2.component(
     name="apache_big_data_lab.log_console",
@@ -68,6 +73,18 @@ LOG_CONSOLE_COMPONENT = st.components.v2.component(
     """,
 )
 PRESENTATION_TIMEZONE = ZoneInfo("America/Argentina/Cordoba")
+SYMBOL_OPTIONS = (
+    ALL_SYMBOLS_OPTION,
+    "Big Seven: " + ", ".join(BIG_7SEVEN_SYMBOLS),
+    "10 más líquidas: " + ", ".join(TOP_LIQUID_SYMBOLS),
+    "10 con más volumen: " + ", ".join(TOP_VOLUME_SYMBOLS),
+)
+SYMBOL_GROUPS = {
+    SYMBOL_OPTIONS[0]: ("*",),
+    SYMBOL_OPTIONS[1]: BIG_7SEVEN_SYMBOLS,
+    SYMBOL_OPTIONS[2]: TOP_LIQUID_SYMBOLS,
+    SYMBOL_OPTIONS[3]: TOP_VOLUME_SYMBOLS,
+}
 
 def format_presentation_timestamp(
     value: Any = None,
@@ -280,9 +297,32 @@ def render_volume_chart(rows: list[dict[str, Any]]) -> None:
         }
         for row in rows
     ]
+    dark_mode = bool(st.session_state.get("dark_mode", False))
+    chart_border_color = "#3b404d" if dark_mode else "#dfe3eb"
+    chart_text_color = "#f1f3f8" if dark_mode else "#2f3342"
+    volume_encoding = {
+        "field": "volume",
+        "title": "Volumen acumulado (acciones)",
+        "type": "quantitative",
+    }
+    if not chart_rows:
+        volume_encoding["axis"] = {"values": [0, 1]}
+        volume_encoding["scale"] = {"domain": [0, 1]}
     chart_spec = {
+        "background": "transparent",
         "data": {"values": chart_rows},
         "height": 360,
+        "config": {
+            "axis": {
+                "domainColor": chart_border_color,
+                "gridColor": chart_border_color,
+                "labelColor": chart_text_color,
+                "titleColor": chart_text_color,
+                "tickColor": chart_border_color,
+            },
+            "text": {"color": chart_text_color},
+            "view": {"stroke": chart_border_color},
+        },
         "layer": [
             {
                 "mark": {"type": "bar", "cornerRadiusEnd": 4},
@@ -297,9 +337,7 @@ def render_volume_chart(rows: list[dict[str, Any]]) -> None:
                         "title": "Símbolo",
                     },
                     "x": {
-                        "field": "volume",
-                        "type": "quantitative",
-                        "title": "Volumen acumulado (acciones)",
+                        **volume_encoding,
                     },
                 },
             },
@@ -357,7 +395,7 @@ with st.container(width="content"):
             if st.button("◐", width="stretch"):
                 st.session_state.dark_mode = not st.session_state.dark_mode
                 st.rerun()
-st.subheader("Procesamiento distribuido y análisis de mercados financieros")
+st.subheader("Procesamiento de datos financieros en tiempo real con Apache Spark.")
 st.caption("Alumno: Nicolás Druetta. Materia: IAPD. Año: 2026.")
 st.divider()
 
@@ -377,22 +415,28 @@ def render_streaming() -> None:
         snapshot = streaming_module.get_run_snapshot()
 
     universe = snapshot.get("universe", {})
-    default_symbols = ""
+    default_option = ALL_SYMBOLS_OPTION
     if snapshot["is_active"] and universe.get("selection") == "manual":
-        default_symbols = ", ".join(snapshot["symbols"])
+        manual_symbols = [
+            symbol
+            for symbol in snapshot["symbols"]
+            if symbol in BIG_7SEVEN_SYMBOLS
+        ]
+        if tuple(manual_symbols) == BIG_7SEVEN_SYMBOLS:
+            default_option = SYMBOL_OPTIONS[1]
     st.subheader("Símbolos")
-    st.caption("Vacío = componentes actuales del S&P 500.")
     symbols_col, actions_col = st.columns(
-        [6, 6],
+        [4, 8],
         gap="small",
         vertical_alignment="bottom",
     )
     with symbols_col:
         with st.container(key="card-symbols"):
-            symbols_text = st.text_input(
+            selected_option = st.selectbox(
                 "Símbolos",
-                value=default_symbols,
-                placeholder="AAPL, MSFT, GOOGL, AMZN, NVDA, META, TSLA",
+                options=SYMBOL_OPTIONS,
+                index=SYMBOL_OPTIONS.index(default_option),
+                key="symbol-universe",
                 label_visibility="collapsed",
                 disabled=bool(
                     snapshot["is_active"]
@@ -440,15 +484,7 @@ def render_streaming() -> None:
                     )
         with spacer_col:
             st.empty()
-    symbols = sorted(
-        {
-            symbol.strip().upper()
-            for symbol in symbols_text.split(",")
-            if symbol.strip()
-        }
-    )
-    if not symbols:
-        symbols = [getattr(streaming_module, "ALL_MARKET_SYMBOL", "*")]
+    symbols = list(SYMBOL_GROUPS[selected_option])
     selected_replay_speed = 1.0
     clear_consoles = st.session_state.start_requested
 
@@ -486,58 +522,63 @@ def render_streaming() -> None:
         streaming_module.stop_active_run("manual_stop")
         snapshot = streaming_module.get_run_snapshot()
 
-    status = snapshot["status"]
-    status_text = "Ejecutando..." if snapshot["is_active"] else status
     elapsed_text = format_elapsed_time(
         snapshot["started_at"],
         snapshot["ended_at"],
     )
-    if snapshot["run_id"] is None:
-        status_text = "Listo para ejecutar."
-    elif snapshot["is_active"]:
-        status_text = f"{status_text} {elapsed_text}."
-    else:
+    status = snapshot["status"]
+    status_text = "Listo para ejecutar."
+    if snapshot["is_active"]:
+        status_text = f"Ejecutando... {elapsed_text}."
+    mode_col, run_col, status_col = st.columns(
+        [2, 2, 8],
+        gap="small",
+    )
+    with mode_col:
+        with st.container(border=True):
+            st.caption("Modo")
+            st.text(snapshot["mode"] if snapshot["is_active"] else "-")
+    with run_col:
+        run_id = snapshot["run_id"] if snapshot["is_active"] else None
+        with st.container(border=True):
+            st.caption("RUN")
+            st.text(run_id[:12] if run_id else "-")
+    with status_col:
+        with st.container(border=True):
+            st.caption("Estado")
+            st.text(status_text)
+
+    if snapshot["is_active"] and snapshot["error"]:
+        st.error(snapshot["error"])
+
+    st.divider()
+
+    if snapshot["run_id"] and not snapshot["is_active"]:
         last_execution_at = snapshot["ended_at"] or snapshot["started_at"]
         last_execution_text = (
             format_presentation_timestamp(last_execution_at)
             if last_execution_at
             else "-"
         )
-        status_text = (
-            f"{status_text}. Transcurrido: {elapsed_text}. "
-            f"Ejecutado: {last_execution_text}."
+        elapsed_text = format_elapsed_time(
+            snapshot["started_at"],
+            snapshot["ended_at"],
         )
-    metrics_col, status_col = st.columns(
-        [6, 6],
-        gap="small",
-    )
-    with metrics_col:
-        run_col, mode_col, count_col = st.columns(
-            [2, 2, 2],
-            gap="small",
+        history_mode = snapshot["mode"] or "-"
+        history_run_id = snapshot["run_id"] or "-"
+        completion_text = {
+            "Completado": "Finalizado correctamente.",
+            "Detenido": "Detenido.",
+            "Error": "Error.",
+        }.get(snapshot["status"], f"{snapshot['status']}.")
+        st.info(
+            f"**Última ejecución:** {last_execution_text}. "
+            f"**Duración:** {elapsed_text}. "
+            f"**{completion_text}** | **Modo:** {history_mode}. | "
+            f"**RUN:** {history_run_id[:12]}."
         )
-        with run_col:
-            run_id = snapshot["run_id"] or "-"
-            with st.container(border=True):
-                st.caption("RUN")
-                st.text(run_id[:12])
-        with mode_col:
-            with st.container(border=True):
-                st.caption("Modo")
-                st.text(snapshot["mode"])
-        with count_col:
-            with st.container(border=True):
-                st.caption("Eventos recibidos Alpaca")
-                st.text(str(snapshot["event_count"]))
-    with status_col:
-        with st.container(border=True):
-            st.caption("Estado")
-            st.text(status_text)
-
-    if snapshot["error"]:
-        st.error(snapshot["error"])
-
-    st.divider()
+        if snapshot["error"]:
+            st.error(snapshot["error"])
 
     run_id = snapshot["run_id"]
     spark_checkpoint = streaming_module.get_spark_checkpoint(run_id)
@@ -636,6 +677,10 @@ def render_streaming() -> None:
                 f"[#{persisted_sequence}] "
                 f"{format_presentation_log_line(line)}"
             )
+        if not log_display_lines and execution_state["line_number"] == 0:
+            log_display_lines = [
+                "Log de ejecución | esperando actividad."
+            ]
         st.caption(
             f"Entradas recibidas: {execution_state['line_number']}"
         )
@@ -692,6 +737,9 @@ def render_streaming() -> None:
             cursor_start = 0
         else:
             alpaca_state["line_number"] += len(event_lines)
+        has_event_lines = bool(event_lines)
+        if not event_lines and alpaca_state["line_number"] == 0:
+            event_lines = ["Alpaca | esperando operaciones."]
         st.caption(f"Eventos recibidos: {alpaca_state['line_number']}")
         render_log_console(
             event_lines,
@@ -701,7 +749,7 @@ def render_streaming() -> None:
             has_more=has_more,
             initial_load=initial_load,
         )
-        if not event_lines and status == "Conectado":
+        if not has_event_lines and status == "Conectado":
             st.info(
                 "Conexión activa; todavía no se recibieron operaciones. "
                 "El mercado puede estar cerrado."
@@ -733,6 +781,11 @@ def render_streaming() -> None:
                     if streaming_path is not None
                     else ([], cursor_start, False, False)
                 )
+            spark_records = [
+                (sequence, line)
+                for sequence, line in spark_records
+                if line != "Spark | esperando un lote de operaciones."
+            ]
             spark_state["cursor"] = next_cursor
             if clear_consoles:
                 spark_state["line_number"] = 0
@@ -754,7 +807,11 @@ def render_streaming() -> None:
             if spark_signature == spark_state.get("signature"):
                 spark_lines = []
             else:
-                spark_lines = spark_console_lines
+                spark_lines = [
+                    line
+                    for line in spark_console_lines
+                    if line != "Spark | esperando un lote de operaciones."
+                ]
                 spark_state["signature"] = spark_signature
             cursor_start = int(spark_state["cursor"])
             spark_cursor_end = cursor_start + len(spark_lines)
@@ -765,6 +822,8 @@ def render_streaming() -> None:
                 spark_state["line_number"] += len(spark_lines)
             has_more = False
             spark_state["initialized"] = True
+        if not spark_lines and spark_state["line_number"] == 0:
+            spark_lines = ["Spark | esperando un lote de operaciones."]
         st.caption(
             f"Eventos recibidos: {spark_state['line_number']}"
         )
@@ -782,11 +841,7 @@ def render_streaming() -> None:
     st.divider()
     st.subheader("Top 10 acciones con mayor volumen negociado")
 
-    top_volume_rows = spark_result.get("top_volume", [])
-    if not top_volume_rows:
-        st.info("Todavía no hay volumen confirmado por Apache Spark.")
-    else:
-        render_volume_chart(top_volume_rows)
+    render_volume_chart(spark_result.get("top_volume", []))
 
 render_streaming_fragment = st.fragment(render_streaming, run_every="5s")
 render_streaming_fragment()

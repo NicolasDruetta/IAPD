@@ -1,7 +1,5 @@
 /* Estilos centralizados y adaptables al tema del sistema. */
 
-/* Light / Dark */
-
 :root {
     color-scheme: light;
     --page-background: #ffffff;
@@ -91,8 +89,13 @@ hr {
 
 input,
 textarea,
-button {
+button,
+select {
     color-scheme: inherit;
+}
+
+button {
+    color: var(--text-color) !important;
 }
 
 input,
@@ -106,14 +109,15 @@ textarea {
         color: var(--muted-text-color) !important;
     }
 
-/* IDs específicos. */
+select {
+    border: 1px solid var(--border-color) !important;
+}
 
-h1#apache-big-data-lab {
-    margin-top: -28px !important; /* Custom Nico. No tocar. */
+textarea {
+    resize: none !important;
 }
 
 /* Clases Custom y de Streamlit. */
-
 .log-console {
     box-sizing: border-box;
     width: 100%;
@@ -131,6 +135,11 @@ h1#apache-big-data-lab {
     font-size: 0.82rem;
     line-height: 1.55;
     white-space: pre-wrap;
+}
+
+.stElementContainer:has(.log-console),
+.stElementContainer:has(.log-console) > div {
+    overflow: visible !important;
 }
 
     .log-console::-webkit-scrollbar {
@@ -165,8 +174,17 @@ h1#apache-big-data-lab {
     }
 
 .st-key-card-symbols input {
-    background: var(--card-background) !important;
+    background: transparent !important;
+    border: 0 !important;
+    box-shadow: none !important;
+    color: var(--text-color) !important;
+    -webkit-text-fill-color: var(--text-color) !important;
 }
+
+    .st-key-card-symbols input::placeholder {
+        color: var(--muted-text-color) !important;
+        opacity: 1 !important;
+    }
 
 .st-key-header-icon img {
     transform: translateY(10px);
@@ -175,28 +193,67 @@ h1#apache-big-data-lab {
 .st-key-start-button button {
     background: #198754;
     border-color: #198754;
-    color: #ffffff;
+    color: #ffffff !important;
 }
+
+    .st-key-start-button button * {
+        color: #ffffff !important;
+    }
 
     .st-key-start-button button:hover {
         background: #157347;
         border-color: #146c43;
-        color: #ffffff;
+        color: #ffffff !important;
     }
 
 .st-key-stop-button button {
     background: #dc3545;
     border-color: #dc3545;
-    color: #ffffff;
+    color: #ffffff !important;
 }
+
+    .st-key-stop-button button * {
+        color: #ffffff !important;
+    }
 
     .st-key-stop-button button:hover {
         background: #bb2d3b;
         border-color: #b02a37;
-        color: #ffffff;
+        color: #ffffff !important;
     }
 
-/* Mantengo visible el contenido durante las actualizaciones de Streamlit. */
+.st-key-symbol-universe > div,
+.st-key-symbol-universe > div > div {
+    background: var(--card-background) !important;
+    color: var(--text-color) !important;
+}
+
+.st-key-symbol-universe .react-aria-ComboBox > div {
+    background: var(--card-background) !important;
+    border: 1px solid var(--border-color) !important;
+    border-radius: 0.5rem !important;
+}
+
+.st-key-symbol-universe * {
+        color: var(--text-color) !important;
+    }
+
+body:has(.st-key-theme-dark) > div:last-of-type {
+    --card-background: #171a22;
+    --text-color: #f1f3f8;
+    background: var(--card-background) !important;
+    color: var(--text-color) !important;
+    color-scheme: dark;
+}
+
+    body:has(.st-key-theme-dark) > div:last-of-type * {
+        background: var(--card-background) !important;
+        color: var(--text-color) !important;
+    }
+
+.stApp h1 {
+    margin-top: -28px !important; /* Custom Nico. No tocar. */
+}
 
 .stApp > div,
 .stAppViewBlockContainer,
@@ -204,6 +261,24 @@ h1#apache-big-data-lab {
 .stElementContainer {
     opacity: 1 !important;
     transition: none !important;
+}
+
+.stAppHeader,
+.stAppToolbar {
+    background: var(--page-background) !important;
+    color: var(--text-color) !important;
+}
+
+    .stAppHeader *,
+    .stAppToolbar * {
+        color: var(--text-color) !important;
+    }
+
+.stMetricLabel,
+.stMetricLabel *,
+.stMetricValue,
+.stMetricValue * {
+    color: var(--text-color) !important;
 }
 
 .stMainBlockContainer {
@@ -230,6 +305,11 @@ h1#apache-big-data-lab {
 
 .stSidebar {
     display: none !important; /* Custom Nico. No tocar. */
+}
+
+.stText,
+.stText * {
+    color: var(--text-color) !important;
 }
 
 /* Media Queries. */

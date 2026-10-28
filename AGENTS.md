@@ -22,6 +22,9 @@ Los identificadores del proyecto se escriben exclusivamente en inglés.
 Los nombres deben ser descriptivos y representar claramente la responsabilidad
 de cada elemento.
 
+Todas las listas se escriben inline, con todos sus elementos en una sola línea
+por lista; no se divide un elemento por línea, salvo indicación explícita.
+
 Las constantes y variables definidas en el ámbito del módulo se ordenan
 alfabéticamente dentro de sus respectivos bloques. Las variables locales se
 ordenan según la secuencia lógica de la operación para conservar la claridad.
