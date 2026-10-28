@@ -142,6 +142,7 @@ class AlpacaEvent:
         price: float | None,
         size: float | None,
         mode: str = "LIVE",
+        console_sequence: int | None = None,
     ) -> None:
         self.timestamp = timestamp
         self.symbol = symbol
@@ -149,6 +150,7 @@ class AlpacaEvent:
         self.price = price
         self.size = size
         self.mode = mode
+        self.console_sequence = console_sequence
 
     def to_display_line(self) -> str:
         """Convierto el evento a una línea segura para mostrarlo."""
@@ -223,9 +225,17 @@ class AlpacaStreamingService:
         self._replay_position = 0
         self._historical_date: str | None = None
         self._finished = False
+        self._log_count = 0
+        self._spark_checkpoint: dict[str, Any] | None = None
+        self._spark_console_initialized = False
         self._sequence = 0
         self._spark_checkpoint_processed = 0
         self._started_at = started_at
+        self._console_sequences = {
+            "alpaca": 0,
+            "log": 0,
+            "spark": 0,
+        }
         self._historical_path = (
             HISTORICAL_DIRECTORY / f"{run_stem}.jsonl"
         )
@@ -263,6 +273,7 @@ class AlpacaStreamingService:
                             "historical_file": self._historical_path.name,
                             "streaming_file": self._streaming_path.name,
                             "universe": self._universe_metadata,
+                            "console_schema_version": 2,
                         },
                     )
                 ]
@@ -380,9 +391,11 @@ class AlpacaStreamingService:
                 "status": self._status,
                 "error": self._error,
                 "event_count": self._event_count,
+                "log_count": self._log_count,
                 "replay_position": self._replay_position,
                 "historical_date": self._historical_date,
-                "logs": read_log_page(self._streaming_path, "tail"),
+                "logs": [],
+                "console_schema_version": 2,
                 "started_at": self._started_at,
                 "ended_at": self._ended_at,
                 "last_heartbeat": self._last_heartbeat_at,
@@ -392,29 +405,56 @@ class AlpacaStreamingService:
                 "is_active": self.is_active(),
             }
 
-    def get_recent_events(self) -> list[AlpacaEvent]:
-        """Devuelvo todos los eventos mantenidos en memoria."""
-
-        with self._lock:
-            return list(self._events)
-
     def get_events_after(self, processed_count: int) -> list[AlpacaEvent]:
         """Devuelvo solo los eventos posteriores al checkpoint de Spark."""
 
         with self._lock:
             return list(itertools.islice(self._events, processed_count, None))
 
-    def append_spark_checkpoint(self, checkpoint: dict[str, Any]) -> None:
-        """Persisto el acumulado confirmado por Spark una sola vez."""
+    def append_spark_checkpoint(
+        self,
+        checkpoint: dict[str, Any],
+        console_lines: list[str],
+    ) -> bool:
+        """Persisto Spark y sus líneas visibles una sola vez."""
 
         processed_count = int(checkpoint.get("processed_events", 0))
         with self._lock:
             if processed_count <= self._spark_checkpoint_processed:
-                return
+                return False
+            records = [
+                ("spark_log", {"message": line})
+                for line in console_lines
+            ]
+            records.append(("spark_checkpoint", checkpoint))
             self._append_stream_records_locked(
-                [("spark_checkpoint", checkpoint)]
+                records
             )
             self._spark_checkpoint_processed = processed_count
+            self._spark_checkpoint = dict(checkpoint)
+            self._spark_console_initialized = True
+            return True
+
+    def ensure_spark_console_records(self, console_lines: list[str]) -> None:
+        """Persisto una única entrada inicial de la consola Spark."""
+
+        with self._lock:
+            if self._spark_console_initialized:
+                return
+            self._append_stream_records_locked(
+                [("spark_log", {"message": line}) for line in console_lines]
+            )
+            self._spark_console_initialized = True
+
+    def get_spark_checkpoint(self) -> dict[str, Any] | None:
+        """Devuelvo el checkpoint activo sin releer el JSONL."""
+
+        with self._lock:
+            return (
+                dict(self._spark_checkpoint)
+                if self._spark_checkpoint is not None
+                else None
+            )
 
     def _run_stream(self) -> None:
         """Ejecuto el ciclo asincrónico del WebSocket en un hilo propio."""
@@ -745,6 +785,7 @@ class AlpacaStreamingService:
                         "status": self._status,
                         "error": self._error,
                         "event_count": self._event_count,
+                        "log_count": self._log_count,
                         "replay_position": self._replay_position,
                         "historical_date": self._historical_date,
                         "started_at": self._started_at,
@@ -766,12 +807,28 @@ class AlpacaStreamingService:
         with self._streaming_path.open("a", encoding="utf-8") as stream_file:
             for record_type, payload in records:
                 self._sequence += 1
+                console_name = {
+                    "event": "alpaca",
+                    "log": "log",
+                    "spark_log": "spark",
+                }.get(record_type)
+                record_payload = dict(payload)
+                if console_name is not None:
+                    next_console_sequence = (
+                        self._console_sequences[console_name] + 1
+                    )
+                    self._console_sequences[console_name] = (
+                        next_console_sequence
+                    )
+                    record_payload["console_sequence"] = (
+                        next_console_sequence
+                    )
                 record = {
                     "record_type": record_type,
                     "sequence": self._sequence,
                     "run_id": self._run_id,
                     "recorded_at": get_utc_timestamp(),
-                    **payload,
+                    **record_payload,
                 }
                 stream_file.write(json.dumps(record, ensure_ascii=False) + "\n")
             stream_file.flush()
@@ -784,6 +841,7 @@ class AlpacaStreamingService:
             self._append_stream_records_locked(
                 [("log", {"message": message})]
             )
+            self._log_count += 1
 
     def _set_async_resources(
         self,
@@ -1224,6 +1282,11 @@ def event_from_record(
         price=to_number(record.get("price")),
         size=to_number(record.get("size")),
         mode=mode or str(record.get("mode", "LIVE")),
+        console_sequence=(
+            int(record["console_sequence"])
+            if record.get("console_sequence") is not None
+            else None
+        ),
     )
 
 def get_active_service() -> AlpacaStreamingService | None:
@@ -1309,13 +1372,26 @@ def get_latest_metadata() -> dict[str, Any] | None:
     if not DATA_DIRECTORY.exists():
         return None
     streaming_paths = list(DATA_DIRECTORY.glob("*.jsonl"))
-    states = []
-    for path in streaming_paths:
-        state = read_streaming_state(path)
+    if streaming_paths:
+        latest_path = max(
+            streaming_paths,
+            key=lambda path: path.stat().st_mtime_ns,
+        )
+        latest_stat = latest_path.stat()
+        cache_key = str(latest_path)
+        cached = _LATEST_METADATA_CACHE.get(cache_key)
+        cache_stamp = (latest_stat.st_mtime_ns, latest_stat.st_size)
+        if cached is not None and cached[:2] == cache_stamp:
+            return dict(cached[2]) if cached[2] else None
+        state = read_streaming_state(latest_path)
+        _LATEST_METADATA_CACHE.clear()
+        _LATEST_METADATA_CACHE[cache_key] = (
+            latest_stat.st_mtime_ns,
+            latest_stat.st_size,
+            state,
+        )
         if state is not None:
-            states.append((path.stat().st_mtime, state))
-    if states:
-        return max(states, key=lambda item: item[0])[1]
+            return dict(state)
     metadata_paths = list(DATA_DIRECTORY.glob("*.json"))
     if not metadata_paths:
         return None
@@ -1604,14 +1680,15 @@ def resolve_automatic_symbols(
     }
 
 def get_recent_events(run_id: str | None) -> list[AlpacaEvent]:
-    """Devuelvo todos los eventos activos o persistidos."""
+    """Mantengo compatibilidad con llamadas externas sin cargar el historial."""
 
     if run_id is None:
         return []
-    service = get_active_service()
-    if service is not None and service.get_snapshot()["run_id"] == run_id:
-        return service.get_recent_events()
-    return read_recent_events(run_id)
+    return read_event_delta(
+        DATA_DIRECTORY / f"{run_id}.jsonl",
+        0,
+        256,
+    )[0]
 
 def get_events_after(
     run_id: str | None,
@@ -1626,6 +1703,130 @@ def get_events_after(
         return service.get_events_after(processed_count)
     return read_events_after(run_id, processed_count)
 
+def read_event_delta(
+    path: Path,
+    byte_offset: int,
+    record_limit: int | None,
+) -> tuple[list[AlpacaEvent], int, bool]:
+    """Leo eventos nuevos desde un cursor de bytes del JSONL."""
+
+    events: list[AlpacaEvent] = []
+    next_offset = max(0, byte_offset)
+    if (
+        record_limit is not None and record_limit <= 0
+    ) or not path.exists():
+        return events, next_offset, False
+    try:
+        with path.open("rb") as stream_file:
+            stream_file.seek(next_offset)
+            while record_limit is None or len(events) < record_limit:
+                raw_line = stream_file.readline()
+                if not raw_line:
+                    break
+                next_offset = stream_file.tell()
+                try:
+                    record = json.loads(raw_line.decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    continue
+                if (
+                    isinstance(record, dict)
+                    and record.get("record_type") == "event"
+                ):
+                    events.append(event_from_record(record))
+            file_size = stream_file.seek(0, os.SEEK_END)
+    except OSError:
+        return [], byte_offset, False
+    return events, next_offset, next_offset < file_size
+
+def read_log_delta(
+    path: Path,
+    byte_offset: int,
+    record_limit: int | None,
+) -> tuple[list[tuple[int | None, str]], int, bool]:
+    """Leo logs nuevos desde un cursor de bytes del JSONL."""
+
+    lines: list[tuple[int | None, str]] = []
+    next_offset = max(0, byte_offset)
+    if (
+        record_limit is not None and record_limit <= 0
+    ) or not path.exists():
+        return lines, next_offset, False
+    try:
+        with path.open("rb") as stream_file:
+            stream_file.seek(next_offset)
+            while record_limit is None or len(lines) < record_limit:
+                raw_line = stream_file.readline()
+                if not raw_line:
+                    break
+                next_offset = stream_file.tell()
+                try:
+                    record = json.loads(raw_line.decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    continue
+                if (
+                    isinstance(record, dict)
+                    and record.get("record_type") == "log"
+                ):
+                    lines.append(
+                        (
+                            int(record["console_sequence"])
+                            if record.get("console_sequence") is not None
+                            else None,
+                            f"{record.get('recorded_at', '-')} | "
+                            f"{record.get('message', '')}",
+                        )
+                    )
+            file_size = stream_file.seek(0, os.SEEK_END)
+    except OSError:
+        return [], byte_offset, False
+    return lines, next_offset, next_offset < file_size
+
+def read_spark_delta(
+    path: Path,
+    byte_offset: int,
+    record_limit: int | None,
+) -> tuple[list[tuple[int, str]], int, bool, bool]:
+    """Leo líneas Spark persistidas con su numeración original."""
+
+    lines: list[tuple[int, str]] = []
+    next_offset = max(0, byte_offset)
+    schema_found = False
+    if (
+        record_limit is not None and record_limit <= 0
+    ) or not path.exists():
+        return lines, next_offset, False, schema_found
+    try:
+        with path.open("rb") as stream_file:
+            stream_file.seek(next_offset)
+            while record_limit is None or len(lines) < record_limit:
+                raw_line = stream_file.readline()
+                if not raw_line:
+                    break
+                next_offset = stream_file.tell()
+                try:
+                    record = json.loads(raw_line.decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    continue
+                if (
+                    not isinstance(record, dict)
+                    or record.get("record_type") != "spark_log"
+                ):
+                    continue
+                schema_found = True
+                console_sequence = record.get("console_sequence")
+                if console_sequence is None:
+                    continue
+                lines.append(
+                    (
+                        int(console_sequence),
+                        str(record.get("message", "")),
+                    )
+                )
+            file_size = stream_file.seek(0, os.SEEK_END)
+    except OSError:
+        return [], byte_offset, False, schema_found
+    return lines, next_offset, next_offset < file_size, schema_found
+
 def get_run_snapshot() -> dict[str, Any]:
     """Obtengo el estado live o la última ejecución persistida."""
 
@@ -1639,14 +1840,12 @@ def get_run_snapshot() -> dict[str, Any]:
         metadata.setdefault("replay_speed", 1.0)
         metadata.setdefault("replay_position", 0)
         metadata.setdefault("historical_date", None)
+        metadata.setdefault("log_count", 0)
         metadata.setdefault("logs", [])
         metadata.setdefault("streaming_file", None)
         metadata.setdefault("historical_file", None)
+        metadata.setdefault("console_schema_version", 0)
         run_id = metadata.get("run_id")
-        if isinstance(run_id, str):
-            streaming_path = DATA_DIRECTORY / f"{run_id}.jsonl"
-            if streaming_path.exists():
-                metadata["logs"] = read_log_page(streaming_path, "tail")
         return metadata
     return {
         "run_id": None,
@@ -1657,6 +1856,7 @@ def get_run_snapshot() -> dict[str, Any]:
         "status": "Listo para ejecutar",
         "error": None,
         "event_count": 0,
+        "log_count": 0,
         "replay_position": 0,
         "historical_date": None,
         "logs": [],
@@ -1667,6 +1867,7 @@ def get_run_snapshot() -> dict[str, Any]:
         "last_heartbeat": None,
         "end_reason": None,
         "is_active": False,
+        "console_schema_version": 0,
     }
 
 def get_utc_timestamp() -> str:
@@ -1874,6 +2075,7 @@ def read_streaming_state(path: Path) -> dict[str, Any] | None:
         "status": "Incompleto",
         "error": None,
         "event_count": 0,
+        "log_count": 0,
         "replay_position": 0,
         "historical_date": None,
         "started_at": None,
@@ -1882,6 +2084,7 @@ def read_streaming_state(path: Path) -> dict[str, Any] | None:
         "end_reason": None,
         "streaming_file": path.name,
         "historical_file": None,
+        "console_schema_version": 0,
         "is_active": False,
         "sequence": 0,
         "logs": [],
@@ -1899,6 +2102,8 @@ def read_streaming_state(path: Path) -> dict[str, Any] | None:
                     int(record.get("sequence", 0)),
                 )
                 record_type = record.get("record_type")
+                if record_type == "log":
+                    state["log_count"] += 1
                 if record_type == "run_started":
                     started = True
                     for key in (
@@ -1909,6 +2114,7 @@ def read_streaming_state(path: Path) -> dict[str, Any] | None:
                         "historical_file",
                         "streaming_file",
                         "universe",
+                        "console_schema_version",
                     ):
                         if key in record:
                             state[key] = record[key]
@@ -1917,6 +2123,7 @@ def read_streaming_state(path: Path) -> dict[str, Any] | None:
                         "status",
                         "error",
                         "event_count",
+                        "log_count",
                         "replay_position",
                         "historical_date",
                         "started_at",
@@ -1937,27 +2144,13 @@ def read_streaming_state(path: Path) -> dict[str, Any] | None:
     return state if started else None
 
 def read_recent_events(run_id: str) -> list[AlpacaEvent]:
-    """Leo todas las líneas JSONL requeridas por la consola."""
+    """Leo un lote inicial sin materializar el historial completo."""
 
-    streaming_path = DATA_DIRECTORY / f"{run_id}.jsonl"
-    if not streaming_path.exists():
-        return []
-    events: deque[AlpacaEvent] = deque()
-    try:
-        with streaming_path.open(encoding="utf-8") as stream_file:
-            for line in stream_file:
-                try:
-                    record = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(record, dict) and record.get(
-                    "record_type",
-                    "event",
-                ) == "event":
-                    events.append(event_from_record(record))
-    except OSError:
-        return []
-    return list(events)
+    return read_event_delta(
+        DATA_DIRECTORY / f"{run_id}.jsonl",
+        0,
+        256,
+    )[0]
 
 def read_events_after(
     run_id: str,
@@ -2026,6 +2219,7 @@ def register_heartbeat(run_id: str) -> bool:
 def append_spark_checkpoint(
     run_id: str | None,
     checkpoint: dict[str, Any],
+    console_lines: list[str] | None = None,
 ) -> None:
     """Persisto el acumulado de Spark en el JSONL del RUN correspondiente."""
 
@@ -2033,7 +2227,7 @@ def append_spark_checkpoint(
         return
     service = get_active_service()
     if service is not None and service.get_snapshot()["run_id"] == run_id:
-        service.append_spark_checkpoint(checkpoint)
+        service.append_spark_checkpoint(checkpoint, console_lines or [])
         return
     streaming_path = DATA_DIRECTORY / f"{run_id}.jsonl"
     previous = read_spark_checkpoint(streaming_path)
@@ -2052,6 +2246,18 @@ def append_spark_checkpoint(
         checkpoint,
     )
 
+def ensure_spark_console_records(
+    run_id: str | None,
+    console_lines: list[str],
+) -> None:
+    """Persisto la primera salida Spark del RUN activo."""
+
+    if run_id is None:
+        return
+    service = get_active_service()
+    if service is not None and service.get_snapshot()["run_id"] == run_id:
+        service.ensure_spark_console_records(console_lines)
+
 def get_spark_checkpoint(run_id: str | None) -> dict[str, Any] | None:
     """Obtengo el checkpoint Spark del RUN activo o persistido."""
 
@@ -2059,8 +2265,7 @@ def get_spark_checkpoint(run_id: str | None) -> dict[str, Any] | None:
         return None
     service = get_active_service()
     if service is not None and service.get_snapshot()["run_id"] == run_id:
-        streaming_file = service.get_snapshot()["streaming_file"]
-        return read_spark_checkpoint(DATA_DIRECTORY / streaming_file)
+        return service.get_spark_checkpoint()
     return read_spark_checkpoint(DATA_DIRECTORY / f"{run_id}.jsonl")
 
 def release_active_service(service: AlpacaStreamingService) -> None:
@@ -2135,6 +2340,10 @@ def to_number(value: Any) -> float | None:
         return None
 
 _ACTIVE_SERVICE: AlpacaStreamingService | None = None
+_LATEST_METADATA_CACHE: dict[
+    str,
+    tuple[int, int, dict[str, Any] | None],
+] = {}
 _MANAGER_LOCK = threading.RLock()
 mark_interrupted_run()
 atexit.register(shutdown_active_run)

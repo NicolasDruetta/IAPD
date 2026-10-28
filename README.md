@@ -163,9 +163,9 @@ sin registrar una línea por operación individual.
 El archivo de streaming se escribe incrementalmente y en modo append-only, sin
 límite de retención, truncamiento ni sobrescritura. Cada registro incluye un
 tipo y una secuencia para distinguir logs, estados, heartbeats, progreso,
-errores y eventos. La interfaz consulta páginas mediante cursor, por lo que no
-carga el historial completo en RAM; todas las entradas permanecen consultables
-secuencialmente desde la aplicación o desde el volumen `lab-data`.
+errores y eventos. La interfaz consulta el archivo secuencialmente mediante
+cursores, por lo que no carga el historial completo en RAM; todas las entradas
+permanecen consultables desde la aplicación o desde el volumen `lab-data`.
 
 Los históricos legacy existentes se conservan sin modificación. Cuando uno es
 válido para una nueva sesión, se reutiliza como fuente mediante enlace físico
@@ -268,6 +268,25 @@ La interfaz presenta tres consolas:
 Las consolas se actualizan junto con el estado del RUN y mantienen una
 presentación uniforme. En pantallas reducidas, las columnas se reorganizan
 mediante media queries clásicas para conservar la legibilidad.
+
+La actualización de las consolas utiliza un componente v2 registrado en línea
+desde `main.py`, con HTML y JavaScript puros. Cada visor conserva su mismo
+`textarea` y recibe solamente el delta posterior a su cursor de bytes
+independiente dentro del JSONL de streaming. JavaScript agrega esas líneas al
+final del elemento sin reenviar el texto ya presentado. El cursor del
+navegador determina si debe continuar solicitando datos pendientes durante la
+recuperación progresiva de un RUN, mientras que la posición del scroll se
+mantiene cuando el usuario está consultando registros anteriores y se sigue el
+final cuando ya estaba allí.
+
+El tamaño de cada transferencia es únicamente un lote técnico de transporte;
+no representa un límite de historial, retención ni cantidad máxima de entradas.
+Los JSONL permanecen append-only y completos. Después de F5, cada consola
+reanuda su cursor y recupera los registros en lotes sucesivos, sin convertir
+el historial completo en una lista ni crear archivos auxiliares. El gráfico
+Top 10 continúa dentro del fragmento periódico y solo utiliza los resultados
+Spark ya disponibles, sin ejecutar trabajos adicionales para la actualización
+visual.
 
 Debajo de las consolas se presenta el gráfico **Top 10 acciones con mayor
 volumen negociado**. El volumen se calcula sumando el campo `size` de las
@@ -388,7 +407,7 @@ docker compose up --build
 - Emisión progresiva y merge cronológico global sin cargar el día completo en
   memoria.
 - Persistencia incremental en dos JSONL por RUN, con recuperación por registros
-  tipados y consulta paginada de logs.
+  tipados y consulta progresiva de logs mediante cursores.
 - Gráfico incremental del Top 10 de volumen acumulado confirmado por Spark.
 - Visualización completa de los eventos recibidos y procesamiento Spark sin
   recorte por cantidad de eventos.

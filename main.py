@@ -1,6 +1,5 @@
 """Interfaz principal de Apache Big Data Lab."""
 
-import html
 import importlib.util
 import streamlit as st
 import sys
@@ -11,6 +10,63 @@ from types import ModuleType
 from typing import Any
 from zoneinfo import ZoneInfo
 
+CONSOLE_TRANSFER_BATCH_SIZE = 256
+LOG_CONSOLE_COMPONENT = st.components.v2.component(
+    name="apache_big_data_lab.log_console",
+    html=(
+        '<textarea class="log-console" readonly '
+        'aria-label="Consola"></textarea>'
+    ),
+    isolate_styles=False,
+    js="""
+    export default function ({ parentElement, data, setStateValue }) {
+        const consoleElement = parentElement.querySelector("textarea");
+        const state = parentElement.__logConsoleState || {
+            appliedCursor: 0,
+            lastBatchId: null,
+            lastRequestedCursor: null,
+            runKey: null,
+        };
+        const sameRun = state.runKey === data.run_key;
+        if (!sameRun || data.reset) {
+            consoleElement.value = "";
+            state.appliedCursor = 0;
+            state.lastBatchId = null;
+            state.lastRequestedCursor = null;
+            state.runKey = data.run_key;
+        }
+        const lines = Array.isArray(data.lines) ? data.lines : [];
+        const cursorStart = Number(data.cursor_start || 0);
+        const cursorEnd = Number(data.cursor_end || cursorStart);
+        const isNewBatch = data.batch_id !== state.lastBatchId;
+        const scrollToBottom = () => {
+            consoleElement.scrollTop = consoleElement.scrollHeight;
+        };
+        if (isNewBatch && cursorStart === state.appliedCursor) {
+            if (data.initial_load) {
+                consoleElement.value = lines.join("\\n");
+            } else if (lines.length > 0) {
+                const separator = consoleElement.value.length > 0 ? "\\n" : "";
+                const suffix = separator + lines.join("\\n");
+                consoleElement.value += suffix;
+            }
+            state.appliedCursor = cursorEnd;
+            state.lastBatchId = data.batch_id;
+            scrollToBottom();
+            requestAnimationFrame(scrollToBottom);
+        }
+        if (
+            data.has_more
+            && state.lastRequestedCursor !== state.appliedCursor
+        ) {
+            state.lastRequestedCursor = state.appliedCursor;
+            setStateValue("need_more", state.appliedCursor);
+        }
+        parentElement.__logConsoleState = state;
+        return () => {};
+    }
+    """,
+)
 PRESENTATION_TIMEZONE = ZoneInfo("America/Argentina/Cordoba")
 
 def format_presentation_timestamp(
@@ -76,6 +132,36 @@ def format_elapsed_time(
     minutes, seconds = divmod(remainder, 60)
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
+def get_console_state(console_id: str, run_id: str | None) -> dict[str, Any]:
+    """Obtengo el cursor visual independiente de cada consola y RUN."""
+
+    state_key = run_id or "empty"
+    states = st.session_state.console_states
+    state = states.setdefault(
+        console_id,
+        {
+            "cursor": 0,
+            "line_number": 0,
+            "persisted": False,
+            "run_key": state_key,
+            "signature": None,
+            "initialized": False,
+        },
+    )
+    if state["run_key"] != state_key:
+        state.clear()
+        state.update(
+            {
+                "cursor": 0,
+                "line_number": 0,
+                "persisted": False,
+                "run_key": state_key,
+                "signature": None,
+                "initialized": False,
+            }
+        )
+    return state
+
 def initialize_state() -> None:
     """Creo el estado para conservar referencias visuales del RUN."""
 
@@ -87,6 +173,8 @@ def initialize_state() -> None:
         st.session_state.start_pending = False
     if "stop_pending" not in st.session_state:
         st.session_state.stop_pending = False
+    if "console_states" not in st.session_state:
+        st.session_state.console_states = {}
 
 def load_custom_css() -> None:
     """Cargo los estilos visuales administrados en el archivo del proyecto."""
@@ -151,41 +239,31 @@ def mark_stop_pending() -> None:
 def render_log_console(
     lines: list[str],
     console_id: str,
-    format_timestamps: bool = False,
+    cursor_end: int,
+    cursor_start: int = 0,
+    has_more: bool = False,
+    initial_load: bool = False,
 ) -> None:
-    """Muestro el log y desplazo el scroll hasta el último registro."""
+    """Muestro y actualizo incrementalmente una consola de registros."""
 
-    display_lines = (
-        [format_presentation_log_line(line) for line in lines]
-        if format_timestamps
-        else lines
-    )
-    numbered_lines = [
-        f"[#{line_number}] {line}"
-        for line_number, line in enumerate(display_lines, start=1)
-    ]
-    content = html.escape("\n".join(numbered_lines))
-    st.html(
-        f"""
-        <textarea id="{console_id}" class="log-console" readonly
-            aria-label="Consola">{content}</textarea>
-        <script>
-            (() => {{
-                const consoleElement = document.getElementById(
-                    "{console_id}"
-                );
-                const scrollToBottom = () => {{
-                    if (consoleElement) {{
-                        consoleElement.scrollTop = consoleElement.scrollHeight;
-                    }}
-                }};
-                scrollToBottom();
-                requestAnimationFrame(scrollToBottom);
-                setTimeout(scrollToBottom, 200);
-            }})();
-        </script>
-        """,
-        unsafe_allow_javascript=True,
+    run_key = st.session_state.console_states[console_id]["run_key"]
+    payload = {
+        "batch_id": f"{run_key}:{cursor_end}",
+        "cursor_end": cursor_end,
+        "cursor_start": cursor_start,
+        "follow": False,
+        "has_more": has_more,
+        "initial_load": initial_load,
+        "lines": lines,
+        "reset": cursor_start == 0,
+        "run_key": run_key,
+    }
+    LOG_CONSOLE_COMPONENT(
+        data=payload,
+        default={"need_more": None},
+        height=420,
+        key=console_id,
+        on_need_more_change=lambda: None,
     )
 
 def render_volume_chart(rows: list[dict[str, Any]]) -> None:
@@ -457,12 +535,6 @@ def render_streaming() -> None:
 
     st.divider()
 
-    try:
-        events = streaming_module.get_recent_events(snapshot["run_id"])
-    except TypeError as error:
-        if "required positional argument: 'limit'" not in str(error):
-            raise
-        events = streaming_module.read_recent_events(snapshot["run_id"])
     run_id = snapshot["run_id"]
     spark_checkpoint = streaming_module.get_spark_checkpoint(run_id)
     processed_events = int(
@@ -477,12 +549,29 @@ def render_streaming() -> None:
         run_id=run_id,
         checkpoint=spark_checkpoint,
     )
+    spark_console_lines = list(spark_result["logs"])
+    if spark_result["rows"]:
+        spark_console_lines.append("")
+        spark_console_lines.append("Resultados por símbolo:")
+        spark_console_lines.extend(
+            "{symbol} | operaciones={operations} | volumen={volume}".format(
+                symbol=row["symbol"],
+                operations=row["operations"],
+                volume=row["total_volume"] or 0,
+            )
+            for row in spark_result["rows"]
+        )
     if spark_result.get("checkpoint") is not None:
         streaming_module.append_spark_checkpoint(
             run_id,
             spark_result["checkpoint"],
+            spark_console_lines,
         )
-    log_lines = snapshot.get("logs", [])
+    else:
+        streaming_module.ensure_spark_console_records(
+            run_id,
+            spark_console_lines,
+        )
     execution_column, alpaca_column, spark_column = st.columns(
         3,
         gap="small",
@@ -491,20 +580,96 @@ def render_streaming() -> None:
     )
     with execution_column:
         st.subheader("Log de ejecución")
-        st.caption(f"Eventos recibidos: {len(log_lines)}")
-        render_log_console(
-            log_lines,
+        execution_state = get_console_state(
             "execution-log-console",
-            format_timestamps=True,
+            run_id,
+        )
+        streaming_file = snapshot.get("streaming_file")
+        streaming_path = (
+            streaming_module.DATA_DIRECTORY / streaming_file
+            if streaming_file
+            else None
+        )
+        if streaming_path is not None:
+            cursor_start = int(execution_state["cursor"])
+            initial_load = not execution_state["initialized"]
+            log_lines, next_cursor, has_more = (
+                streaming_module.read_log_delta(
+                    streaming_path,
+                    0 if initial_load else cursor_start,
+                    None if initial_load else CONSOLE_TRANSFER_BATCH_SIZE,
+                )
+            )
+        else:
+            cursor_start = int(execution_state["cursor"])
+            initial_load = not execution_state["initialized"]
+            log_lines, next_cursor, has_more = [], cursor_start, False
+        execution_state["initialized"] = True
+        execution_state["cursor"] = next_cursor
+        execution_state["line_number"] += len(log_lines)
+        log_display_lines = []
+        for persisted_sequence, line in log_lines:
+            if persisted_sequence is None:
+                persisted_sequence = execution_state["line_number"] - len(
+                    log_lines
+                ) + len(log_display_lines) + 1
+            else:
+                execution_state["persisted"] = True
+            log_display_lines.append(
+                f"[#{persisted_sequence}] "
+                f"{format_presentation_log_line(line)}"
+            )
+        st.caption(
+            f"Entradas recibidas: {execution_state['line_number']}"
+        )
+        render_log_console(
+            log_display_lines,
+            "execution-log-console",
+            cursor_end=next_cursor,
+            cursor_start=cursor_start,
+            has_more=has_more,
+            initial_load=initial_load,
         )
     with alpaca_column:
         st.subheader("Alpaca Streaming")
-        st.caption(f"Eventos recibidos: {snapshot['event_count']}")
-        event_lines = [
-            event.to_display_line()
-            for event in events
-        ]
-        render_log_console(event_lines, "alpaca-log-console")
+        alpaca_state = get_console_state(
+            "alpaca-log-console",
+            run_id,
+        )
+        initial_load = not alpaca_state["initialized"]
+        if streaming_path is not None:
+            events, next_cursor, has_more = streaming_module.read_event_delta(
+                streaming_path,
+                0 if initial_load else int(alpaca_state["cursor"]),
+                None if initial_load else CONSOLE_TRANSFER_BATCH_SIZE,
+            )
+        else:
+            events, next_cursor, has_more = [], alpaca_state["cursor"], False
+        alpaca_state["initialized"] = True
+        event_lines = []
+        for event in events:
+            if event.console_sequence is None:
+                event_sequence = alpaca_state["line_number"] + len(
+                    event_lines
+                ) + 1
+            else:
+                event_sequence = event.console_sequence
+                alpaca_state["persisted"] = True
+            event_lines.append(
+                f"[#{event_sequence}] {event.to_display_line()}"
+            )
+        cursor_start = int(alpaca_state["cursor"])
+        alpaca_state["cursor"] = next_cursor
+        alpaca_state["line_number"] += len(event_lines)
+        st.caption(f"Eventos recibidos: {alpaca_state['line_number']}")
+        render_log_console(
+            event_lines,
+            "alpaca-log-console",
+            cursor_end=next_cursor,
+            cursor_start=cursor_start,
+            has_more=has_more,
+            initial_load=initial_load,
+        )
         if not event_lines and status == "Conectado":
             st.info(
                 "Conexión activa; todavía no se recibieron operaciones. "
@@ -516,20 +681,54 @@ def render_streaming() -> None:
             "Apache Spark" + " - " +
             "[Spark Master ↗](http://localhost:8080/)"
         )
-        spark_lines = list(spark_result["logs"])
-        if spark_result["rows"]:
-            spark_lines.append("")
-            spark_lines.append("Resultados por símbolo:")
-            spark_lines.extend(
-                "{symbol} | operaciones={operations} | volumen={volume}".format(
-                    symbol=row["symbol"],
-                    operations=row["operations"],
-                    volume=row["total_volume"] or 0,
+        spark_state = get_console_state("spark-log-console", run_id)
+        initial_load = not spark_state["initialized"]
+        if snapshot.get("console_schema_version", 0) >= 2:
+            cursor_start = int(spark_state["cursor"])
+            spark_records, next_cursor, has_more, schema_found = (
+                streaming_module.read_spark_delta(
+                    streaming_path,
+                    0 if initial_load else cursor_start,
+                    None if initial_load else CONSOLE_TRANSFER_BATCH_SIZE,
                 )
-                for row in spark_result["rows"]
+                if streaming_path is not None
+                else ([], cursor_start, False, False)
             )
-        st.caption(f"Eventos recibidos: {len(spark_lines)}")
-        render_log_console(spark_lines, "spark-log-console")
+            spark_state["cursor"] = next_cursor
+            spark_state["line_number"] += len(spark_records)
+            spark_state["persisted"] = (
+                spark_state["persisted"] or schema_found
+            )
+            spark_lines = [
+                f"[#{sequence}] {line}"
+                for sequence, line in spark_records
+            ]
+            spark_cursor_end = next_cursor
+            spark_state["initialized"] = True
+        else:
+            spark_signature = tuple(spark_console_lines)
+            if spark_signature == spark_state.get("signature"):
+                spark_lines = []
+            else:
+                spark_lines = spark_console_lines
+                spark_state["signature"] = spark_signature
+            cursor_start = int(spark_state["cursor"])
+            spark_cursor_end = cursor_start + len(spark_lines)
+            spark_state["cursor"] = spark_cursor_end
+            spark_state["line_number"] += len(spark_lines)
+            has_more = False
+            spark_state["initialized"] = True
+        st.caption(
+            f"Eventos recibidos: {spark_state['line_number']}"
+        )
+        render_log_console(
+            spark_lines,
+            "spark-log-console",
+            cursor_end=spark_cursor_end,
+            cursor_start=cursor_start,
+            has_more=has_more,
+            initial_load=initial_load,
+        )
 
     st.divider()
     st.subheader("Top 10 acciones con mayor volumen negociado")
