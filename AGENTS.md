@@ -111,3 +111,29 @@ en una única función compartida ubicada en `main.py`. Esta función utiliza
 `zoneinfo`, perteneciente a la biblioteca estándar de Python. Los módulos
 individuales no duplican conversiones de zona horaria ni modifican los
 timestamps originales durante la presentación.
+
+## 11. Numeración de módulos
+
+Los módulos de `pages/` utilizan una numeración progresiva que refleja el
+orden real de implementación. Cada nueva tecnología recibe el siguiente
+número disponible y no se crean archivos anticipadamente para etapas futuras.
+
+## 12. Organización de archivos generados
+
+Dentro de `/app/data/` se mantienen únicamente `historical/` y `streaming/`.
+Cada RUN nuevo genera exactamente un JSONL en `historical/` y otro JSONL en
+`streaming/`, con el mismo nombre base identificable por fecha, hora,
+milisegundos y UUID. No se generan metadata, logs ni archivos auxiliares
+separados dentro de `/app/data/`. Los archivos temporales de procesamiento se
+ubican directamente en el almacenamiento temporal del contenedor y se limpian
+por ejecución.
+
+## 13. Logging operativo
+
+Los logs operativos informan estados y contadores reales de las etapas de
+procesamiento. El progreso se registra por grupos, ventanas o lotes, evitando
+mensajes por registro individual. Los registros persistentes se agregan sin
+truncar, sobrescribir ni descartar entradas silenciosamente. La consulta
+visual utiliza lectura incremental, paginación o cursor, sin convertir ese
+mecanismo en un límite de retención. Los heartbeats actualizan el estado de la
+ejecución sin desplazar información de progreso útil.

@@ -20,12 +20,11 @@ SPARK_BLOCK_MANAGER_PORT = os.getenv(
     "SPARK_BLOCK_MANAGER_PORT",
     "4042",
 )
-MAX_BATCH_SIZE = 100
-
 _SPARK_LOCK = threading.RLock()
 _SPARK_SESSION: Any = None
 _SPARK_ERROR: str | None = None
 _LAST_BATCH_KEY: tuple[Any, ...] | None = None
+_BATCH_NUMBER = 0
 _LAST_RESULT: dict[str, Any] = {
     "status": "sin_datos",
     "logs": ["Spark | esperando un lote de operaciones."],
@@ -86,10 +85,10 @@ def get_spark_session() -> Any:
         return _SPARK_SESSION
 
 def process_events(events: list[Any]) -> dict[str, Any]:
-    """Proceso un lote acotado y evito repetir el mismo job."""
+    """Proceso todos los eventos disponibles y evito repetir el mismo job."""
 
-    global _LAST_BATCH_KEY, _LAST_RESULT
-    batch = events[-MAX_BATCH_SIZE:]
+    global _BATCH_NUMBER, _LAST_BATCH_KEY, _LAST_RESULT
+    batch = events
     batch_key = tuple(
         (event.symbol, event.timestamp, event.price, event.size)
         for event in batch
@@ -150,10 +149,12 @@ def process_events(events: list[Any]) -> dict[str, Any]:
         result_rows = [row.asDict() for row in grouped.collect()]
         duration = time.perf_counter() - started_at
         partitions = data_frame.rdd.getNumPartitions()
+        _BATCH_NUMBER += 1
         _LAST_RESULT = {
             "status": "completado",
             "logs": [
                 f"Spark | master: {SPARK_MASTER}",
+                f"Spark | lote={_BATCH_NUMBER}",
                 f"Spark | registros procesados={len(batch)}",
                 f"Spark | particiones utilizadas={partitions}",
                 f"Spark | duración={duration:.4f} s",

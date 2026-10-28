@@ -104,11 +104,15 @@ El modo seleccionado queda asociado al RUN y no cambia mientras la ejecución
 está activa. Al refrescar Streamlit, la aplicación recupera el RUN existente y
 no vuelve a consultar el mercado ni crea otra conexión.
 
-REPLAY no depende de archivos históricos incluidos en el repositorio. Los
-históricos descargados se almacenan en `data/historical/` y se reutilizan como
-caché local para evitar descargas innecesarias. Cada ejecución genera sus
-propios registros en `data/streaming/`. Estos archivos son datos generados por
-la aplicación y no deben versionarse.
+REPLAY no depende de archivos históricos incluidos en el repositorio. Cada RUN
+genera exactamente dos archivos persistentes en el volumen `lab-data`, uno en
+`data/historical/` y otro en `data/streaming/`. Ambos comparten el nombre base
+`YYYYMMDD_HHMMSS_mmm_UUID`, construido con la fecha de inicio en
+`America/Argentina/Cordoba`, milisegundos y un UUID completo. El archivo
+histórico contiene operaciones JSONL; el archivo de streaming contiene
+registros JSONL tipados de estado, eventos emitidos, logs, heartbeats,
+progreso, errores y recuperación. No se crean archivos de metadata, logs o
+eventos separados para los RUN nuevos.
 
 Cuando el campo de símbolos está vacío, REPLAY obtiene los activos de acciones
 activos de Alpaca y utiliza la última sesión bursátil regular completa y
@@ -124,11 +128,33 @@ apertura y al cierre reales, y grupos de símbolos con un máximo de cuatro
 solicitudes HTTP concurrentes. Cada solicitud respeta la paginación de Alpaca,
 el límite de 10.000 registros y reintenta HTTP 429 con espera progresiva.
 
-Cada símbolo de una ventana se persiste en un temporal efímero y luego se
-mezcla mediante un merge cronológico acotado. Así las operaciones se emiten
-progresivamente mientras continúa la descarga de ventanas posteriores. Los
-temporales no forman parte de la caché permanente: el histórico solo se
-promueve al archivo final cuando está completo.
+Cada símbolo de una ventana se persiste en un archivo temporal directamente en
+`/tmp` del contenedor y luego se mezcla mediante un merge cronológico acotado.
+Los nombres identifican el RUN, la fecha bursátil, el feed, la ventana, el
+grupo y la posición del símbolo. Así las operaciones se emiten progresivamente
+mientras continúa la descarga de ventanas posteriores. Los temporales se
+eliminan al finalizar cada merge, al detenerse el RUN o ante un error, y nunca
+aparecen dentro del volumen `lab-data`. Un histórico incompleto no se considera
+caché válida.
+
+Durante REPLAY, el log informa la selección de la sesión, el universo de
+símbolos, el avance de grupos completados, las respuestas HTTP, las páginas
+con operaciones, las operaciones descargadas, la consolidación de cada
+ventana y los lotes emitidos. El progreso se actualiza por grupos y lotes,
+sin registrar una línea por operación individual.
+
+El archivo de streaming se escribe incrementalmente y en modo append-only, sin
+límite de retención, truncamiento ni sobrescritura. Cada registro incluye un
+tipo y una secuencia para distinguir logs, estados, heartbeats, progreso,
+errores y eventos. La interfaz consulta páginas mediante cursor, por lo que no
+carga el historial completo en RAM; todas las entradas permanecen consultables
+secuencialmente desde la aplicación o desde el volumen `lab-data`.
+
+Los históricos legacy existentes se conservan sin modificación. Cuando uno es
+válido para una nueva sesión, se reutiliza como fuente mediante enlace físico
+para crear el nombre histórico del RUN sin duplicar físicamente sus datos. Si
+el enlace no está disponible, la caché no se reutiliza y se descarga el RUN,
+evitando una duplicación silenciosa.
 
 ### Zona horaria de presentación
 
@@ -159,7 +185,7 @@ NicolasDruetta_TP2/
 │   └── Dockerfile
 ├── pages/
 │   ├── 01_alpaca_streaming.py
-│   └── 04_apache_spark.py
+│   └── 02_apache_spark.py
 ├── data/
 │   ├── historical/
 │   └── streaming/
@@ -171,12 +197,13 @@ NicolasDruetta_TP2/
   consolas y funciones comunes.
 - `pages/01_alpaca_streaming.py`: conexión LIVE, descarga histórica,
   reproducción REPLAY, ciclo de vida y persistencia de Alpaca.
-- `pages/04_apache_spark.py`: procesamiento específico de Spark distribuido.
+- `pages/02_apache_spark.py`: procesamiento específico de Spark distribuido.
 - `compose.yaml`: servicios Streamlit/Driver, Master y dos Workers.
 - `docker/Dockerfile`: imagen común con Python, PySpark y Java.
 - `.dockerignore`: archivos excluidos del contexto de construcción.
-- `data/historical/`: caché local de históricos descargados desde Alpaca.
-- `data/streaming/`: metadata y eventos generados por cada ejecución.
+- `data/historical/`: un JSONL de operaciones por cada RUN nuevo y cachés
+  legacy conservadas.
+- `data/streaming/`: un JSONL tipado por cada RUN nuevo.
 - `assets/custom.css`: recurso visual centralizado del proyecto.
 - `requirements.txt`: dependencias Python declaradas.
 - `AGENTS.md`: convenciones técnicas de desarrollo.
@@ -233,7 +260,7 @@ compuesto por dos Workers.
 El procesamiento realiza lo siguiente:
 
 - Reutiliza una única `SparkSession` distribuida.
-- Procesa un lote acotado de operaciones.
+- Procesa todos los eventos disponibles del RUN.
 - Crea un DataFrame con esquema explícito.
 - Reparte el lote por símbolo.
 - Agrupa las operaciones por símbolo.
@@ -241,7 +268,9 @@ El procesamiento realiza lo siguiente:
 - Informa particiones y duración mediante `time.perf_counter()`.
 
 Los lotes se procesan sin crear un job por cada evento individual. Los
-resultados reales se muestran en la consola Spark.
+resultados reales se muestran en la consola Spark junto con el número de lote,
+los registros procesados, las particiones utilizadas, la duración y los
+errores efectivos cuando corresponda.
 
 ## 9. Entorno de ejecución
 
@@ -327,8 +356,10 @@ docker compose up --build
   concurrentes como máximo y reintentos acotados para HTTP 429.
 - Emisión progresiva y merge cronológico global sin cargar el día completo en
   memoria.
-- Persistencia incremental de ejecuciones y eventos en JSONL.
-- Buffer reciente limitado a 1.000 eventos y lotes Spark limitados a 100.
+- Persistencia incremental en dos JSONL por RUN, con recuperación por registros
+  tipados y consulta paginada de logs.
+- Visualización completa de los eventos recibidos y procesamiento Spark sin
+  recorte por cantidad de eventos.
 - Logs de ejecución, consola de operaciones y consola Spark.
 - Imagen Docker reproducible con Python 3.15, PySpark 4.2.0 y Java 17.
 - Compose con Streamlit/Driver, Master y dos Workers.

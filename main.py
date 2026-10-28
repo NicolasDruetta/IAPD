@@ -158,7 +158,11 @@ def render_log_console(
         if format_timestamps
         else lines
     )
-    content = html.escape("\n".join(display_lines))
+    numbered_lines = [
+        f"[#{line_number}] {line}"
+        for line_number, line in enumerate(display_lines, start=1)
+    ]
+    content = html.escape("\n".join(numbered_lines))
     st.html(
         f"""
         <textarea id="{console_id}" class="log-console" readonly
@@ -216,7 +220,7 @@ def render_streaming() -> None:
     """Muestro las consolas de Alpaca y el estado de Spark."""
 
     streaming_module = load_page_module("01_alpaca_streaming")
-    spark_module = load_page_module("04_apache_spark")
+    spark_module = load_page_module("02_apache_spark")
     snapshot = streaming_module.get_run_snapshot()
     active_run_id = snapshot["run_id"] if snapshot["is_active"] else None
     session_run_id = st.session_state.alpaca_run_id
@@ -358,7 +362,7 @@ def render_streaming() -> None:
         )
         status_text = (
             f"{status_text}. Transcurrido: {elapsed_text}. "
-            f"Ejecución: {last_execution_text}."
+            f"Ejecutado: {last_execution_text}."
         )
     metrics_col, status_col = st.columns(
         [6, 6],
@@ -399,10 +403,6 @@ def render_streaming() -> None:
             raise
         events = streaming_module.read_recent_events(snapshot["run_id"])
     spark_result = spark_module.process_events(events)
-    spark_event_count = sum(
-        row["operations"]
-        for row in spark_result["rows"]
-    )
     log_lines = snapshot.get("logs", [])
     execution_column, alpaca_column, spark_column = st.columns(
         3,
@@ -433,7 +433,6 @@ def render_streaming() -> None:
             )
     with spark_column:
         st.subheader("Apache Spark" + " - " + "[Spark Master ↗](http://localhost:8080/)")
-        st.caption(f"Eventos recibidos: {spark_event_count}")
         spark_lines = list(spark_result["logs"])
         if spark_result["rows"]:
             spark_lines.append("")
@@ -446,6 +445,7 @@ def render_streaming() -> None:
                 )
                 for row in spark_result["rows"]
             )
+        st.caption(f"Eventos recibidos: {len(spark_lines)}")
         render_log_console(spark_lines, "spark-log-console")
 
 render_streaming_fragment = st.fragment(render_streaming, run_every="5s")
