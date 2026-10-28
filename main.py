@@ -5,9 +5,51 @@ import importlib.util
 import streamlit as st
 import sys
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, tzinfo
 from pathlib import Path
 from types import ModuleType
+from typing import Any
+from zoneinfo import ZoneInfo
+
+PRESENTATION_TIMEZONE = ZoneInfo("America/Argentina/Cordoba")
+
+def format_presentation_timestamp(
+    value: Any = None,
+    source_timezone: tzinfo | None = None,
+) -> str:
+    """Convierto un timestamp zonificado a la hora oficial del laboratorio."""
+
+    if value is None or value == "":
+        return "-"
+    if isinstance(value, datetime):
+        timestamp = value
+    else:
+        text = str(value).replace("Z", "+00:00")
+        try:
+            timestamp = datetime.fromisoformat(text)
+        except ValueError:
+            return str(value)
+    if timestamp.tzinfo is None:
+        if source_timezone is None:
+            return str(value)
+        timestamp = timestamp.replace(tzinfo=source_timezone)
+    return timestamp.astimezone(PRESENTATION_TIMEZONE).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+
+def format_presentation_log_line(line: str) -> str:
+    """Convierto la marca UTC de un log al horario del laboratorio."""
+
+    timestamp_text, separator, message = line.partition(" | ")
+    if not separator:
+        return line
+    timestamp = format_presentation_timestamp(
+        timestamp_text,
+        source_timezone=timezone.utc,
+    )
+    if timestamp == timestamp_text:
+        return line
+    return f"{timestamp} | {message}"
 
 def format_elapsed_time(
     started_at: str | None,
@@ -104,10 +146,19 @@ def mark_stop_pending() -> None:
 
     st.session_state.stop_pending = True
 
-def render_log_console(lines: list[str], console_id: str) -> None:
+def render_log_console(
+    lines: list[str],
+    console_id: str,
+    format_timestamps: bool = False,
+) -> None:
     """Muestro el log y desplazo el scroll hasta el último registro."""
 
-    content = html.escape("\n".join(lines))
+    display_lines = (
+        [format_presentation_log_line(line) for line in lines]
+        if format_timestamps
+        else lines
+    )
+    content = html.escape("\n".join(display_lines))
     st.html(
         f"""
         <textarea id="{console_id}" class="log-console" readonly
@@ -144,7 +195,7 @@ with st.container(key=theme_key):
     st.empty()
 with st.container(width="content"):
     icon_col, title_col, theme_col = st.columns(
-        [0.8, 4.8, 0.5],
+        [0.9, 4.9, 0.5],
         gap="small",
         vertical_alignment="center",
     )
@@ -301,7 +352,7 @@ def render_streaming() -> None:
     else:
         last_execution_at = snapshot["ended_at"] or snapshot["started_at"]
         last_execution_text = (
-            streaming_module.format_display_timestamp(last_execution_at)
+            format_presentation_timestamp(last_execution_at)
             if last_execution_at
             else "-"
         )
@@ -348,6 +399,11 @@ def render_streaming() -> None:
             raise
         events = streaming_module.read_recent_events(snapshot["run_id"])
     spark_result = spark_module.process_events(events)
+    spark_event_count = sum(
+        row["operations"]
+        for row in spark_result["rows"]
+    )
+    log_lines = snapshot.get("logs", [])
     execution_column, alpaca_column, spark_column = st.columns(
         3,
         gap="small",
@@ -356,12 +412,15 @@ def render_streaming() -> None:
     )
     with execution_column:
         st.subheader("Log de ejecución")
-        st.caption("Ciclo de vida, conexión y procesamiento del RUN actual.")
-        log_lines = snapshot.get("logs", [])
-        render_log_console(log_lines, "execution-log-console")
+        st.caption(f"Eventos recibidos: {len(log_lines)}")
+        render_log_console(
+            log_lines,
+            "execution-log-console",
+            format_timestamps=True,
+        )
     with alpaca_column:
         st.subheader("Alpaca Streaming")
-        st.caption("LIVE: operaciones actuales; REPLAY: operaciones históricas.")
+        st.caption(f"Eventos recibidos: {snapshot['event_count']}")
         event_lines = [
             event.to_display_line()
             for event in events
@@ -374,7 +433,7 @@ def render_streaming() -> None:
             )
     with spark_column:
         st.subheader("Apache Spark" + " - " + "[Spark Master ↗](http://localhost:8080/)")
-        st.caption("Procesamiento local de un lote acotado por símbolo.")
+        st.caption(f"Eventos recibidos: {spark_event_count}")
         spark_lines = list(spark_result["logs"])
         if spark_result["rows"]:
             spark_lines.append("")

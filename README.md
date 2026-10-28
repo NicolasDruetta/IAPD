@@ -111,17 +111,39 @@ propios registros en `data/streaming/`. Estos archivos son datos generados por
 la aplicación y no deben versionarse.
 
 Cuando el campo de símbolos está vacío, REPLAY obtiene los activos de acciones
-activos de Alpaca y utiliza el último día hábil con operaciones disponibles.
-La descarga se divide en ventanas temporales de 15 minutos y grupos de símbolos
-con un máximo de cuatro solicitudes HTTP concurrentes. Cada solicitud respeta
-la paginación de Alpaca, el límite de 10.000 registros y reintenta HTTP 429 con
-espera progresiva.
+activos de Alpaca y utiliza la última sesión bursátil regular completa y
+disponible según el calendario oficial de Alpaca. La fecha se selecciona a
+partir de las sesiones informadas por ese calendario, por lo que contempla
+fines de semana, feriados y cierres anticipados. La apertura y el cierre
+oficiales se interpretan en `America/New_York` y se convierten a UTC antes de
+consultar la API histórica. Por lo tanto, REPLAY se limita a la sesión regular
+de esa fecha y no consulta las horas previas a la apertura.
+
+La descarga se divide en ventanas temporales de 15 minutos, ajustadas a la
+apertura y al cierre reales, y grupos de símbolos con un máximo de cuatro
+solicitudes HTTP concurrentes. Cada solicitud respeta la paginación de Alpaca,
+el límite de 10.000 registros y reintenta HTTP 429 con espera progresiva.
 
 Cada símbolo de una ventana se persiste en un temporal efímero y luego se
 mezcla mediante un merge cronológico acotado. Así las operaciones se emiten
 progresivamente mientras continúa la descarga de ventanas posteriores. Los
 temporales no forman parte de la caché permanente: el histórico solo se
 promueve al archivo final cuando está completo.
+
+### Zona horaria de presentación
+
+Toda la interfaz presenta fechas y horas en `America/Argentina/Cordoba`,
+correspondiente a UTC−03:00. La visualización convierte los timestamps
+zonificados a la hora argentina exclusivamente en la capa de presentación,
+para que los logs, los eventos y los estados sean consistentes en cualquier
+sistema operativo y entorno Docker.
+
+Las consultas bursátiles, la selección de sesiones y el calendario oficial de
+Alpaca continúan utilizando `America/New_York`, que es la referencia del
+mercado estadounidense. Los timestamps originales recibidos de Alpaca se
+conservan en UTC para la persistencia y el procesamiento. De este modo, la
+aplicación convierte esos valores únicamente al mostrarlos, sin alterar el
+orden cronológico, los datos JSONL ni los cálculos distribuidos.
 
 ## 6. Organización del proyecto
 
@@ -298,6 +320,8 @@ docker compose up --build
 - Aplicación Streamlit con `main.py` como punto de entrada.
 - Integración LIVE y REPLAY con Alpaca Market Data.
 - Consulta del estado oficial del mercado para seleccionar el modo.
+- Selección de la última sesión regular completa mediante el calendario oficial
+  de Alpaca, con conversión explícita de `America/New_York` a UTC.
 - Descarga automática y caché local de datos históricos.
 - REPLAY incremental por ventanas temporales, con cuatro solicitudes HTTP
   concurrentes como máximo y reintentos acotados para HTTP 429.

@@ -19,6 +19,7 @@ import uuid
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
+from main import format_presentation_timestamp
 from pathlib import Path
 from typing import Any, Callable
 from websockets.asyncio.client import ClientConnection, connect
@@ -30,6 +31,10 @@ ALL_MARKET_SYMBOL = "*"
 ASSETS_API_URLS = (
     "https://paper-api.alpaca.markets/v2/assets",
     "https://api.alpaca.markets/v2/assets",
+)
+CALENDAR_API_URLS = (
+    "https://api.alpaca.markets/v2/calendar",
+    "https://paper-api.alpaca.markets/v2/calendar",
 )
 DATA_DIRECTORY = Path(__file__).resolve().parent.parent / "data" / "streaming"
 HISTORICAL_DIRECTORY = (
@@ -83,10 +88,14 @@ class AlpacaEvent:
     def to_display_line(self) -> str:
         """Convierto el evento a una línea segura para mostrarlo."""
 
+        timestamp = format_presentation_timestamp(
+            self.timestamp,
+            source_timezone=timezone.utc,
+        )
         price = "-" if self.price is None else f"{self.price:.4f}"
         size = "-" if self.size is None else f"{self.size:g}"
         return (
-            f"{self.timestamp} | {self.symbol} | {self.event_type} | "
+            f"{timestamp} | {self.symbol} | {self.event_type} | "
             f"{price} | {size}"
         )
 
@@ -567,7 +576,7 @@ class AlpacaStreamingService:
     def _add_log(self, message: str) -> None:
         """Agrego un mensaje operativo al log visible del RUN."""
 
-        timestamp = format_display_timestamp()
+        timestamp = get_utc_timestamp()
         with self._lock:
             self._logs.append(f"{timestamp} | {message}")
 
@@ -632,9 +641,9 @@ class AlpacaStreamingService:
         return f"Error de Alpaca: {message}"
 
     def _format_timestamp(self, value: Any) -> str:
-        """Formateo el horario del evento para la consola."""
+        """Conservo el horario original del evento recibido."""
 
-        return format_display_timestamp(value)
+        return str(value) if value is not None else "-"
 
     def _number(self, value: Any) -> float | None:
         """Convierto un valor numérico recibido desde el WebSocket."""
@@ -661,6 +670,8 @@ def download_historical_dataset(
     feed: str,
     date_text: str,
     historical_path: Path,
+    session_start: datetime,
+    session_end: datetime,
     progress_callback: Callable[[str], None] | None = None,
     event_callback: Callable[[list[AlpacaEvent]], None] | None = None,
     stop_event: threading.Event | None = None,
@@ -679,6 +690,11 @@ def download_historical_dataset(
     ]
     if not symbol_groups:
         return 0, False
+    if progress_callback is not None:
+        progress_callback(
+            f"REPLAY | grupos de símbolos={len(symbol_groups)} | "
+            f"símbolos consultados={len(market_symbols)}"
+        )
     event_count = 0
     ensure_historical_directory()
     ssl_context = ssl.create_default_context(cafile=certifi.where())
@@ -733,7 +749,7 @@ def download_historical_dataset(
         window_start: datetime,
         window_end: datetime,
         temporary_directory: str,
-    ) -> tuple[int, list[tuple[int, Path]], int, int]:
+    ) -> tuple[int, list[tuple[int, Path]], int, int, int]:
         """Descargo un grupo y separo sus símbolos en temporales."""
 
         symbol_positions = {
@@ -744,6 +760,7 @@ def download_historical_dataset(
         group_paths: dict[str, Path] = {}
         event_count = 0
         page_count = 0
+        pages_with_trades = 0
         next_page_token: str | None = None
         try:
             while True:
@@ -763,7 +780,10 @@ def download_historical_dataset(
                     query["page_token"] = next_page_token
                 payload = request_page(query)
                 page_count += 1
-                for symbol, trades in payload.get("trades", {}).items():
+                page_trades = payload.get("trades", {})
+                if any(page_trades.values()):
+                    pages_with_trades += 1
+                for symbol, trades in page_trades.items():
                     if symbol not in handles:
                         group_path = Path(temporary_directory) / (
                             f"group_{group_index:05d}_"
@@ -804,6 +824,7 @@ def download_historical_dataset(
             ],
             event_count,
             page_count,
+            pages_with_trades,
         )
 
     def record_key(record: dict[str, Any], group_index: int) -> tuple[str, str, str, int]:
@@ -871,10 +892,15 @@ def download_historical_dataset(
             dir=HISTORICAL_DIRECTORY
         ) as temporary_directory:
             with temporary_path.open("w", encoding="utf-8") as historical_file:
-                window_start = datetime.fromisoformat(
-                    f"{date_text}T00:00:00+00:00"
-                )
-                day_end = window_start + timedelta(days=1)
+                window_start = session_start
+                day_end = session_end
+                if progress_callback is not None:
+                    progress_callback(
+                        f"REPLAY | sesión={date_text} | "
+                        f"apertura="
+                        f"{format_presentation_timestamp(session_start)} | "
+                        f"cierre={format_presentation_timestamp(session_end)}"
+                    )
                 while window_start < day_end:
                     if stop_event is not None and stop_event.is_set():
                         raise InterruptedError("Descarga REPLAY detenida.")
@@ -885,6 +911,7 @@ def download_historical_dataset(
                     group_paths: list[tuple[int, Path]] = []
                     window_downloaded = 0
                     window_pages = 0
+                    window_pages_with_trades = 0
                     with ThreadPoolExecutor(
                         max_workers=MAX_HTTP_CONCURRENCY
                     ) as executor:
@@ -907,10 +934,12 @@ def download_historical_dataset(
                                 symbol_paths,
                                 group_count,
                                 group_pages,
+                                group_pages_with_trades,
                             ) = future.result()
                             group_paths.extend(symbol_paths)
                             window_downloaded += group_count
                             window_pages += group_pages
+                            window_pages_with_trades += group_pages_with_trades
                     group_paths.sort()
                     merged_count, pending_batch = merge_window(
                         group_paths,
@@ -923,10 +952,14 @@ def download_historical_dataset(
                     os.fsync(historical_file.fileno())
                     if progress_callback is not None:
                         progress_callback(
-                            f"REPLAY | ventana={window_start.isoformat()} | "
-                            f"páginas={window_pages} | "
+                            f"REPLAY | ventana="
+                            f"{format_presentation_timestamp(window_start)}-"
+                            f"{format_presentation_timestamp(window_end)} | "
+                            f"respuestas={window_pages} | "
+                            f"páginas_con_operaciones="
+                            f"{window_pages_with_trades} | "
                             f"descargados={window_downloaded} | "
-                            f"emitidos={event_count}"
+                            f"emitidos_acumulados={event_count}"
                         )
                     window_start = window_end
         if event_count == 0:
@@ -942,6 +975,9 @@ def download_historical_dataset(
                 "feed": feed,
                 "symbols": symbols,
                 "date": date_text,
+                "regular_session": True,
+                "session_start": session_start.isoformat(),
+                "session_end": session_end.isoformat(),
                 "events_file": historical_path.name,
             },
         )
@@ -967,28 +1003,13 @@ def event_from_record(
     """Reconstruyo un evento persistido para mostrarlo en la consola."""
 
     return AlpacaEvent(
-        timestamp=format_display_timestamp(record.get("timestamp")),
+        timestamp=str(record.get("timestamp", "-")),
         symbol=str(record.get("symbol", "-")),
         event_type=str(record.get("event_type", "-")),
         price=to_number(record.get("price")),
         size=to_number(record.get("size")),
         mode=mode or str(record.get("mode", "LIVE")),
     )
-
-def format_display_timestamp(value: Any = None) -> str:
-    """Formateo las marcas visibles sin milisegundos ni zona horaria."""
-
-    if isinstance(value, datetime):
-        timestamp = value
-    elif value:
-        text = str(value).replace("Z", "+00:00")
-        try:
-            timestamp = datetime.fromisoformat(text)
-        except ValueError:
-            timestamp = datetime.now(timezone.utc)
-    else:
-        timestamp = datetime.now(timezone.utc)
-    return timestamp.strftime("%Y-%m-%d %H:%M:%S")
 
 def get_active_service() -> AlpacaStreamingService | None:
     """Devuelvo el RUN LIVE compartido por las sesiones de Streamlit."""
@@ -1008,51 +1029,51 @@ def get_historical_dataset(
     """Obtengo un histórico válido o reutilizo una copia local completa."""
 
     ensure_historical_directory()
-    last_error: Exception | None = None
-    current_date = datetime.now(NEW_YORK_TIMEZONE).date() - timedelta(days=1)
-    checked_dates = 0
-    while checked_dates < 10:
-        if current_date.weekday() < 5:
-            date_text = current_date.isoformat()
-            historical_path = historical_file_path(date_text, symbols, feed)
-            metadata = read_json(historical_metadata_path(historical_path))
-            if (
-                metadata is not None
-                and metadata.get("complete") is True
-                and metadata.get("ordered_by_timestamp") is True
-                and int(metadata.get("event_count", 0)) > 0
-                and historical_path.exists()
-            ):
-                if progress_callback is not None:
-                    progress_callback(
-                        f"REPLAY | caché local reutilizado: {date_text} | "
-                        f"eventos={metadata['event_count']}"
-                    )
-                return historical_path, date_text, False
-            try:
-                event_count, streamed = download_historical_dataset(
-                    api_key,
-                    api_secret,
-                    symbols,
-                    feed,
-                    date_text,
-                    historical_path,
-                    progress_callback,
-                    event_callback,
-                    stop_event,
-                )
-                if event_count > 0:
-                    return historical_path, date_text, streamed
-            except (OSError, RuntimeError, urllib.error.URLError) as error:
-                last_error = error
-            checked_dates += 1
-        current_date -= timedelta(days=1)
-    if last_error is not None:
-        raise RuntimeError(
-            f"No se pudo obtener un histórico de Alpaca: {last_error}"
-        ) from last_error
+    date_text, session_start, session_end = get_latest_market_session(
+        api_key,
+        api_secret,
+    )
+    historical_path = historical_file_path(date_text, symbols, feed)
+    if progress_callback is not None:
+        progress_callback(
+            f"REPLAY | sesión bursátil seleccionada={date_text} | "
+            f"apertura={format_presentation_timestamp(session_start)} | "
+            f"cierre={format_presentation_timestamp(session_end)}"
+        )
+    metadata = read_json(historical_metadata_path(historical_path))
+    if (
+        metadata is not None
+        and metadata.get("complete") is True
+        and metadata.get("ordered_by_timestamp") is True
+        and int(metadata.get("event_count", 0)) > 0
+        and metadata.get("regular_session") is True
+        and metadata.get("session_start") == session_start.isoformat()
+        and metadata.get("session_end") == session_end.isoformat()
+        and historical_path.exists()
+    ):
+        if progress_callback is not None:
+            progress_callback(
+                f"REPLAY | caché local reutilizado: {date_text} | "
+                f"eventos={metadata['event_count']}"
+            )
+        return historical_path, date_text, False
+    event_count, streamed = download_historical_dataset(
+        api_key,
+        api_secret,
+        symbols,
+        feed,
+        date_text,
+        historical_path,
+        session_start,
+        session_end,
+        progress_callback,
+        event_callback,
+        stop_event,
+    )
+    if event_count > 0:
+        return historical_path, date_text, streamed
     raise RuntimeError(
-        "Alpaca no devolvió operaciones históricas disponibles."
+        f"Alpaca no devolvió operaciones para la sesión {date_text}."
     )
 
 def get_latest_metadata() -> dict[str, Any] | None:
@@ -1065,6 +1086,96 @@ def get_latest_metadata() -> dict[str, Any] | None:
         return None
     latest_path = max(metadata_paths, key=lambda path: path.stat().st_mtime)
     return read_json(latest_path)
+
+def get_latest_market_session(
+    api_key: str,
+    api_secret: str,
+) -> tuple[str, datetime, datetime]:
+    """Obtengo la última sesión completa desde el calendario de Alpaca."""
+
+    now_new_york = datetime.now(NEW_YORK_TIMEZONE)
+    query = urllib.parse.urlencode(
+        {
+            "start": (now_new_york.date() - timedelta(days=30)).isoformat(),
+            "end": now_new_york.date().isoformat(),
+        }
+    )
+    ssl_context = ssl.create_default_context(cafile=certifi.where())
+    authentication_error = False
+    for calendar_api_url in CALENDAR_API_URLS:
+        request = urllib.request.Request(
+            f"{calendar_api_url}?{query}",
+            headers={
+                "APCA-API-KEY-ID": api_key,
+                "APCA-API-SECRET-KEY": api_secret,
+            },
+        )
+        try:
+            with urllib.request.urlopen(
+                request,
+                timeout=30,
+                context=ssl_context,
+            ) as response:
+                calendar = json.load(response)
+            break
+        except urllib.error.HTTPError as error:
+            if error.code in {401, 403}:
+                authentication_error = True
+                continue
+            raise RuntimeError(
+                f"Alpaca devolvió HTTP {error.code} al consultar el "
+                "calendario."
+            ) from error
+        except (OSError, json.JSONDecodeError) as error:
+            raise RuntimeError(
+                "No se pudo consultar el calendario de Alpaca."
+            ) from error
+    else:
+        if authentication_error:
+            raise RuntimeError(
+                "Alpaca rechazó las credenciales para consultar el "
+                "calendario."
+            )
+        raise RuntimeError("No se pudo consultar el calendario de Alpaca.")
+    if not isinstance(calendar, list):
+        raise RuntimeError("Alpaca devolvió un calendario inválido.")
+    sessions: list[tuple[str, datetime, datetime]] = []
+    for calendar_day in calendar:
+        if not isinstance(calendar_day, dict):
+            continue
+        date_text = calendar_day.get("date")
+        open_text = calendar_day.get("open")
+        close_text = calendar_day.get("close")
+        if not all(
+            isinstance(value, str)
+            for value in (date_text, open_text, close_text)
+        ):
+            continue
+        try:
+            session_start = datetime.strptime(
+                f"{date_text} {open_text}",
+                "%Y-%m-%d %H:%M",
+            ).replace(tzinfo=NEW_YORK_TIMEZONE)
+            session_end = datetime.strptime(
+                f"{date_text} {close_text}",
+                "%Y-%m-%d %H:%M",
+            ).replace(tzinfo=NEW_YORK_TIMEZONE)
+        except ValueError:
+            continue
+        session_end_utc = session_end.astimezone(timezone.utc)
+        if session_end_utc <= datetime.now(timezone.utc):
+            sessions.append(
+                (
+                    date_text,
+                    session_start.astimezone(timezone.utc),
+                    session_end_utc,
+                )
+            )
+    if not sessions:
+        raise RuntimeError(
+            "Alpaca no devolvió una sesión bursátil completa disponible."
+        )
+    return max(sessions, key=lambda session: session[0])
 
 def get_market_mode(api_key: str, api_secret: str) -> str:
     """Consulto en Alpaca si corresponde iniciar LIVE o REPLAY."""

@@ -103,3 +103,11 @@ estados particulares de una computadora.
 Las conexiones seguras utilizan almacenes de certificados proporcionados por
 dependencias Python declaradas por el proyecto. La verificación SSL y la
 validación del nombre de host permanecen activas.
+
+## 10. Zonas horarias
+
+Las conversiones de zona horaria destinadas a la presentación se centralizan
+en una única función compartida ubicada en `main.py`. Esta función utiliza
+`zoneinfo`, perteneciente a la biblioteca estándar de Python. Los módulos
+individuales no duplican conversiones de zona horaria ni modifican los
+timestamps originales durante la presentación.
