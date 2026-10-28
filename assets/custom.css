@@ -196,6 +196,16 @@ h1#apache-big-data-lab {
         color: #ffffff;
     }
 
+/* Mantengo visible el contenido durante las actualizaciones de Streamlit. */
+
+.stApp > div,
+.stAppViewBlockContainer,
+.stAppViewContainer,
+.stElementContainer {
+    opacity: 1 !important;
+    transition: none !important;
+}
+
 .stMainBlockContainer {
     padding: 2rem 3rem !important; /* Custom Nico. No tocar. */
 }

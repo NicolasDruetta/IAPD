@@ -9,27 +9,29 @@ from pyspark.sql.functions import count, sum as sum_rows
 from pyspark.sql.types import DoubleType, StringType, StructField, StructType
 from typing import Any
 
-SPARK_APP_NAME = "Apache Big Data Lab"
-SPARK_MASTER = os.getenv(
-    "SPARK_MASTER_URL",
-    "spark://spark-master:7077",
-)
-SPARK_DRIVER_HOST = os.getenv("SPARK_DRIVER_HOST", "spark-driver")
-SPARK_DRIVER_PORT = os.getenv("SPARK_DRIVER_PORT", "4041")
 SPARK_BLOCK_MANAGER_PORT = os.getenv(
     "SPARK_BLOCK_MANAGER_PORT",
     "4042",
 )
-_SPARK_LOCK = threading.RLock()
-_SPARK_SESSION: Any = None
-_SPARK_ERROR: str | None = None
-_LAST_BATCH_KEY: tuple[Any, ...] | None = None
+SPARK_APP_NAME = "Apache Big Data Lab"
+SPARK_DRIVER_HOST = os.getenv("SPARK_DRIVER_HOST", "spark-driver")
+SPARK_DRIVER_PORT = os.getenv("SPARK_DRIVER_PORT", "4041")
+SPARK_MASTER = os.getenv(
+    "SPARK_MASTER_URL",
+    "spark://spark-master:7077",
+)
 _BATCH_NUMBER = 0
 _LAST_RESULT: dict[str, Any] = {
     "status": "sin_datos",
     "logs": ["Spark | esperando un lote de operaciones."],
     "rows": [],
+    "top_volume": [],
+    "checkpoint": None,
 }
+_RUN_STATES: dict[str, dict[str, Any]] = {}
+_SPARK_ERROR: str | None = None
+_SPARK_LOCK = threading.RLock()
+_SPARK_SESSION: Any = None
 
 def get_snapshot() -> dict[str, Any]:
     """Devuelvo el último resultado real del procesamiento Spark."""
@@ -39,6 +41,8 @@ def get_snapshot() -> dict[str, Any]:
             "status": _LAST_RESULT["status"],
             "logs": list(_LAST_RESULT["logs"]),
             "rows": list(_LAST_RESULT["rows"]),
+            "top_volume": list(_LAST_RESULT["top_volume"]),
+            "checkpoint": _LAST_RESULT["checkpoint"],
         }
 
 def get_spark_session() -> Any:
@@ -84,37 +88,67 @@ def get_spark_session() -> Any:
             _SPARK_ERROR = f"No se pudo iniciar Spark: {error}"
         return _SPARK_SESSION
 
-def process_events(events: list[Any]) -> dict[str, Any]:
-    """Proceso todos los eventos disponibles y evito repetir el mismo job."""
+def process_events(
+    events: list[Any],
+    run_id: str | None = None,
+    checkpoint: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Proceso el lote nuevo y acumulo volumen confirmado por Spark."""
 
-    global _BATCH_NUMBER, _LAST_BATCH_KEY, _LAST_RESULT
-    batch = events
-    batch_key = tuple(
-        (event.symbol, event.timestamp, event.price, event.size)
-        for event in batch
-    )
+    global _BATCH_NUMBER, _LAST_RESULT
+    state_key = run_id or "__default__"
     with _SPARK_LOCK:
-        if batch_key == _LAST_BATCH_KEY:
-            return _LAST_RESULT
-        _LAST_BATCH_KEY = batch_key
-    if not batch:
-        _LAST_RESULT = {
+        state = _RUN_STATES.get(state_key)
+        if state is None:
+            state = {
+                "processed_events": int(
+                    (checkpoint or {}).get("processed_events", 0)
+                ),
+                "batch_number": int(
+                    (checkpoint or {}).get("batch_number", 0)
+                ),
+                "totals": {
+                    str(symbol): float(volume)
+                    for symbol, volume in (checkpoint or {}).get(
+                        "totals",
+                        {},
+                    ).items()
+                },
+                "result": None,
+            }
+            _RUN_STATES[state_key] = state
+        elif checkpoint is not None and state["processed_events"] > int(
+            checkpoint.get("processed_events", 0)
+        ):
+            return state["result"] or _LAST_RESULT
+    if not events:
+        result = state["result"]
+        if result is not None:
+            return result
+        result = {
             "status": "sin_datos",
             "logs": ["Spark | esperando un lote de operaciones."],
             "rows": [],
+            "top_volume": top_volume_rows(state["totals"]),
+            "checkpoint": spark_checkpoint(state, run_id),
         }
-        return _LAST_RESULT
+        state["result"] = result
+        _LAST_RESULT = result
+        return result
     spark = get_spark_session()
     if spark is None:
-        _LAST_RESULT = {
+        result = {
             "status": "no_disponible",
             "logs": [
                 "Spark | no disponible.",
                 _SPARK_ERROR or "Java 17 o superior es requerido.",
             ],
             "rows": [],
+            "top_volume": top_volume_rows(state["totals"]),
+            "checkpoint": None,
         }
-        return _LAST_RESULT
+        _LAST_RESULT = result
+        return result
     rows = [
         {
             "symbol": event.symbol,
@@ -122,7 +156,7 @@ def process_events(events: list[Any]) -> dict[str, Any]:
             "size": event.size,
             "timestamp": event.timestamp,
         }
-        for event in batch
+        for event in events
     ]
     schema = StructType(
         [
@@ -149,23 +183,69 @@ def process_events(events: list[Any]) -> dict[str, Any]:
         result_rows = [row.asDict() for row in grouped.collect()]
         duration = time.perf_counter() - started_at
         partitions = data_frame.rdd.getNumPartitions()
+        batch_totals = {
+            str(row["symbol"]): float(row["total_volume"] or 0)
+            for row in result_rows
+        }
+        for symbol, volume in batch_totals.items():
+            state["totals"][symbol] = (
+                state["totals"].get(symbol, 0.0) + volume
+            )
         _BATCH_NUMBER += 1
-        _LAST_RESULT = {
+        state["batch_number"] += 1
+        state["processed_events"] += len(events)
+        checkpoint_data = spark_checkpoint(state, run_id)
+        result = {
             "status": "completado",
             "logs": [
                 f"Spark | master: {SPARK_MASTER}",
-                f"Spark | lote={_BATCH_NUMBER}",
-                f"Spark | registros procesados={len(batch)}",
+                f"Spark | lote={state['batch_number']}",
+                f"Spark | registros procesados={len(events)}",
                 f"Spark | particiones utilizadas={partitions}",
                 f"Spark | duración={duration:.4f} s",
                 "Spark | agrupación por símbolo completada.",
             ],
             "rows": result_rows,
+            "top_volume": top_volume_rows(state["totals"]),
+            "checkpoint": checkpoint_data,
         }
+        state["result"] = result
+        _LAST_RESULT = result
     except Exception as error:
-        _LAST_RESULT = {
+        result = {
             "status": "error",
             "logs": [f"Spark | error durante el procesamiento: {error}"],
             "rows": [],
+            "top_volume": top_volume_rows(state["totals"]),
+            "checkpoint": None,
         }
+        state["result"] = result
+        _LAST_RESULT = result
     return _LAST_RESULT
+
+def spark_checkpoint(
+    state: dict[str, Any],
+    run_id: str | None,
+) -> dict[str, Any]:
+    """Genero el registro pequeño de recuperación del acumulado."""
+
+    return {
+        "run_id": run_id,
+        "processed_events": state["processed_events"],
+        "batch_number": state["batch_number"],
+        "totals": dict(state["totals"]),
+    }
+
+def top_volume_rows(totals: dict[str, float]) -> list[dict[str, Any]]:
+    """Ordeno el ranking acumulado y conservo sus diez primeros símbolos."""
+
+    return [
+        {
+            "symbol": symbol,
+            "total_volume": volume,
+        }
+        for symbol, volume in sorted(
+            totals.items(),
+            key=lambda item: (-item[1], item[0]),
+        )[:10]
+    ]

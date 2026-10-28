@@ -269,6 +269,19 @@ Las consolas se actualizan junto con el estado del RUN y mantienen una
 presentación uniforme. En pantallas reducidas, las columnas se reorganizan
 mediante media queries clásicas para conservar la legibilidad.
 
+Debajo de las consolas se presenta el gráfico **Top 10 acciones con mayor
+volumen negociado**. El volumen se calcula sumando el campo `size` de las
+operaciones reales emitidas por Alpaca y confirmadas por Apache Spark. Cada
+lote procesado actualiza un acumulado pequeño por símbolo, recalcula el ranking
+y actualiza las diez barras ordenadas de forma descendente durante LIVE o
+REPLAY, sin esperar la finalización del RUN.
+
+El acumulado se asocia al `run_id` y se persiste mediante registros tipados
+`spark_checkpoint` dentro del JSONL de streaming existente. Spark procesa solo
+los eventos posteriores al último checkpoint, por lo que una actualización de
+Streamlit o un F5 no vuelve a contar lotes ya confirmados ni carga el histórico
+completo para redibujar el gráfico.
+
 ## 8. Apache Spark
 
 El módulo de Spark utiliza un Driver dentro del contenedor de Streamlit y se
@@ -376,6 +389,7 @@ docker compose up --build
   memoria.
 - Persistencia incremental en dos JSONL por RUN, con recuperación por registros
   tipados y consulta paginada de logs.
+- Gráfico incremental del Top 10 de volumen acumulado confirmado por Spark.
 - Visualización completa de los eventos recibidos y procesamiento Spark sin
   recorte por cantidad de eventos.
 - Logs de ejecución, consola de operaciones y consola Spark.

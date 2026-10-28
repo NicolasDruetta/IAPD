@@ -4,6 +4,7 @@ import asyncio
 import atexit
 import certifi
 import heapq
+import itertools
 import json
 import os
 import queue
@@ -20,7 +21,6 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
-from main import PRESENTATION_TIMEZONE, format_presentation_timestamp
 from pathlib import Path
 from typing import Any, Callable
 from websockets.asyncio.client import ClientConnection, connect
@@ -33,39 +33,39 @@ ASSETS_API_URLS = (
     "https://paper-api.alpaca.markets/v2/assets",
     "https://api.alpaca.markets/v2/assets",
 )
-SP500_COMPONENTS_URL = (
-    "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-)
-SP500_INDEX_URL = (
-    "https://www.spglobal.com/spdji/en/indices/equity/sp-500/"
-)
 CALENDAR_API_URLS = (
     "https://api.alpaca.markets/v2/calendar",
     "https://paper-api.alpaca.markets/v2/calendar",
 )
 DATA_DIRECTORY = Path(__file__).resolve().parent.parent / "data" / "streaming"
+HEARTBEAT_TIMEOUT_SECONDS = 30
 HISTORICAL_DIRECTORY = (
     Path(__file__).resolve().parent.parent / "data" / "historical"
 )
-TEMPORARY_DIRECTORY = Path("/tmp")
 HISTORICAL_API_URL = "https://data.alpaca.markets/v2/stocks/trades"
+HTTP_MAX_RETRIES = 5
 MARKET_CLOCK_URLS = (
     "https://api.alpaca.markets/v2/clock",
     "https://paper-api.alpaca.markets/v2/clock",
 )
-HEARTBEAT_TIMEOUT_SECONDS = 30
-HTTP_MAX_RETRIES = 5
 MAX_HTTP_CONCURRENCY = 4
+NEW_YORK_TIMEZONE = ZoneInfo("America/New_York")
 REPLAY_BATCH_SIZE = 100
-REPLAY_WINDOW_MINUTES = 15
-SUPERVISOR_INTERVAL_SECONDS = 1
 REPLAY_SPEEDS = {
     "1 evento por segundo": 1.0,
     "10 eventos por segundo": 0.1,
     "100 eventos por segundo": 0.01,
     "Máxima velocidad controlada": 0.0,
 }
-NEW_YORK_TIMEZONE = ZoneInfo("America/New_York")
+REPLAY_WINDOW_MINUTES = 15
+SP500_COMPONENTS_URL = (
+    "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+)
+SP500_INDEX_URL = (
+    "https://www.spglobal.com/spdji/en/indices/equity/sp-500/"
+)
+SUPERVISOR_INTERVAL_SECONDS = 1
+TEMPORARY_DIRECTORY = Path("/tmp")
 
 class SP500TableParser(HTMLParser):
     """Extraigo filas de tablas HTML para localizar la columna Symbol."""
@@ -224,6 +224,7 @@ class AlpacaStreamingService:
         self._historical_date: str | None = None
         self._finished = False
         self._sequence = 0
+        self._spark_checkpoint_processed = 0
         self._started_at = started_at
         self._historical_path = (
             HISTORICAL_DIRECTORY / f"{run_stem}.jsonl"
@@ -396,6 +397,24 @@ class AlpacaStreamingService:
 
         with self._lock:
             return list(self._events)
+
+    def get_events_after(self, processed_count: int) -> list[AlpacaEvent]:
+        """Devuelvo solo los eventos posteriores al checkpoint de Spark."""
+
+        with self._lock:
+            return list(itertools.islice(self._events, processed_count, None))
+
+    def append_spark_checkpoint(self, checkpoint: dict[str, Any]) -> None:
+        """Persisto el acumulado confirmado por Spark una sola vez."""
+
+        processed_count = int(checkpoint.get("processed_events", 0))
+        with self._lock:
+            if processed_count <= self._spark_checkpoint_processed:
+                return
+            self._append_stream_records_locked(
+                [("spark_checkpoint", checkpoint)]
+            )
+            self._spark_checkpoint_processed = processed_count
 
     def _run_stream(self) -> None:
         """Ejecuto el ciclo asincrónico del WebSocket en un hilo propio."""
@@ -1594,6 +1613,19 @@ def get_recent_events(run_id: str | None) -> list[AlpacaEvent]:
         return service.get_recent_events()
     return read_recent_events(run_id)
 
+def get_events_after(
+    run_id: str | None,
+    processed_count: int,
+) -> list[AlpacaEvent]:
+    """Obtengo solo eventos pendientes de confirmar por Spark."""
+
+    if run_id is None:
+        return []
+    service = get_active_service()
+    if service is not None and service.get_snapshot()["run_id"] == run_id:
+        return service.get_events_after(processed_count)
+    return read_events_after(run_id, processed_count)
+
 def get_run_snapshot() -> dict[str, Any]:
     """Obtengo el estado live o la última ejecución persistida."""
 
@@ -1927,11 +1959,109 @@ def read_recent_events(run_id: str) -> list[AlpacaEvent]:
         return []
     return list(events)
 
+def read_events_after(
+    run_id: str,
+    processed_count: int,
+) -> list[AlpacaEvent]:
+    """Leo únicamente los eventos posteriores al checkpoint persistido."""
+
+    events_path = DATA_DIRECTORY / f"{run_id}.jsonl"
+    if not events_path.exists():
+        return []
+    events: list[AlpacaEvent] = []
+    event_index = 0
+    try:
+        with events_path.open(encoding="utf-8") as stream_file:
+            for line in stream_file:
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if (
+                    not isinstance(record, dict)
+                    or record.get("record_type") != "event"
+                ):
+                    continue
+                if event_index >= processed_count:
+                    events.append(event_from_record(record))
+                event_index += 1
+    except OSError:
+        return []
+    return events
+
+def read_spark_checkpoint(path: Path) -> dict[str, Any] | None:
+    """Leo el último acumulado confirmado por Spark."""
+
+    if not path.exists():
+        return None
+    checkpoint: dict[str, Any] | None = None
+    try:
+        with path.open(encoding="utf-8") as stream_file:
+            for line in stream_file:
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if record.get("record_type") == "spark_checkpoint":
+                    checkpoint = {
+                        key: value
+                        for key, value in record.items()
+                        if key not in {
+                            "record_type",
+                            "sequence",
+                            "run_id",
+                            "recorded_at",
+                        }
+                    }
+    except OSError:
+        return None
+    return checkpoint
+
 def register_heartbeat(run_id: str) -> bool:
     """Valido y registro el heartbeat de una sesión visual activa."""
 
     service = get_active_service()
     return service.heartbeat(run_id) if service is not None else False
+
+def append_spark_checkpoint(
+    run_id: str | None,
+    checkpoint: dict[str, Any],
+) -> None:
+    """Persisto el acumulado de Spark en el JSONL del RUN correspondiente."""
+
+    if run_id is None:
+        return
+    service = get_active_service()
+    if service is not None and service.get_snapshot()["run_id"] == run_id:
+        service.append_spark_checkpoint(checkpoint)
+        return
+    streaming_path = DATA_DIRECTORY / f"{run_id}.jsonl"
+    previous = read_spark_checkpoint(streaming_path)
+    processed_count = int(checkpoint.get("processed_events", 0))
+    if previous is not None and processed_count <= int(
+        previous.get("processed_events", 0)
+    ):
+        return
+    state = read_streaming_state(streaming_path)
+    sequence = int(state.get("sequence", 0)) if state else 0
+    append_stream_record(
+        streaming_path,
+        run_id,
+        sequence + 1,
+        "spark_checkpoint",
+        checkpoint,
+    )
+
+def get_spark_checkpoint(run_id: str | None) -> dict[str, Any] | None:
+    """Obtengo el checkpoint Spark del RUN activo o persistido."""
+
+    if run_id is None:
+        return None
+    service = get_active_service()
+    if service is not None and service.get_snapshot()["run_id"] == run_id:
+        streaming_file = service.get_snapshot()["streaming_file"]
+        return read_spark_checkpoint(DATA_DIRECTORY / streaming_file)
+    return read_spark_checkpoint(DATA_DIRECTORY / f"{run_id}.jsonl")
 
 def release_active_service(service: AlpacaStreamingService) -> None:
     """Libero el RUN terminado para permitir una nueva ejecución."""
@@ -2004,7 +2134,7 @@ def to_number(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
 
-_MANAGER_LOCK = threading.RLock()
 _ACTIVE_SERVICE: AlpacaStreamingService | None = None
+_MANAGER_LOCK = threading.RLock()
 mark_interrupted_run()
 atexit.register(shutdown_active_run)

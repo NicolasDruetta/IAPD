@@ -22,6 +22,10 @@ Los identificadores del proyecto se escriben exclusivamente en inglés.
 Los nombres deben ser descriptivos y representar claramente la responsabilidad
 de cada elemento.
 
+Las constantes y variables definidas en el ámbito del módulo se ordenan
+alfabéticamente dentro de sus respectivos bloques. Las variables locales se
+ordenan según la secuencia lógica de la operación para conservar la claridad.
+
 ## 3. Organización de imports
 
 La organización de imports utiliza el siguiente orden:
@@ -53,6 +57,11 @@ convencionales y llamadas explícitas.
 Cada archivo de `pages/` contiene exclusivamente funciones relacionadas con su
 propia tecnología o funcionalidad. Las funciones comunes y reutilizables se
 ubican en `main.py`.
+
+Los módulos de `pages/` reutilizan las funciones comunes definidas en `main.py`.
+El cargador del punto de entrada las proporciona al módulo especializado antes
+de ejecutarlo, sin ejecutar una segunda instancia del HTML ni de los elementos
+de Streamlit.
 
 ## 6. Comentarios y docstrings
 
@@ -91,7 +100,15 @@ reproducibilidad, la legibilidad, la mantenibilidad y la simplicidad técnica.
 
 Los estilos visuales se definen exclusivamente en `assets/custom.css`, que se
 carga desde `main.py`. No se utilizan atributos `style` ni bloques de estilos
-inline en el código Python o en el HTML generado por la aplicación.
+inline en el código Python o en el HTML generado por la aplicación. Los
+selectores CSS utilizan clases; no se utilizan atributos `data-testid` ni
+otros atributos `data-*` como mecanismo de estilizado.
+
+`assets/custom.css` conserva este orden de secciones: variables y temas,
+controles del tema, etiquetas HTML, identificadores específicos y clases
+personalizadas o de Streamlit. Las reglas nuevas se incorporan en la sección
+que corresponde a su responsabilidad. Dentro de cada bloque de selectores,
+las clases se ordenan alfabéticamente.
 
 ## 9. Portabilidad y reproducibilidad
 

@@ -127,6 +127,8 @@ def load_page_module(module_name: str) -> ModuleType:
     if spec is None or spec.loader is None:
         raise ImportError("No se pudo cargar el módulo de Alpaca")
     module = importlib.util.module_from_spec(spec)
+    module.PRESENTATION_TIMEZONE = PRESENTATION_TIMEZONE
+    module.format_presentation_timestamp = format_presentation_timestamp
     sys.modules[module_name] = module
     try:
         spec.loader.exec_module(module)
@@ -184,6 +186,68 @@ def render_log_console(
         </script>
         """,
         unsafe_allow_javascript=True,
+    )
+
+def render_volume_chart(rows: list[dict[str, Any]]) -> None:
+    """Muestro el gráfico con el acumulado confirmado por Spark."""
+
+    chart_rows = [
+        {
+            "symbol": row["symbol"],
+            "volume": row["total_volume"],
+            "volume_label": f"{row['total_volume']:,.0f}",
+        }
+        for row in rows
+    ]
+    chart_spec = {
+        "data": {"values": chart_rows},
+        "height": 360,
+        "layer": [
+            {
+                "mark": {"type": "bar", "cornerRadiusEnd": 4},
+                "encoding": {
+                    "y": {
+                        "field": "symbol",
+                        "type": "nominal",
+                        "sort": {
+                            "field": "volume",
+                            "order": "descending",
+                        },
+                        "title": "Símbolo",
+                    },
+                    "x": {
+                        "field": "volume",
+                        "type": "quantitative",
+                        "title": "Volumen acumulado (acciones)",
+                    },
+                },
+            },
+            {
+                "mark": {"type": "text", "align": "left", "dx": 4},
+                "encoding": {
+                    "y": {
+                        "field": "symbol",
+                        "type": "nominal",
+                        "sort": {
+                            "field": "volume",
+                            "order": "descending",
+                        },
+                    },
+                    "x": {
+                        "field": "volume",
+                        "type": "quantitative",
+                    },
+                    "text": {
+                        "field": "volume_label",
+                        "type": "nominal",
+                    },
+                },
+            },
+        ],
+    }
+    st.vega_lite_chart(
+        spec=chart_spec,
+        use_container_width=True,
     )
 
 st.set_page_config(
@@ -399,7 +463,25 @@ def render_streaming() -> None:
         if "required positional argument: 'limit'" not in str(error):
             raise
         events = streaming_module.read_recent_events(snapshot["run_id"])
-    spark_result = spark_module.process_events(events)
+    run_id = snapshot["run_id"]
+    spark_checkpoint = streaming_module.get_spark_checkpoint(run_id)
+    processed_events = int(
+        (spark_checkpoint or {}).get("processed_events", 0)
+    )
+    spark_events = streaming_module.get_events_after(
+        run_id,
+        processed_events,
+    )
+    spark_result = spark_module.process_events(
+        spark_events,
+        run_id=run_id,
+        checkpoint=spark_checkpoint,
+    )
+    if spark_result.get("checkpoint") is not None:
+        streaming_module.append_spark_checkpoint(
+            run_id,
+            spark_result["checkpoint"],
+        )
     log_lines = snapshot.get("logs", [])
     execution_column, alpaca_column, spark_column = st.columns(
         3,
@@ -428,8 +510,12 @@ def render_streaming() -> None:
                 "Conexión activa; todavía no se recibieron operaciones. "
                 "El mercado puede estar cerrado."
             )
+
     with spark_column:
-        st.subheader("Apache Spark" + " - " + "[Spark Master ↗](http://localhost:8080/)")
+        st.subheader(
+            "Apache Spark" + " - " +
+            "[Spark Master ↗](http://localhost:8080/)"
+        )
         spark_lines = list(spark_result["logs"])
         if spark_result["rows"]:
             spark_lines.append("")
@@ -444,6 +530,15 @@ def render_streaming() -> None:
             )
         st.caption(f"Eventos recibidos: {len(spark_lines)}")
         render_log_console(spark_lines, "spark-log-console")
+
+    st.divider()
+    st.subheader("Top 10 acciones con mayor volumen negociado")
+
+    top_volume_rows = spark_result.get("top_volume", [])
+    if not top_volume_rows:
+        st.info("Todavía no hay volumen confirmado por Apache Spark.")
+    else:
+        render_volume_chart(top_volume_rows)
 
 render_streaming_fragment = st.fragment(render_streaming, run_every="5s")
 render_streaming_fragment()
