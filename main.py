@@ -231,15 +231,12 @@ def render_streaming() -> None:
         streaming_module.register_heartbeat(active_run_id)
         snapshot = streaming_module.get_run_snapshot()
 
-    default_symbols = ", ".join(
-        symbol
-        for symbol in snapshot["symbols"]
-        if symbol != getattr(streaming_module, "ALL_MARKET_SYMBOL", "*")
-    )
-    if not snapshot["is_active"]:
-        default_symbols = ""
+    universe = snapshot.get("universe", {})
+    default_symbols = ""
+    if snapshot["is_active"] and universe.get("selection") == "manual":
+        default_symbols = ", ".join(snapshot["symbols"])
     st.subheader("Símbolos")
-    st.caption("Vacío = todo el mercado en tiempo real.")
+    st.caption("Vacío = componentes actuales del S&P 500.")
     symbols_col, actions_col = st.columns(
         [6, 6],
         gap="small",
@@ -250,7 +247,7 @@ def render_streaming() -> None:
             symbols_text = st.text_input(
                 "Símbolos",
                 value=default_symbols,
-                placeholder= "AAPL, MSFT, NVDA, SPY, TSLA, META, SPCX, GLD, BTC, OXY",
+                placeholder="AAPL, MSFT, GOOGL, AMZN, NVDA, META, TSLA",
                 label_visibility="collapsed",
                 disabled=bool(
                     snapshot["is_active"]

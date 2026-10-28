@@ -114,14 +114,31 @@ registros JSONL tipados de estado, eventos emitidos, logs, heartbeats,
 progreso, errores y recuperación. No se crean archivos de metadata, logs o
 eventos separados para los RUN nuevos.
 
-Cuando el campo de símbolos está vacío, REPLAY obtiene los activos de acciones
-activos de Alpaca y utiliza la última sesión bursátil regular completa y
-disponible según el calendario oficial de Alpaca. La fecha se selecciona a
-partir de las sesiones informadas por ese calendario, por lo que contempla
-fines de semana, feriados y cierres anticipados. La apertura y el cierre
-oficiales se interpretan en `America/New_York` y se convierten a UTC antes de
-consultar la API histórica. Por lo tanto, REPLAY se limita a la sesión regular
-de esa fecha y no consulta las horas previas a la apertura.
+Cuando el campo de símbolos está vacío, el RUN obtiene la composición actual
+del S&P 500 desde su tabla pública de componentes:
+`https://en.wikipedia.org/wiki/List_of_S%26P_500_companies`. La página se
+consulta en cada nuevo RUN, se normalizan sus símbolos y se conservan todas las
+clases de acciones incluidas en la tabla. La definición del índice se contrasta
+con la referencia de S&P Dow Jones Indices:
+`https://www.spglobal.com/spdji/en/indices/equity/sp-500/`. Cada componente se
+valida contra el endpoint oficial de activos de Alpaca; solo se incorporan
+activos estadounidenses activos y tradables que Alpaca devuelve. Si la fuente
+o la validación falla, el RUN informa el error y no sustituye el universo por
+todo el mercado.
+
+El RUN conserva el universo resuelto, la fuente, la fecha informada por la
+fuente, la fecha de consulta, los componentes encontrados, los símbolos
+disponibles y los no disponibles. Por eso el listado no cambia durante la
+ejecución. Los símbolos ingresados manualmente se mantienen sin esta
+restricción y no se filtran al S&P 500.
+
+REPLAY utiliza además la última sesión bursátil regular completa y disponible
+según el calendario oficial de Alpaca. La fecha se selecciona a partir de las
+sesiones informadas por ese calendario, por lo que contempla fines de semana,
+feriados y cierres anticipados. La apertura y el cierre oficiales se
+interpretan en `America/New_York` y se convierten a UTC antes de consultar la
+API histórica. Por lo tanto, REPLAY se limita a la sesión regular de esa fecha
+y no consulta las horas previas a la apertura.
 
 La descarga se divide en ventanas temporales de 15 minutos, ajustadas a la
 apertura y al cierre reales, y grupos de símbolos con un máximo de cuatro
@@ -219,9 +236,10 @@ selector de símbolos y los controles de ejecución. La organización mantiene
 una distribución responsive para evitar que los textos y botones se compriman
 en pantallas pequeñas.
 
-Los símbolos predeterminados son `AAPL, MSFT, NVDA, SPY, TSLA, META, SPCX,
-GLD, BTC, OXY`. El campo se deshabilita durante una ejecución activa, un
-inicio pendiente o una detención pendiente.
+Cuando el campo está vacío, el universo predeterminado corresponde a los
+componentes actuales del S&P 500 validados contra Alpaca. El campo se
+deshabilita durante una ejecución activa, un inicio pendiente o una detención
+pendiente.
 
 La fila de controles utiliza una distribución de seis unidades para símbolos y
 seis unidades para acciones. Dentro del área de acciones, iniciar, detener y

@@ -7,6 +7,7 @@ import heapq
 import json
 import os
 import queue
+import re
 import ssl
 import threading
 import time
@@ -18,6 +19,7 @@ import uuid
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
+from html.parser import HTMLParser
 from main import PRESENTATION_TIMEZONE, format_presentation_timestamp
 from pathlib import Path
 from typing import Any, Callable
@@ -30,6 +32,12 @@ ALL_MARKET_SYMBOL = "*"
 ASSETS_API_URLS = (
     "https://paper-api.alpaca.markets/v2/assets",
     "https://api.alpaca.markets/v2/assets",
+)
+SP500_COMPONENTS_URL = (
+    "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+)
+SP500_INDEX_URL = (
+    "https://www.spglobal.com/spdji/en/indices/equity/sp-500/"
 )
 CALENDAR_API_URLS = (
     "https://api.alpaca.markets/v2/calendar",
@@ -58,6 +66,64 @@ REPLAY_SPEEDS = {
     "Máxima velocidad controlada": 0.0,
 }
 NEW_YORK_TIMEZONE = ZoneInfo("America/New_York")
+
+class SP500TableParser(HTMLParser):
+    """Extraigo filas de tablas HTML para localizar la columna Symbol."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._cell: list[str] | None = None
+        self._row: list[str] | None = None
+        self._table: list[list[str]] | None = None
+        self._table_depth = 0
+        self.tables: list[list[list[str]]] = []
+        self.rows: list[list[str]] = []
+
+    def handle_data(self, data: str) -> None:
+        """Acumulo el texto de la celda actual."""
+
+        if self._cell is not None:
+            self._cell.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        """Cierro celdas y filas de la tabla analizada."""
+
+        if tag in {"th", "td"} and self._cell is not None:
+            cell_text = " ".join("".join(self._cell).split())
+            if self._row is not None:
+                self._row.append(cell_text)
+            self._cell = None
+        elif tag == "tr" and self._row is not None:
+            if self._row:
+                if self._table is not None:
+                    self._table.append(self._row)
+                self.rows.append(self._row)
+            self._row = None
+        elif tag == "table" and self._table_depth:
+            self._table_depth -= 1
+            if self._table_depth == 0 and self._table is not None:
+                self.tables.append(self._table)
+                self._table = None
+
+    def handle_starttag(
+        self,
+        tag: str,
+        attrs: list[tuple[str, str | None]],
+    ) -> None:
+        """Inicio el registro de una celda o fila."""
+
+        if tag == "table":
+            self._table_depth += 1
+            if self._table_depth == 1:
+                self._table = []
+        elif tag == "tr" and self._table_depth == 1:
+            self._row = []
+        elif (
+            tag in {"th", "td"}
+            and self._row is not None
+            and self._table_depth == 1
+        ):
+            self._cell = []
 
 class AlpacaEvent:
     """Represento un evento financiero recibido desde Alpaca."""
@@ -123,6 +189,7 @@ class AlpacaStreamingService:
         symbols: list[str],
         started_at: str,
         run_stem: str,
+        universe_metadata: dict[str, Any],
         feed: str = "iex",
         mode: str = "LIVE",
         replay_speed: float = 1.0,
@@ -132,6 +199,7 @@ class AlpacaStreamingService:
         self._run_id = run_id
         self._run_stem = run_stem
         self._symbols = symbols
+        self._universe_metadata = universe_metadata
         self._feed = feed
         self._mode = mode
         self._replay_speed = replay_speed
@@ -193,11 +261,37 @@ class AlpacaStreamingService:
                             "started_at": self._started_at,
                             "historical_file": self._historical_path.name,
                             "streaming_file": self._streaming_path.name,
+                            "universe": self._universe_metadata,
                         },
                     )
                 ]
             )
             self._add_log(f"{self._mode} | RUN iniciado")
+            if self._universe_metadata.get("selection") == "sp500":
+                self._add_log(
+                    "{mode} | S&P 500 | componentes={components} | "
+                    "disponibles={available} | no_disponibles={missing}"
+                    .format(
+                        mode=self._mode,
+                        components=self._universe_metadata["component_count"],
+                        available=self._universe_metadata["available_count"],
+                        missing=self._universe_metadata["unavailable_count"],
+                    )
+                )
+                self._add_log(
+                    "{mode} | S&P 500 | fuente={source} | "
+                    "actualizada={updated} | consultada={fetched}".format(
+                        mode=self._mode,
+                        source=self._universe_metadata["source"],
+                        updated=self._universe_metadata[
+                            "source_updated_at"
+                        ],
+                        fetched=self._universe_metadata["fetched_at"],
+                    )
+                )
+                self._append_stream_records_locked(
+                    [("universe", self._universe_metadata)]
+                )
             self._append_state_locked()
             self._stream_thread = threading.Thread(
                 target=self._run_stream,
@@ -279,6 +373,7 @@ class AlpacaStreamingService:
             return {
                 "run_id": self._run_id,
                 "symbols": list(self._symbols),
+                "universe": self._universe_metadata,
                 "mode": self._mode,
                 "replay_speed": self._replay_speed,
                 "status": self._status,
@@ -781,15 +876,12 @@ def download_historical_dataset(
             if path.is_file():
                 path.unlink(missing_ok=True)
 
-    market_symbols = (
-        get_market_symbols(
-            api_key,
-            api_secret,
-            progress_callback=progress_callback,
+    if ALL_MARKET_SYMBOL in symbols:
+        raise RuntimeError(
+            "El universo automático debe resolverse como S&P 500 antes "
+            "de iniciar REPLAY."
         )
-        if ALL_MARKET_SYMBOL in symbols
-        else symbols
-    )
+    market_symbols = symbols
     symbol_groups = [
         market_symbols[index:index + 100]
         for index in range(0, len(market_symbols), 100)
@@ -1346,15 +1438,12 @@ def get_market_mode(api_key: str, api_secret: str) -> str:
         )
     raise RuntimeError("No se pudo consultar el estado del mercado en Alpaca.")
 
-def get_market_symbols(
+def get_available_asset_symbols(
     api_key: str,
     api_secret: str,
-    progress_callback: Callable[[str], None] | None = None,
 ) -> list[str]:
-    """Obtengo dinámicamente todos los símbolos de acciones activos."""
+    """Obtengo los símbolos de acciones activos y tradables de Alpaca."""
 
-    if progress_callback is not None:
-        progress_callback("REPLAY | consultando universo de acciones activas")
     query = urllib.parse.urlencode(
         {"status": "active", "asset_class": "us_equity"}
     )
@@ -1392,14 +1481,108 @@ def get_market_symbols(
     symbols = {
         asset.get("symbol")
         for asset in assets
-        if asset.get("tradable") and asset.get("status") == "active"
+        if asset.get("tradable")
+        and asset.get("status") == "active"
+        and asset.get("symbol")
     }
-    market_symbols = sorted(symbol for symbol in symbols if symbol)
-    if progress_callback is not None:
-        progress_callback(
-            f"REPLAY | símbolos obtenidos={len(market_symbols)}"
+    return sorted(symbols)
+
+def get_sp500_components() -> tuple[list[str], str]:
+    """Obtengo los componentes actuales del S&P 500 desde su tabla pública."""
+
+    request = urllib.request.Request(
+        SP500_COMPONENTS_URL,
+        headers={"User-Agent": "Apache-Big-Data-Lab/1.0"},
+    )
+    fetched_at = get_utc_timestamp()
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            source_updated_at = response.headers.get(
+                "Last-Modified",
+                fetched_at,
+            )
+            html = response.read().decode("utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        raise RuntimeError(
+            "No se pudo obtener la composición actual del S&P 500."
+        ) from error
+    parser = SP500TableParser()
+    parser.feed(html)
+    for table in parser.tables:
+        for row_index, row in enumerate(table):
+            headers = [cell.lower() for cell in row]
+            if not any("symbol" in header for header in headers):
+                continue
+            symbol_index = next(
+                index
+                for index, header in enumerate(headers)
+                if "symbol" in header
+            )
+            components = sorted(
+                {
+                    normalize_symbol(row_data[symbol_index])
+                    for row_data in table[row_index + 1:]
+                    if len(row_data) > symbol_index
+                    and normalize_symbol(row_data[symbol_index])
+                }
+            )
+            if components:
+                return components, source_updated_at
+    raise RuntimeError(
+        "La fuente del S&P 500 no devolvió una tabla de símbolos válida."
+    )
+
+def normalize_symbol(symbol: str) -> str:
+    """Normalizo un símbolo textual sin cambiar la clase de acción."""
+
+    normalized = re.sub(r"\[[^]]*\]", "", str(symbol))
+    return normalized.strip().upper().replace("/", "-")
+
+def resolve_automatic_symbols(
+    api_key: str,
+    api_secret: str,
+) -> tuple[list[str], dict[str, Any]]:
+    """Valido los componentes del S&P 500 contra los activos de Alpaca."""
+
+    components, source_updated_at = get_sp500_components()
+    available_assets = get_available_asset_symbols(api_key, api_secret)
+    asset_by_key = {
+        normalize_symbol(symbol).replace(".", ""): symbol
+        for symbol in available_assets
+    }
+    available = sorted(
+        {
+            asset_by_key[normalize_symbol(symbol).replace(".", "")]
+            for symbol in components
+            if normalize_symbol(symbol).replace(".", "") in asset_by_key
+        }
+    )
+    available_keys = set(asset_by_key).intersection(
+        normalize_symbol(symbol).replace(".", "")
+        for symbol in components
+    )
+    unavailable = sorted(
+        symbol
+        for symbol in components
+        if normalize_symbol(symbol).replace(".", "") not in available_keys
+    )
+    if not available:
+        raise RuntimeError(
+            "Ningún componente del S&P 500 está disponible en Alpaca."
         )
-    return market_symbols
+    return available, {
+        "selection": "sp500",
+        "source": SP500_COMPONENTS_URL,
+        "index_source": SP500_INDEX_URL,
+        "source_updated_at": source_updated_at,
+        "fetched_at": get_utc_timestamp(),
+        "component_count": len(components),
+        "available_count": len(available),
+        "unavailable_count": len(unavailable),
+        "components": components,
+        "available_symbols": available,
+        "unavailable_symbols": unavailable,
+    }
 
 def get_recent_events(run_id: str | None) -> list[AlpacaEvent]:
     """Devuelvo todos los eventos activos o persistidos."""
@@ -1420,6 +1603,7 @@ def get_run_snapshot() -> dict[str, Any]:
     metadata = get_latest_metadata()
     if metadata is not None:
         metadata.setdefault("mode", "LIVE")
+        metadata.setdefault("universe", {"selection": "manual"})
         metadata.setdefault("replay_speed", 1.0)
         metadata.setdefault("replay_position", 0)
         metadata.setdefault("historical_date", None)
@@ -1435,6 +1619,7 @@ def get_run_snapshot() -> dict[str, Any]:
     return {
         "run_id": None,
         "symbols": [],
+        "universe": {"selection": "manual", "symbols": []},
         "mode": "LIVE",
         "replay_speed": 1.0,
         "status": "Listo para ejecutar",
@@ -1651,6 +1836,7 @@ def read_streaming_state(path: Path) -> dict[str, Any] | None:
     state: dict[str, Any] = {
         "run_id": path.stem,
         "symbols": [],
+        "universe": {"selection": "manual", "symbols": []},
         "mode": "LIVE",
         "replay_speed": 1.0,
         "status": "Incompleto",
@@ -1690,6 +1876,7 @@ def read_streaming_state(path: Path) -> dict[str, Any] | None:
                         "started_at",
                         "historical_file",
                         "streaming_file",
+                        "universe",
                     ):
                         if key in record:
                             state[key] = record[key]
@@ -1773,6 +1960,17 @@ def start_run(
         if _ACTIVE_SERVICE is not None and _ACTIVE_SERVICE.is_active():
             return _ACTIVE_SERVICE
         selected_mode = get_market_mode(api_key, api_secret)
+        if ALL_MARKET_SYMBOL in symbols:
+            resolved_symbols, universe_metadata = resolve_automatic_symbols(
+                api_key,
+                api_secret,
+            )
+        else:
+            resolved_symbols = symbols
+            universe_metadata = {
+                "selection": "manual",
+                "symbols": list(symbols),
+            }
         started_at = get_utc_timestamp()
         run_uuid = str(uuid.uuid4())
         run_id = build_run_stem(started_at, run_uuid)
@@ -1780,9 +1978,10 @@ def start_run(
             api_key,
             api_secret,
             run_id,
-            symbols,
+            resolved_symbols,
             started_at,
             run_id,
+            universe_metadata,
             feed,
             selected_mode,
             replay_speed,
