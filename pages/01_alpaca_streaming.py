@@ -329,7 +329,6 @@ class AlpacaStreamingService:
                 return False
             self._last_heartbeat_monotonic = time.monotonic()
             self._last_heartbeat_at = get_utc_timestamp()
-            self._add_log(f"{self._mode} | heartbeat recibido")
             self._append_state_locked()
         return True
 

@@ -169,6 +169,8 @@ def initialize_state() -> None:
         st.session_state.dark_mode = False
     if "alpaca_run_id" not in st.session_state:
         st.session_state.alpaca_run_id = None
+    if "start_requested" not in st.session_state:
+        st.session_state.start_requested = False
     if "start_pending" not in st.session_state:
         st.session_state.start_pending = False
     if "stop_pending" not in st.session_state:
@@ -229,6 +231,7 @@ def load_page_module(module_name: str) -> ModuleType:
 def mark_start_pending() -> None:
     """Marco que el usuario acaba de solicitar el inicio."""
 
+    st.session_state.start_requested = True
     st.session_state.start_pending = True
 
 def mark_stop_pending() -> None:
@@ -447,8 +450,9 @@ def render_streaming() -> None:
     if not symbols:
         symbols = [getattr(streaming_module, "ALL_MARKET_SYMBOL", "*")]
     selected_replay_speed = 1.0
+    clear_consoles = st.session_state.start_requested
 
-    if start_clicked or st.session_state.start_pending:
+    if st.session_state.start_pending and not clear_consoles:
         st.session_state.start_pending = False
         if (
             not streaming_module.ALPACA_API_KEY
@@ -591,22 +595,35 @@ def render_streaming() -> None:
             else None
         )
         if streaming_path is not None:
-            cursor_start = int(execution_state["cursor"])
-            initial_load = not execution_state["initialized"]
-            log_lines, next_cursor, has_more = (
-                streaming_module.read_log_delta(
-                    streaming_path,
-                    0 if initial_load else cursor_start,
-                    None if initial_load else CONSOLE_TRANSFER_BATCH_SIZE,
+            if clear_consoles:
+                cursor_start, next_cursor, has_more = 0, 0, False
+                initial_load, log_lines = True, []
+            else:
+                cursor_start = int(execution_state["cursor"])
+                initial_load = not execution_state["initialized"]
+                log_lines, next_cursor, has_more = (
+                    streaming_module.read_log_delta(
+                        streaming_path,
+                        0 if initial_load else cursor_start,
+                        None
+                        if initial_load
+                        else CONSOLE_TRANSFER_BATCH_SIZE,
+                    )
                 )
-            )
         else:
-            cursor_start = int(execution_state["cursor"])
-            initial_load = not execution_state["initialized"]
+            cursor_start = 0 if clear_consoles else int(
+                execution_state["cursor"]
+            )
+            initial_load = True if clear_consoles else not execution_state[
+                "initialized"
+            ]
             log_lines, next_cursor, has_more = [], cursor_start, False
         execution_state["initialized"] = True
         execution_state["cursor"] = next_cursor
-        execution_state["line_number"] += len(log_lines)
+        if clear_consoles:
+            execution_state["line_number"] = 0
+        else:
+            execution_state["line_number"] += len(log_lines)
         log_display_lines = []
         for persisted_sequence, line in log_lines:
             if persisted_sequence is None:
@@ -638,13 +655,23 @@ def render_streaming() -> None:
         )
         initial_load = not alpaca_state["initialized"]
         if streaming_path is not None:
-            events, next_cursor, has_more = streaming_module.read_event_delta(
-                streaming_path,
-                0 if initial_load else int(alpaca_state["cursor"]),
-                None if initial_load else CONSOLE_TRANSFER_BATCH_SIZE,
-            )
+            if clear_consoles:
+                events, next_cursor, has_more = [], 0, False
+                initial_load = True
+            else:
+                events, next_cursor, has_more = (
+                    streaming_module.read_event_delta(
+                        streaming_path,
+                        0 if initial_load else int(alpaca_state["cursor"]),
+                        None
+                        if initial_load
+                        else CONSOLE_TRANSFER_BATCH_SIZE,
+                    )
+                )
         else:
-            events, next_cursor, has_more = [], alpaca_state["cursor"], False
+            next_cursor = 0 if clear_consoles else alpaca_state["cursor"]
+            events, has_more = [], False
+            initial_load = True if clear_consoles else initial_load
         alpaca_state["initialized"] = True
         event_lines = []
         for event in events:
@@ -660,7 +687,11 @@ def render_streaming() -> None:
             )
         cursor_start = int(alpaca_state["cursor"])
         alpaca_state["cursor"] = next_cursor
-        alpaca_state["line_number"] += len(event_lines)
+        if clear_consoles:
+            alpaca_state["line_number"] = 0
+            cursor_start = 0
+        else:
+            alpaca_state["line_number"] += len(event_lines)
         st.caption(f"Eventos recibidos: {alpaca_state['line_number']}")
         render_log_console(
             event_lines,
@@ -685,17 +716,28 @@ def render_streaming() -> None:
         initial_load = not spark_state["initialized"]
         if snapshot.get("console_schema_version", 0) >= 2:
             cursor_start = int(spark_state["cursor"])
-            spark_records, next_cursor, has_more, schema_found = (
-                streaming_module.read_spark_delta(
-                    streaming_path,
-                    0 if initial_load else cursor_start,
-                    None if initial_load else CONSOLE_TRANSFER_BATCH_SIZE,
+            if clear_consoles:
+                spark_records, next_cursor, has_more, schema_found = (
+                    [], 0, False, False
                 )
-                if streaming_path is not None
-                else ([], cursor_start, False, False)
-            )
+                cursor_start, initial_load = 0, True
+            else:
+                spark_records, next_cursor, has_more, schema_found = (
+                    streaming_module.read_spark_delta(
+                        streaming_path,
+                        0 if initial_load else cursor_start,
+                        None
+                        if initial_load
+                        else CONSOLE_TRANSFER_BATCH_SIZE,
+                    )
+                    if streaming_path is not None
+                    else ([], cursor_start, False, False)
+                )
             spark_state["cursor"] = next_cursor
-            spark_state["line_number"] += len(spark_records)
+            if clear_consoles:
+                spark_state["line_number"] = 0
+            else:
+                spark_state["line_number"] += len(spark_records)
             spark_state["persisted"] = (
                 spark_state["persisted"] or schema_found
             )
@@ -706,7 +748,9 @@ def render_streaming() -> None:
             spark_cursor_end = next_cursor
             spark_state["initialized"] = True
         else:
-            spark_signature = tuple(spark_console_lines)
+            spark_signature = () if clear_consoles else tuple(
+                spark_console_lines
+            )
             if spark_signature == spark_state.get("signature"):
                 spark_lines = []
             else:
@@ -715,7 +759,10 @@ def render_streaming() -> None:
             cursor_start = int(spark_state["cursor"])
             spark_cursor_end = cursor_start + len(spark_lines)
             spark_state["cursor"] = spark_cursor_end
-            spark_state["line_number"] += len(spark_lines)
+            if clear_consoles:
+                spark_state["line_number"] = 0
+            else:
+                spark_state["line_number"] += len(spark_lines)
             has_more = False
             spark_state["initialized"] = True
         st.caption(
@@ -729,6 +776,8 @@ def render_streaming() -> None:
             has_more=has_more,
             initial_load=initial_load,
         )
+    if clear_consoles:
+        st.session_state.start_requested = False
 
     st.divider()
     st.subheader("Top 10 acciones con mayor volumen negociado")
