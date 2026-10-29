@@ -105,14 +105,24 @@ está activa. Al refrescar Streamlit, la aplicación recupera el RUN existente y
 no vuelve a consultar el mercado ni crea otra conexión.
 
 REPLAY no depende de archivos históricos incluidos en el repositorio. Cada RUN
-genera exactamente dos archivos persistentes en el volumen `lab-data`, uno en
-`data/historical/` y otro en `data/streaming/`. Ambos comparten el nombre base
-`YYYYMMDD_HHMMSS_mmm_UUID`, construido con la fecha de inicio en
-`America/Argentina/Cordoba`, milisegundos y un UUID completo. El archivo
-histórico contiene operaciones JSONL; el archivo de streaming contiene
-registros JSONL tipados de estado, eventos emitidos, logs, heartbeats,
-progreso, errores y recuperación. No se crean archivos de metadata, logs o
-eventos separados para los RUN nuevos.
+nuevo genera exactamente cinco archivos directamente en `data/`, usando la
+hora de `America/Argentina/Cordoba` y el identificador `YYYYMMDD_HHMMSS`:
+
+```text
+data/
+├── YYYYMMDD_HHMMSS_run_info.jsonl
+├── YYYYMMDD_HHMMSS_alpaca_trades.jsonl
+├── YYYYMMDD_HHMMSS_log_handler.txt
+├── YYYYMMDD_HHMMSS_log_alpaca.txt
+└── YYYYMMDD_HHMMSS_log_spark.txt
+```
+
+`_run_info.jsonl` contiene solo información estructurada de control,
+recuperación y checkpoints Spark. `_alpaca_trades.jsonl` conserva las
+operaciones originales de Alpaca. Cada TXT es la fuente única de verdad de su
+consola: Python genera la línea numerada y la agrega una sola vez; la interfaz
+lee ese TXT sin renumerar ni reformatear. Los RUN históricos conservan su
+formato anterior y continúan siendo legibles.
 
 Cuando el campo de símbolos está vacío, el RUN obtiene la composición actual
 del S&P 500 desde su tabla pública de componentes:
@@ -160,12 +170,11 @@ con operaciones, las operaciones descargadas, la consolidación de cada
 ventana y los lotes emitidos. El progreso se actualiza por grupos y lotes,
 sin registrar una línea por operación individual.
 
-El archivo de streaming se escribe incrementalmente y en modo append-only, sin
-límite de retención, truncamiento ni sobrescritura. Cada registro incluye un
-tipo y una secuencia para distinguir logs, estados, heartbeats, progreso,
-errores y eventos. La interfaz consulta el archivo secuencialmente mediante
-cursores, por lo que no carga el historial completo en RAM; todas las entradas
-permanecen consultables desde la aplicación o desde el volumen `lab-data`.
+Los cinco archivos nuevos se escriben incrementalmente y en modo append-only,
+sin truncamiento ni sobrescritura. La interfaz conserva un cursor de bytes por
+consola, carga tras F5 únicamente las últimas 1.000 líneas del TXT y mantiene
+el contador en el número de la última línea persistida. Las líneas anteriores
+permanecen intactas y cada consola ofrece la descarga de su TXT completo.
 
 Los históricos legacy existentes se conservan sin modificación. Cuando uno es
 válido para una nueva sesión, se reutiliza como fuente mediante enlace físico
@@ -204,8 +213,7 @@ NicolasDruetta_TP2/
 │   ├── 01_alpaca_streaming.py
 │   └── 02_apache_spark.py
 ├── data/
-│   ├── historical/
-│   └── streaming/
+│   └── (archivos de RUN y directorios legacy conservados)
 └── assets/
     └── custom.css
 ```
@@ -218,9 +226,8 @@ NicolasDruetta_TP2/
 - `compose.yaml`: servicios Streamlit/Driver, Master y dos Workers.
 - `docker/Dockerfile`: imagen común con Python, PySpark y Java.
 - `.dockerignore`: archivos excluidos del contexto de construcción.
-- `data/historical/`: un JSONL de operaciones por cada RUN nuevo y cachés
-  legacy conservadas.
-- `data/streaming/`: un JSONL tipado por cada RUN nuevo.
+- `data/`: cinco archivos por cada RUN nuevo; los directorios legacy existentes
+  se conservan para compatibilidad.
 - `assets/custom.css`: recurso visual centralizado del proyecto.
 - `requirements.txt`: dependencias Python declaradas.
 - `AGENTS.md`: convenciones técnicas de desarrollo.
@@ -271,19 +278,15 @@ mediante media queries clásicas para conservar la legibilidad.
 
 La actualización de las consolas utiliza un componente v2 registrado en línea
 desde `main.py`, con HTML y JavaScript puros. Cada visor conserva su mismo
-`textarea` y recibe solamente el delta posterior a su cursor de bytes
-independiente dentro del JSONL de streaming. JavaScript agrega esas líneas al
-final del elemento sin reenviar el texto ya presentado. El cursor del
-navegador determina si debe continuar solicitando datos pendientes durante la
-recuperación progresiva de un RUN, mientras que la posición del scroll se
-mantiene cuando el usuario está consultando registros anteriores y se sigue el
-final cuando ya estaba allí.
+`textarea` y recibe solamente el delta posterior a su cursor de bytes dentro
+del TXT correspondiente. JavaScript agrega las líneas sin calcular numeración
+y mantiene como máximo las últimas 1.000 visibles.
 
 El tamaño de cada transferencia es únicamente un lote técnico de transporte;
 no representa un límite de historial, retención ni cantidad máxima de entradas.
-Los JSONL permanecen append-only y completos. Después de F5, cada consola
-reanuda su cursor y recupera los registros en lotes sucesivos, sin convertir
-el historial completo en una lista ni crear archivos auxiliares. El gráfico
+Los archivos persistentes permanecen completos. Después de F5, cada consola
+lee directamente las últimas 1.000 líneas y coloca el scroll al final, sin
+recuperar progresivamente todo el historial. El gráfico
 Top 10 continúa dentro del fragmento periódico y solo utiliza los resultados
 Spark ya disponibles, sin ejecutar trabajos adicionales para la actualización
 visual.
@@ -296,7 +299,7 @@ y actualiza las diez barras ordenadas de forma descendente durante LIVE o
 REPLAY, sin esperar la finalización del RUN.
 
 El acumulado se asocia al `run_id` y se persiste mediante registros tipados
-`spark_checkpoint` dentro del JSONL de streaming existente. Spark procesa solo
+`spark_checkpoint` dentro de `_run_info.jsonl`. Spark procesa solo
 los eventos posteriores al último checkpoint, por lo que una actualización de
 Streamlit o un F5 no vuelve a contar lotes ya confirmados ni carga el histórico
 completo para redibujar el gráfico.
@@ -406,11 +409,11 @@ docker compose up --build
   concurrentes como máximo y reintentos acotados para HTTP 429.
 - Emisión progresiva y merge cronológico global sin cargar el día completo en
   memoria.
-- Persistencia incremental en dos JSONL por RUN, con recuperación por registros
-  tipados y consulta progresiva de logs mediante cursores.
+- Persistencia incremental en cinco archivos por RUN, con TXT de consola
+  numerados, recuperación por cursores y compatibilidad con RUN históricos.
 - Gráfico incremental del Top 10 de volumen acumulado confirmado por Spark.
-- Visualización completa de los eventos recibidos y procesamiento Spark sin
-  recorte por cantidad de eventos.
+- Visualización de las últimas 1.000 entradas por consola, con historial
+  completo conservado en los TXT persistentes.
 - Logs de ejecución, consola de operaciones y consola Spark.
 - Imagen Docker reproducible con Python 3.15, PySpark 4.2.0 y Java 17.
 - Compose con Streamlit/Driver, Master y dos Workers.

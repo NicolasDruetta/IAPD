@@ -55,6 +55,10 @@ LOG_CONSOLE_COMPONENT = st.components.v2.component(
                 const suffix = separator + lines.join("\\n");
                 consoleElement.value += suffix;
             }
+            const visibleLines = consoleElement.value.split("\\n");
+            if (visibleLines.length > 1000) {
+                consoleElement.value = visibleLines.slice(-1000).join("\\n");
+            }
             state.appliedCursor = cursorEnd;
             state.lastBatchId = data.batch_id;
             scrollToBottom();
@@ -290,6 +294,68 @@ def render_log_console(
         on_need_more_change=lambda: None,
     )
 
+def render_new_run_console(
+    streaming_module: ModuleType,
+    console_id: str,
+    console_path: Path,
+    console_title: str,
+    count_label: str,
+    count: int,
+    run_id: str,
+    clear_console: bool = False,
+) -> None:
+    """Muestro las últimas líneas persistidas de un TXT de consola."""
+
+    state = get_console_state(console_id, run_id)
+    initial_load = clear_console or not state["initialized"]
+    if initial_load:
+        lines, next_cursor, _ = streaming_module.read_console_tail(
+            console_path,
+            1000,
+        )
+        cursor_start = 0
+    else:
+        cursor_start = int(state["cursor"])
+        lines, next_cursor, _ = streaming_module.read_console_delta(
+            console_path,
+            cursor_start,
+            CONSOLE_TRANSFER_BATCH_SIZE,
+        )
+    state["initialized"] = True
+    state["cursor"] = next_cursor
+    if not lines:
+        lines = [
+            {
+                "execution-log-console": "Log de ejecución | esperando actividad.",
+                "alpaca-log-console": "Alpaca | esperando operaciones.",
+                "spark-log-console": "Spark | esperando un lote de operaciones.",
+            }[console_id]
+        ]
+    st.subheader(console_title)
+    counter_col, download_col = st.columns([10, 1], gap="small")
+    with counter_col:
+        st.caption(f"{count_label}: {count}")
+    with download_col:
+        if console_path.exists():
+            st.download_button(
+                "↓",
+                data=console_path.read_bytes(),
+                file_name=console_path.name,
+                mime="text/plain",
+                key=f"download-{console_id}-{run_id}",
+                help="Descargar consola completa",
+                type="secondary",
+            )
+    render_log_console(
+        lines,
+        console_id,
+        cursor_end=next_cursor,
+        cursor_start=cursor_start,
+        initial_load=initial_load,
+        placeholder=False,
+    )
+
+
 def render_volume_chart(rows: list[dict[str, Any]]) -> None:
     """Muestro el gráfico con el acumulado confirmado por Spark."""
 
@@ -395,10 +461,18 @@ with st.container(width="content"):
     with title_col:
         st.title("Apache Big Data Lab")
     with theme_col:
-        with st.container(key="theme-toggle"):
-            if st.button("◐", width="stretch"):
-                st.session_state.dark_mode = not st.session_state.dark_mode
-                st.rerun()
+        if st.button(
+            "",
+            icon=(
+                ":material/light_mode:"
+                if st.session_state.dark_mode
+                else ":material/dark_mode:"
+            ),
+            type="secondary",
+            width="content",
+        ):
+            st.session_state.dark_mode = not st.session_state.dark_mode
+            st.rerun()
 st.subheader("Procesamiento de datos financieros en tiempo real con Apache Spark.")
 st.caption("Alumno: Nicolás Druetta. Materia: IAPD. Año: 2026.")
 st.divider()
@@ -628,6 +702,87 @@ def render_streaming() -> None:
             run_id,
             spark_console_lines,
         )
+    if snapshot.get("console_schema_version", 0) >= 3 and run_id:
+        new_console_paths = {
+            "execution-log-console": streaming_module.get_run_file(
+                run_id,
+                "handler",
+            ),
+            "alpaca-log-console": streaming_module.get_run_file(
+                run_id,
+                "alpaca",
+            ),
+            "spark-log-console": streaming_module.get_run_file(
+                run_id,
+                "spark",
+            ),
+        }
+        new_console_counts = {
+            "execution-log-console": int(snapshot.get("log_count", 0)),
+            "alpaca-log-console": int(snapshot.get("event_count", 0)),
+            "spark-log-console": streaming_module.read_console_tail(
+                new_console_paths["spark-log-console"],
+                1,
+            )[2],
+        }
+        new_console_titles = {
+            "execution-log-console": "Log de ejecución",
+            "alpaca-log-console": "Alpaca Streaming",
+            "spark-log-console": "Apache Spark - [Spark Master ↗](http://localhost:8080/)",
+        }
+        new_console_labels = {
+            "execution-log-console": "Entradas recibidas",
+            "alpaca-log-console": "Eventos recibidos",
+            "spark-log-console": "Eventos recibidos",
+        }
+        execution_column, alpaca_column, spark_column = st.columns(
+            3,
+            gap="small",
+            vertical_alignment="top",
+            wrap=True,
+        )
+        with execution_column:
+            render_new_run_console(
+                streaming_module,
+                "execution-log-console",
+                new_console_paths["execution-log-console"],
+                new_console_titles["execution-log-console"],
+                new_console_labels["execution-log-console"],
+                new_console_counts["execution-log-console"],
+                run_id,
+                clear_consoles,
+            )
+        with alpaca_column:
+            render_new_run_console(
+                streaming_module,
+                "alpaca-log-console",
+                new_console_paths["alpaca-log-console"],
+                new_console_titles["alpaca-log-console"],
+                new_console_labels["alpaca-log-console"],
+                new_console_counts["alpaca-log-console"],
+                run_id,
+                clear_consoles,
+            )
+        with spark_column:
+            render_new_run_console(
+                streaming_module,
+                "spark-log-console",
+                new_console_paths["spark-log-console"],
+                new_console_titles["spark-log-console"],
+                new_console_labels["spark-log-console"],
+                new_console_counts["spark-log-console"],
+                run_id,
+                clear_consoles,
+            )
+        if clear_consoles:
+            st.session_state.start_requested = False
+        st.divider()
+        if last_execution_notice:
+            st.info(last_execution_notice)
+        st.subheader("Top 10 acciones con mayor volumen negociado")
+        render_volume_chart(spark_result.get("top_volume", []))
+        st.session_state.rendered_run_active = snapshot["is_active"]
+        return
     execution_column, alpaca_column, spark_column = st.columns(
         3,
         gap="small",
@@ -642,7 +797,11 @@ def render_streaming() -> None:
         )
         streaming_file = snapshot.get("streaming_file")
         streaming_path = (
-            streaming_module.DATA_DIRECTORY / streaming_file
+            (
+                streaming_module.DATA_DIRECTORY
+                if snapshot.get("console_schema_version", 0) >= 3
+                else streaming_module.LEGACY_STREAMING_DIRECTORY
+            ) / streaming_file
             if streaming_file
             else None
         )

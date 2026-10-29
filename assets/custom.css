@@ -50,25 +50,6 @@
     --console-text: #aeb6c5;
 }
 
-.st-key-theme-toggle button {
-    min-width: 2.25rem;
-    width: 2.25rem;
-    height: 2.25rem;
-    padding: 0;
-    border: 0 !important;
-    background: transparent !important;
-    box-shadow: none !important;
-    color: #246bfd !important;
-    font-size: 1.45rem;
-    line-height: 1;
-}
-
-    .st-key-theme-toggle button:hover {
-        border: 0 !important;
-        background: var(--console-background) !important;
-        color: #246bfd !important;
-    }
-
 /* Etiquetas clásicas de HTML. */
 
 html, body, .stApp {
@@ -336,14 +317,14 @@ body:has(.st-key-theme-dark) > div:last-of-type {
         flex-wrap: wrap !important;
     }
 
-        .stHorizontalBlock:not(:has(.st-key-theme-toggle)) > .stColumn {
+        .stHorizontalBlock > .stColumn {
             flex: 1 1 100% !important;
             min-width: 100% !important;
         }
 }
 
 @media (max-width: 767.98px) {
-    .stHorizontalBlock:not(:has(.st-key-theme-toggle)) > .stColumn {
+    .stHorizontalBlock > .stColumn {
         flex: 1 1 100% !important;
         min-width: 100% !important;
     }

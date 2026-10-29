@@ -15,7 +15,6 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-import uuid
 
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -37,11 +36,10 @@ CALENDAR_API_URLS = (
     "https://api.alpaca.markets/v2/calendar",
     "https://paper-api.alpaca.markets/v2/calendar",
 )
-DATA_DIRECTORY = Path(__file__).resolve().parent.parent / "data" / "streaming"
+DATA_DIRECTORY = Path(__file__).resolve().parent.parent / "data"
 HEARTBEAT_TIMEOUT_SECONDS = 30
-HISTORICAL_DIRECTORY = (
-    Path(__file__).resolve().parent.parent / "data" / "historical"
-)
+HISTORICAL_DIRECTORY = DATA_DIRECTORY / "historical"
+LEGACY_STREAMING_DIRECTORY = DATA_DIRECTORY / "streaming"
 HISTORICAL_API_URL = "https://data.alpaca.markets/v2/stocks/trades"
 HTTP_MAX_RETRIES = 5
 MARKET_CLOCK_URLS = (
@@ -237,15 +235,34 @@ class AlpacaStreamingService:
             "spark": 0,
         }
         self._historical_path = (
-            HISTORICAL_DIRECTORY / f"{run_stem}.jsonl"
+            DATA_DIRECTORY / f"{run_stem}_alpaca_trades.jsonl"
         )
-        self._streaming_path = DATA_DIRECTORY / f"{run_stem}.jsonl"
+        self._run_info_path = DATA_DIRECTORY / f"{run_stem}_run_info.jsonl"
+        self._log_handler_path = (
+            DATA_DIRECTORY / f"{run_stem}_log_handler.txt"
+        )
+        self._log_alpaca_path = (
+            DATA_DIRECTORY / f"{run_stem}_log_alpaca.txt"
+        )
+        self._log_spark_path = DATA_DIRECTORY / f"{run_stem}_log_spark.txt"
+        self._streaming_path = self._run_info_path
         ensure_data_directory()
-        ensure_historical_directory()
-        if self._streaming_path.exists() or self._historical_path.exists():
+        if any(
+            path.exists()
+            for path in (
+                self._run_info_path,
+                self._historical_path,
+                self._log_handler_path,
+                self._log_alpaca_path,
+                self._log_spark_path,
+            )
+        ):
             raise FileExistsError(f"El RUN ya existe: {run_stem}")
-        self._streaming_path.touch(exist_ok=False)
+        self._run_info_path.touch(exist_ok=False)
         self._historical_path.touch(exist_ok=False)
+        self._log_handler_path.touch(exist_ok=False)
+        self._log_alpaca_path.touch(exist_ok=False)
+        self._log_spark_path.touch(exist_ok=False)
 
     def start(self) -> bool:
         """Inicio los hilos de streaming y supervisión del RUN."""
@@ -260,23 +277,22 @@ class AlpacaStreamingService:
             )
             self._last_heartbeat_at = self._started_at
             self._last_heartbeat_monotonic = time.monotonic()
-            self._append_stream_records_locked(
-                [
-                    (
-                        "run_started",
-                        {
-                            "symbols": list(self._symbols),
-                            "mode": self._mode,
-                            "feed": self._feed,
-                            "replay_speed": self._replay_speed,
-                            "started_at": self._started_at,
-                            "historical_file": self._historical_path.name,
-                            "streaming_file": self._streaming_path.name,
-                            "universe": self._universe_metadata,
-                            "console_schema_version": 2,
-                        },
-                    )
-                ]
+            self._append_run_info_locked(
+                "run_started",
+                {
+                    "symbols": list(self._symbols),
+                    "mode": self._mode,
+                    "feed": self._feed,
+                    "replay_speed": self._replay_speed,
+                    "started_at": self._started_at,
+                    "trades_file": self._historical_path.name,
+                    "run_info_file": self._run_info_path.name,
+                    "log_handler_file": self._log_handler_path.name,
+                    "log_alpaca_file": self._log_alpaca_path.name,
+                    "log_spark_file": self._log_spark_path.name,
+                    "universe": self._universe_metadata,
+                    "console_schema_version": 3,
+                },
             )
             self._add_log(f"{self._mode} | RUN iniciado")
             if self._universe_metadata.get("selection") == "sp500":
@@ -295,14 +311,13 @@ class AlpacaStreamingService:
                     "actualizada={updated} | consultada={fetched}".format(
                         mode=self._mode,
                         source=self._universe_metadata["source"],
-                        updated=self._universe_metadata[
-                            "source_updated_at"
-                        ],
+                        updated=self._universe_metadata["source_updated_at"],
                         fetched=self._universe_metadata["fetched_at"],
                     )
                 )
-                self._append_stream_records_locked(
-                    [("universe", self._universe_metadata)]
+                self._append_run_info_locked(
+                    "universe",
+                    self._universe_metadata,
                 )
             self._append_state_locked()
             self._stream_thread = threading.Thread(
@@ -394,13 +409,16 @@ class AlpacaStreamingService:
                 "replay_position": self._replay_position,
                 "historical_date": self._historical_date,
                 "logs": [],
-                "console_schema_version": 2,
+                "console_schema_version": 3,
                 "started_at": self._started_at,
                 "ended_at": self._ended_at,
                 "last_heartbeat": self._last_heartbeat_at,
                 "end_reason": self._end_reason,
-                "streaming_file": self._streaming_path.name,
-                "historical_file": self._historical_path.name,
+                "run_info_file": self._run_info_path.name,
+                "trades_file": self._historical_path.name,
+                "log_handler_file": self._log_handler_path.name,
+                "log_alpaca_file": self._log_alpaca_path.name,
+                "log_spark_file": self._log_spark_path.name,
                 "is_active": self.is_active(),
             }
 
@@ -421,14 +439,11 @@ class AlpacaStreamingService:
         with self._lock:
             if processed_count <= self._spark_checkpoint_processed:
                 return False
-            records = [
-                ("spark_log", {"message": line})
-                for line in console_lines
-            ]
-            records.append(("spark_checkpoint", checkpoint))
-            self._append_stream_records_locked(
-                records
-            )
+            for line in console_lines:
+                if line == "Spark | esperando un lote de operaciones.":
+                    continue
+                self._append_console_line_locked("spark", line)
+            self._append_run_info_locked("spark_checkpoint", checkpoint)
             self._spark_checkpoint_processed = processed_count
             self._spark_checkpoint = dict(checkpoint)
             self._spark_console_initialized = True
@@ -440,9 +455,10 @@ class AlpacaStreamingService:
         with self._lock:
             if self._spark_console_initialized:
                 return
-            self._append_stream_records_locked(
-                [("spark_log", {"message": line}) for line in console_lines]
-            )
+            for line in console_lines:
+                if line == "Spark | esperando un lote de operaciones.":
+                    continue
+                self._append_console_line_locked("spark", line)
             self._spark_console_initialized = True
 
     def get_spark_checkpoint(self) -> dict[str, Any] | None:
@@ -545,16 +561,12 @@ class AlpacaStreamingService:
                 f"REPLAY | histórico listo: {historical_date} | "
                 f"archivo={historical_path.name}"
             )
-            self._append_stream_records_locked(
-                [
-                    (
-                        "historical_complete",
-                        {
-                            "historical_file": historical_path.name,
-                            "ordered_by_timestamp": True,
-                        },
-                    )
-                ]
+            self._append_run_info_locked(
+                "historical_complete",
+                {
+                    "trades_file": historical_path.name,
+                    "ordered_by_timestamp": True,
+                },
             )
             self._append_state_locked()
         if not streamed:
@@ -591,7 +603,11 @@ class AlpacaStreamingService:
             self._replay_position += len(events)
             self._status = "Reproduciendo"
             self._replay_batch_number += 1
-            self._append_stream_records_locked(stream_records)
+            for _, record in stream_records:
+                self._append_console_line_locked(
+                    "alpaca",
+                    event_from_record(record, mode="REPLAY").to_display_line(),
+                )
             self._add_log(
                 f"REPLAY | lote emitido={self._replay_batch_number} | "
                 f"operaciones={len(events)} | "
@@ -721,7 +737,10 @@ class AlpacaStreamingService:
                 event_file.write(json.dumps(record, ensure_ascii=False) + "\n")
                 event_file.flush()
                 os.fsync(event_file.fileno())
-            self._append_stream_records_locked([("event", record)])
+            self._append_console_line_locked(
+                "alpaca",
+                event.to_display_line(),
+            )
             self._events.append(event)
             self._event_count += 1
             if replay_position is not None:
@@ -758,17 +777,14 @@ class AlpacaStreamingService:
             self._add_log(
                 f"{self._mode} | finalizado: {status} | causa={end_reason}"
             )
-            self._append_stream_records_locked(
-                [
-                    (
-                        "run_finished",
-                        {
-                            "status": status,
-                            "end_reason": end_reason,
-                            "error": self._error,
-                        },
-                    )
-                ]
+            self._append_run_info_locked(
+                "run_finished",
+                {
+                    "status": status,
+                    "end_reason": end_reason,
+                    "error": self._error,
+                    "ended_at": self._ended_at,
+                },
             )
             self._append_state_locked()
         release_active_service(self)
@@ -776,11 +792,9 @@ class AlpacaStreamingService:
     def _append_state_locked(self) -> None:
         """Agrego el estado actual al único registro persistente del RUN."""
 
-        self._append_stream_records_locked(
-            [
-                (
-                    "state",
-                    {
+        self._append_run_info_locked(
+            "state",
+            {
                         "status": self._status,
                         "error": self._error,
                         "event_count": self._event_count,
@@ -792,55 +806,62 @@ class AlpacaStreamingService:
                         "last_heartbeat": self._last_heartbeat_at,
                         "end_reason": self._end_reason,
                         "is_active": self.is_active(),
-                    },
-                )
-            ]
+            },
         )
 
-    def _append_stream_records_locked(
-        self,
-        records: list[tuple[str, dict[str, Any]]],
-    ) -> None:
-        """Agrego registros tipados sin reemplazar el archivo del RUN."""
+    def _append_console_line_locked(self, console_name: str, line: str) -> None:
+        """Genero la numeración definitiva y la agrego al TXT correspondiente."""
 
-        with self._streaming_path.open("a", encoding="utf-8") as stream_file:
-            for record_type, payload in records:
-                self._sequence += 1
-                console_name = {
-                    "event": "alpaca",
-                    "log": "log",
-                    "spark_log": "spark",
-                }.get(record_type)
-                record_payload = dict(payload)
-                if console_name is not None:
-                    next_console_sequence = (
-                        self._console_sequences[console_name] + 1
-                    )
-                    self._console_sequences[console_name] = (
-                        next_console_sequence
-                    )
-                    record_payload["console_sequence"] = (
-                        next_console_sequence
-                    )
-                record = {
-                    "record_type": record_type,
-                    "sequence": self._sequence,
-                    "run_id": self._run_id,
-                    "recorded_at": get_utc_timestamp(),
-                    **record_payload,
-                }
-                stream_file.write(json.dumps(record, ensure_ascii=False) + "\n")
-            stream_file.flush()
-            os.fsync(stream_file.fileno())
+        next_sequence = self._console_sequences[console_name] + 1
+        self._console_sequences[console_name] = next_sequence
+        console_paths = {
+            "alpaca": self._log_alpaca_path,
+            "log": self._log_handler_path,
+            "spark": self._log_spark_path,
+        }
+        persisted_line = f"[#{next_sequence}] {line}"
+        with console_paths[console_name].open(
+            "a",
+            encoding="utf-8",
+        ) as console_file:
+            console_file.write(persisted_line + "\n")
+            console_file.flush()
+            os.fsync(console_file.fileno())
+
+    def _append_run_info_locked(
+        self,
+        record_type: str,
+        payload: dict[str, Any],
+    ) -> None:
+        """Persisto únicamente información estructurada de control del RUN."""
+
+        self._sequence += 1
+        record = {
+            "record_type": record_type,
+            "sequence": self._sequence,
+            "run_id": self._run_id,
+            "recorded_at": get_utc_timestamp(),
+            **payload,
+        }
+        with self._run_info_path.open(
+            "a",
+            encoding="utf-8",
+        ) as run_info_file:
+            run_info_file.write(json.dumps(record, ensure_ascii=False) + "\n")
+            run_info_file.flush()
+            os.fsync(run_info_file.fileno())
 
     def _add_log(self, message: str) -> None:
-        """Agrego un mensaje operativo al JSONL del RUN."""
+        """Agrego un mensaje operativo al TXT del RUN."""
 
         with self._lock:
-            self._append_stream_records_locked(
-                [("log", {"message": message})]
+            timestamp = format_presentation_timestamp(
+                get_utc_timestamp(),
+                source_timezone=timezone.utc,
             )
+            self._append_console_line_locked("log", f"{timestamp} | {message}")
             self._log_count += 1
+            self._append_state_locked()
 
     def _set_async_resources(
         self,
@@ -1288,6 +1309,84 @@ def event_from_record(
         ),
     )
 
+def get_run_file(run_id: str, file_kind: str) -> Path:
+    """Obtengo la ruta de un archivo de un RUN nuevo."""
+
+    suffixes = {
+        "alpaca": "log_alpaca.txt",
+        "handler": "log_handler.txt",
+        "info": "run_info.jsonl",
+        "spark": "log_spark.txt",
+        "trades": "alpaca_trades.jsonl",
+    }
+    return DATA_DIRECTORY / f"{run_id}_{suffixes[file_kind]}"
+
+def read_console_delta(
+    path: Path,
+    byte_offset: int,
+    record_limit: int | None,
+) -> tuple[list[str], int, bool]:
+    """Leo texto persistido desde un cursor de bytes sin reinterpretarlo."""
+
+    lines: list[str] = []
+    next_offset = max(0, byte_offset)
+    if (
+        record_limit is not None and record_limit <= 0
+    ) or not path.exists():
+        return lines, next_offset, False
+    try:
+        with path.open("rb") as console_file:
+            console_file.seek(next_offset)
+            while record_limit is None or len(lines) < record_limit:
+                raw_line = console_file.readline()
+                if not raw_line:
+                    break
+                next_offset = console_file.tell()
+                lines.append(raw_line.decode("utf-8").rstrip("\r\n"))
+            file_size = console_file.seek(0, os.SEEK_END)
+    except (OSError, UnicodeDecodeError):
+        return [], byte_offset, False
+    return lines, next_offset, next_offset < file_size
+
+def read_console_tail(
+    path: Path,
+    line_limit: int = 1000,
+) -> tuple[list[str], int, int]:
+    """Leo las últimas líneas de un TXT y devuelvo su cursor final."""
+
+    if not path.exists() or line_limit <= 0:
+        return [], 0, 0
+    records: list[str] = []
+    try:
+        with path.open("rb") as console_file:
+            file_size = console_file.seek(0, os.SEEK_END)
+            position = file_size
+            pending = b""
+            while position > 0 and len(records) < line_limit:
+                block_size = min(8192, position)
+                position -= block_size
+                console_file.seek(position)
+                pending = console_file.read(block_size) + pending
+                raw_lines = pending.split(b"\n")
+                pending = raw_lines.pop(0)
+                for raw_line in reversed(raw_lines):
+                    if raw_line:
+                        records.append(raw_line.decode("utf-8").rstrip("\r"))
+                    if len(records) == line_limit:
+                        break
+            if pending and len(records) < line_limit:
+                records.append(pending.decode("utf-8").rstrip("\r"))
+    except (OSError, UnicodeDecodeError):
+        return [], 0, 0
+    records.reverse()
+    return records, file_size, console_line_number(records[-1]) if records else 0
+
+def console_line_number(line: str) -> int:
+    """Obtengo la numeración persistida de una línea de consola."""
+
+    match = re.match(r"\[#(\d+)\]", line)
+    return int(match.group(1)) if match else 0
+
 def get_active_service() -> AlpacaStreamingService | None:
     """Devuelvo el RUN LIVE compartido por las sesiones de Streamlit."""
 
@@ -1370,12 +1469,13 @@ def get_latest_metadata() -> dict[str, Any] | None:
 
     if not DATA_DIRECTORY.exists():
         return None
-    streaming_paths = list(DATA_DIRECTORY.glob("*.jsonl"))
-    if streaming_paths:
-        latest_path = max(
-            streaming_paths,
-            key=lambda path: path.stat().st_mtime_ns,
-        )
+    new_paths = list(DATA_DIRECTORY.glob("*_run_info.jsonl"))
+    legacy_paths = list(LEGACY_STREAMING_DIRECTORY.glob("*.jsonl"))
+    candidates = new_paths + legacy_paths
+    if candidates:
+        latest_path = max(candidates, key=lambda path: path.stat().st_mtime_ns)
+        if latest_path.parent == LEGACY_STREAMING_DIRECTORY:
+            return read_streaming_state(latest_path)
         latest_stat = latest_path.stat()
         cache_key = str(latest_path)
         cached = _LATEST_METADATA_CACHE.get(cache_key)
@@ -1684,7 +1784,7 @@ def get_recent_events(run_id: str | None) -> list[AlpacaEvent]:
     if run_id is None:
         return []
     return read_event_delta(
-        DATA_DIRECTORY / f"{run_id}.jsonl",
+        LEGACY_STREAMING_DIRECTORY / f"{run_id}.jsonl",
         0,
         256,
     )[0]
@@ -1874,14 +1974,13 @@ def get_utc_timestamp() -> str:
 
     return datetime.now(timezone.utc).isoformat()
 
-def build_run_stem(started_at: str, run_uuid: str) -> str:
-    """Genero el nombre común del RUN en la zona horaria argentina."""
+def build_run_stem(started_at: str) -> str:
+    """Genero el identificador del RUN en la zona horaria argentina."""
 
     timestamp = datetime.fromisoformat(
         started_at.replace("Z", "+00:00")
     ).astimezone(PRESENTATION_TIMEZONE)
-    timestamp_text = timestamp.strftime("%Y%m%d_%H%M%S_%f")[:-3]
-    return f"{timestamp_text}_{run_uuid}"
+    return timestamp.strftime("%Y%m%d_%H%M%S")
 
 def historical_file_path(
     date_text: str,
@@ -1906,9 +2005,17 @@ def mark_interrupted_run() -> dict[str, Any] | None:
     metadata["end_reason"] = "process_restart"
     metadata["ended_at"] = get_utc_timestamp()
     run_id = metadata.get("run_id")
-    streaming_file = metadata.get("streaming_file")
+    streaming_file = (
+        metadata.get("run_info_file")
+        if int(metadata.get("console_schema_version", 0)) >= 3
+        else metadata.get("streaming_file")
+    )
     if isinstance(run_id, str) and isinstance(streaming_file, str):
-        streaming_path = DATA_DIRECTORY / streaming_file
+        streaming_path = (
+            DATA_DIRECTORY / streaming_file
+            if int(metadata.get("console_schema_version", 0)) >= 3
+            else LEGACY_STREAMING_DIRECTORY / streaming_file
+        )
         sequence = int(metadata.get("sequence", 0))
         append_stream_record(
             streaming_path,
@@ -2081,6 +2188,11 @@ def read_streaming_state(path: Path) -> dict[str, Any] | None:
         "ended_at": None,
         "last_heartbeat": None,
         "end_reason": None,
+        "run_info_file": path.name,
+        "trades_file": None,
+        "log_handler_file": None,
+        "log_alpaca_file": None,
+        "log_spark_file": None,
         "streaming_file": path.name,
         "historical_file": None,
         "console_schema_version": 0,
@@ -2100,6 +2212,8 @@ def read_streaming_state(path: Path) -> dict[str, Any] | None:
                     state["sequence"],
                     int(record.get("sequence", 0)),
                 )
+                if record.get("run_id"):
+                    state["run_id"] = record["run_id"]
                 record_type = record.get("record_type")
                 if record_type == "log":
                     state["log_count"] += 1
@@ -2110,6 +2224,11 @@ def read_streaming_state(path: Path) -> dict[str, Any] | None:
                         "mode",
                         "replay_speed",
                         "started_at",
+                        "trades_file",
+                        "run_info_file",
+                        "log_handler_file",
+                        "log_alpaca_file",
+                        "log_spark_file",
                         "historical_file",
                         "streaming_file",
                         "universe",
@@ -2145,8 +2264,11 @@ def read_streaming_state(path: Path) -> dict[str, Any] | None:
 def read_recent_events(run_id: str) -> list[AlpacaEvent]:
     """Leo un lote inicial sin materializar el historial completo."""
 
+    trades_path = get_run_file(run_id, "trades")
+    if trades_path.exists():
+        return read_events_after(run_id, 0)[:256]
     return read_event_delta(
-        DATA_DIRECTORY / f"{run_id}.jsonl",
+        LEGACY_STREAMING_DIRECTORY / f"{run_id}.jsonl",
         0,
         256,
     )[0]
@@ -2157,7 +2279,24 @@ def read_events_after(
 ) -> list[AlpacaEvent]:
     """Leo únicamente los eventos posteriores al checkpoint persistido."""
 
-    events_path = DATA_DIRECTORY / f"{run_id}.jsonl"
+    new_events_path = get_run_file(run_id, "trades")
+    if new_events_path.exists():
+        events: list[AlpacaEvent] = []
+        event_index = 0
+        try:
+            with new_events_path.open(encoding="utf-8") as events_file:
+                for line in events_file:
+                    try:
+                        record = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if event_index >= processed_count:
+                        events.append(event_from_record(record))
+                    event_index += 1
+        except OSError:
+            return []
+        return events
+    events_path = LEGACY_STREAMING_DIRECTORY / f"{run_id}.jsonl"
     if not events_path.exists():
         return []
     events: list[AlpacaEvent] = []
@@ -2184,6 +2323,26 @@ def read_events_after(
 def read_spark_checkpoint(path: Path) -> dict[str, Any] | None:
     """Leo el último acumulado confirmado por Spark."""
 
+    if path.name.endswith("_run_info.jsonl"):
+        checkpoint = None
+        try:
+            with path.open(encoding="utf-8") as run_info_file:
+                for line in run_info_file:
+                    record = json.loads(line)
+                    if record.get("record_type") == "spark_checkpoint":
+                        checkpoint = {
+                            key: value
+                            for key, value in record.items()
+                            if key not in {
+                                "record_type",
+                                "sequence",
+                                "run_id",
+                                "recorded_at",
+                            }
+                        }
+        except (OSError, json.JSONDecodeError):
+            return None
+        return checkpoint
     if not path.exists():
         return None
     checkpoint: dict[str, Any] | None = None
@@ -2228,7 +2387,34 @@ def append_spark_checkpoint(
     if service is not None and service.get_snapshot()["run_id"] == run_id:
         service.append_spark_checkpoint(checkpoint, console_lines or [])
         return
-    streaming_path = DATA_DIRECTORY / f"{run_id}.jsonl"
+    streaming_path = get_run_file(run_id, "info")
+    if streaming_path.exists():
+        previous = read_spark_checkpoint(streaming_path)
+        processed_count = int(checkpoint.get("processed_events", 0))
+        if previous is not None and processed_count <= int(
+            previous.get("processed_events", 0)
+        ):
+            return
+        append_stream_record(
+            streaming_path,
+            run_id,
+            int(read_streaming_state(streaming_path).get("sequence", 0)) + 1,
+            "spark_checkpoint",
+            checkpoint,
+        )
+        for line in console_lines or []:
+            with get_run_file(run_id, "spark").open(
+                "a",
+                encoding="utf-8",
+            ) as spark_file:
+                previous_number = read_console_tail(
+                    get_run_file(run_id, "spark"),
+                    1,
+                )[2]
+                spark_file.write(
+                    f"[#{previous_number + 1}] {line}\n"
+                )
+        return
     previous = read_spark_checkpoint(streaming_path)
     processed_count = int(checkpoint.get("processed_events", 0))
     if previous is not None and processed_count <= int(
@@ -2265,7 +2451,10 @@ def get_spark_checkpoint(run_id: str | None) -> dict[str, Any] | None:
     service = get_active_service()
     if service is not None and service.get_snapshot()["run_id"] == run_id:
         return service.get_spark_checkpoint()
-    return read_spark_checkpoint(DATA_DIRECTORY / f"{run_id}.jsonl")
+    new_path = get_run_file(run_id, "info")
+    if new_path.exists():
+        return read_spark_checkpoint(new_path)
+    return read_spark_checkpoint(LEGACY_STREAMING_DIRECTORY / f"{run_id}.jsonl")
 
 def release_active_service(service: AlpacaStreamingService) -> None:
     """Libero el RUN terminado para permitir una nueva ejecución."""
@@ -2306,20 +2495,25 @@ def start_run(
                 "symbols": list(symbols),
             }
         started_at = get_utc_timestamp()
-        run_uuid = str(uuid.uuid4())
-        run_id = build_run_stem(started_at, run_uuid)
-        _ACTIVE_SERVICE = AlpacaStreamingService(
-            api_key,
-            api_secret,
-            run_id,
-            resolved_symbols,
-            started_at,
-            run_id,
-            universe_metadata,
-            feed,
-            selected_mode,
-            replay_speed,
-        )
+        run_id = build_run_stem(started_at)
+        try:
+            _ACTIVE_SERVICE = AlpacaStreamingService(
+                api_key,
+                api_secret,
+                run_id,
+                resolved_symbols,
+                started_at,
+                run_id,
+                universe_metadata,
+                feed,
+                selected_mode,
+                replay_speed,
+            )
+        except FileExistsError as error:
+            raise RuntimeError(
+                "El identificador del RUN ya existe; esperá un segundo y "
+                "volvé a iniciar."
+            ) from error
         _ACTIVE_SERVICE.start()
         return _ACTIVE_SERVICE
 
