@@ -9,11 +9,11 @@ from pyspark.sql.functions import count, sum as sum_rows
 from pyspark.sql.types import DoubleType, StringType, StructField, StructType
 from typing import Any
 
+SPARK_APP_NAME = "Apache Big Data Lab"
 SPARK_BLOCK_MANAGER_PORT = os.getenv(
     "SPARK_BLOCK_MANAGER_PORT",
     "4042",
 )
-SPARK_APP_NAME = "Apache Big Data Lab"
 SPARK_DRIVER_HOST = os.getenv("SPARK_DRIVER_HOST", "spark-driver")
 SPARK_DRIVER_PORT = os.getenv("SPARK_DRIVER_PORT", "4041")
 SPARK_MASTER = os.getenv(

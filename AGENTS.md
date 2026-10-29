@@ -113,6 +113,50 @@ personalizadas o de Streamlit. Las reglas nuevas se incorporan en la sección
 que corresponde a su responsabilidad. Dentro de cada bloque de selectores,
 las clases se ordenan alfabéticamente.
 
+Los controles interactivos utilizan los estilos nativos de Streamlit por
+defecto. No se crean clases ni reglas CSS específicas para botones, descargas
+o alternadores de tema cuando el estilo nativo resuelve correctamente la
+interfaz. Las personalizaciones se limitan a excepciones semánticas,
+pequeñas y justificadas.
+
+Por ejemplo, un botón común se implementa sin clases ni estilos adicionales:
+
+```python
+st.button("Iniciar streaming")
+```
+
+Un botón de descarga también conserva el estilo nativo y solo recibe una clave
+cuando es necesario diferenciar varios widgets iguales:
+
+```python
+st.download_button(
+    "↓",
+    data=content,
+    file_name=file_name,
+    key=download_key,
+)
+```
+
+Una acción destructiva puede utilizar una única clase específica cuando su
+significado visual lo exige. El botón `danger` debe conservar fondo rojo,
+borde rojo y texto e iconos blancos, tanto en tema claro como oscuro:
+
+```python
+st.button("■ Detener streaming", key="stop-button")
+```
+
+```css
+.st-key-stop-button button {
+    background: #dc3545 !important;
+    border-color: #dc3545 !important;
+    color: #ffffff !important;
+}
+```
+
+No se agregan reglas equivalentes para cada botón, no se fuerzan colores
+globales sobre todos los widgets y no se recrea mediante CSS un componente que
+Streamlit ya ofrece de forma nativa.
+
 ## 9. Portabilidad y reproducibilidad
 
 El proyecto debe poder ejecutarse en Windows y macOS a partir de las

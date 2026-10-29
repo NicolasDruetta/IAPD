@@ -38,16 +38,17 @@ CALENDAR_API_URLS = (
 )
 DATA_DIRECTORY = Path(__file__).resolve().parent.parent / "data"
 HEARTBEAT_TIMEOUT_SECONDS = 30
-HISTORICAL_DIRECTORY = DATA_DIRECTORY / "historical"
-LEGACY_STREAMING_DIRECTORY = DATA_DIRECTORY / "streaming"
 HISTORICAL_API_URL = "https://data.alpaca.markets/v2/stocks/trades"
+HISTORICAL_DIRECTORY = DATA_DIRECTORY / "historical"
 HTTP_MAX_RETRIES = 5
+LEGACY_STREAMING_DIRECTORY = DATA_DIRECTORY / "streaming"
 MARKET_CLOCK_URLS = (
     "https://api.alpaca.markets/v2/clock",
     "https://paper-api.alpaca.markets/v2/clock",
 )
 MAX_HTTP_CONCURRENCY = 4
 NEW_YORK_TIMEZONE = ZoneInfo("America/New_York")
+RANKED_SYMBOL_COUNT = 20
 REPLAY_BATCH_SIZE = 100
 REPLAY_SPEEDS = {
     "1 evento por segundo": 1.0,
@@ -62,6 +63,7 @@ SP500_COMPONENTS_URL = (
 SP500_INDEX_URL = (
     "https://www.spglobal.com/spdji/en/indices/equity/sp-500/"
 )
+STOCK_SNAPSHOTS_URL = "https://data.alpaca.markets/v2/stocks/snapshots"
 SUPERVISOR_INTERVAL_SECONDS = 1
 TEMPORARY_DIRECTORY = Path("/tmp")
 
@@ -1681,6 +1683,89 @@ def get_available_asset_symbols(
     }
     return sorted(symbols)
 
+def get_sp500_ranked_symbols(
+    api_key: str,
+    api_secret: str,
+    ranking: str,
+) -> tuple[list[str], dict[str, Any]]:
+    """Obtengo las 20 acciones más activas del S&P 500 desde Alpaca."""
+
+    if ranking not in {"trades", "volume"}:
+        raise ValueError(f"Ranking de Alpaca no soportado: {ranking}")
+    sp500_symbols, universe_metadata = resolve_automatic_symbols(
+        api_key,
+        api_secret,
+    )
+    ssl_context = ssl.create_default_context(cafile=certifi.where())
+    ranking_rows: list[tuple[str, float]] = []
+    for start in range(0, len(sp500_symbols), 100):
+        symbol_batch = sp500_symbols[start:start + 100]
+        query = urllib.parse.urlencode(
+            {"feed": "iex", "symbols": ",".join(symbol_batch)}
+        )
+        request = urllib.request.Request(
+            f"{STOCK_SNAPSHOTS_URL}?{query}",
+            headers={
+                "APCA-API-KEY-ID": api_key,
+                "APCA-API-SECRET-KEY": api_secret,
+            },
+        )
+        try:
+            with urllib.request.urlopen(
+                request,
+                timeout=30,
+                context=ssl_context,
+            ) as response:
+                payload = json.load(response)
+        except urllib.error.HTTPError as error:
+            if error.code in {401, 403}:
+                raise RuntimeError(
+                    "Alpaca rechazó la consulta de snapshots del S&P 500."
+                ) from error
+            raise RuntimeError(
+                f"Alpaca devolvió HTTP {error.code} al consultar snapshots."
+            ) from error
+        except (OSError, json.JSONDecodeError) as error:
+            raise RuntimeError(
+                "No se pudieron consultar los snapshots del S&P 500."
+            ) from error
+        snapshot_data = (
+            payload.get("snapshots", payload)
+            if isinstance(payload, dict)
+            else {}
+        )
+        for symbol, snapshot in snapshot_data.items():
+            if not isinstance(snapshot, dict):
+                continue
+            daily_bar = snapshot.get("dailyBar") or snapshot.get(
+                "daily_bar",
+                {},
+            )
+            metric_key = "n" if ranking == "trades" else "v"
+            metric = daily_bar.get(metric_key)
+            if metric is not None:
+                ranking_rows.append((str(symbol), float(metric)))
+    symbols = [
+        symbol
+        for symbol, _ in sorted(
+            ranking_rows,
+            key=lambda item: (-item[1], item[0]),
+        )[:RANKED_SYMBOL_COUNT]
+    ]
+    if len(symbols) != RANKED_SYMBOL_COUNT:
+        raise RuntimeError(
+            "Alpaca no devolvió 20 componentes del S&P 500 con datos "
+            "suficientes para el ranking."
+        )
+    universe_metadata.update({
+        "ranking": ranking,
+        "symbols": symbols,
+        "top": RANKED_SYMBOL_COUNT,
+        "fetched_at": get_utc_timestamp(),
+        "selection": "sp500_ranked",
+    })
+    return symbols, universe_metadata
+
 def get_sp500_components() -> tuple[list[str], str]:
     """Obtengo los componentes actuales del S&P 500 desde su tabla pública."""
 
@@ -2474,6 +2559,7 @@ def start_run(
     api_secret: str,
     symbols: list[str],
     feed: str = "iex",
+    ranking: str | None = None,
     replay_speed: float = 1.0,
 ) -> AlpacaStreamingService:
     """Creo un único RUN y comienzo su ciclo de vida."""
@@ -2483,7 +2569,13 @@ def start_run(
         if _ACTIVE_SERVICE is not None and _ACTIVE_SERVICE.is_active():
             return _ACTIVE_SERVICE
         selected_mode = get_market_mode(api_key, api_secret)
-        if ALL_MARKET_SYMBOL in symbols:
+        if ranking is not None:
+            resolved_symbols, universe_metadata = get_sp500_ranked_symbols(
+                api_key,
+                api_secret,
+                ranking,
+            )
+        elif ALL_MARKET_SYMBOL in symbols:
             resolved_symbols, universe_metadata = resolve_automatic_symbols(
                 api_key,
                 api_secret,

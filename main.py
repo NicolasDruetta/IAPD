@@ -12,8 +12,7 @@ from zoneinfo import ZoneInfo
 
 ALL_SYMBOLS_OPTION = "Todos los símbolos del S&P 500"
 BIG_7SEVEN_SYMBOLS = ("AAPL", "AMZN", "GOOGL", "META", "MSFT", "NVDA", "TSLA")
-TOP_LIQUID_SYMBOLS = ("AAPL", "AMD", "AMZN", "GOOGL", "IWM", "META", "MSFT", "NVDA", "QQQ", "SPY")
-TOP_VOLUME_SYMBOLS = ("AMD", "AMZN", "BKNG", "GOOGL", "IWM", "META", "MU", "NVDA", "SNDK", "SPY")
+BIG_SEVEN_OPTION = "Big Seven del S&P 500: " + ", ".join(BIG_7SEVEN_SYMBOLS)
 
 CONSOLE_TRANSFER_BATCH_SIZE = 256
 LOG_CONSOLE_COMPONENT = st.components.v2.component(
@@ -77,17 +76,23 @@ LOG_CONSOLE_COMPONENT = st.components.v2.component(
     """,
 )
 PRESENTATION_TIMEZONE = ZoneInfo("America/Argentina/Cordoba")
+TOP_LIQUID_OPTION = "Top 20 más líquidas del S&P 500"
+TOP_VOLUME_OPTION = "Top 20 con más volumen del S&P 500"
+SYMBOL_GROUPS = {
+    ALL_SYMBOLS_OPTION: ("*",),
+    BIG_SEVEN_OPTION: BIG_7SEVEN_SYMBOLS,
+    TOP_LIQUID_OPTION: (),
+    TOP_VOLUME_OPTION: (),
+}
 SYMBOL_OPTIONS = (
     ALL_SYMBOLS_OPTION,
-    "Big Seven: " + ", ".join(BIG_7SEVEN_SYMBOLS),
-    "10 más líquidas: " + ", ".join(TOP_LIQUID_SYMBOLS),
-    "10 con más volumen: " + ", ".join(TOP_VOLUME_SYMBOLS),
+    BIG_SEVEN_OPTION,
+    TOP_LIQUID_OPTION,
+    TOP_VOLUME_OPTION,
 )
-SYMBOL_GROUPS = {
-    SYMBOL_OPTIONS[0]: ("*",),
-    SYMBOL_OPTIONS[1]: BIG_7SEVEN_SYMBOLS,
-    SYMBOL_OPTIONS[2]: TOP_LIQUID_SYMBOLS,
-    SYMBOL_OPTIONS[3]: TOP_VOLUME_SYMBOLS,
+SYMBOL_RANKINGS = {
+    TOP_LIQUID_OPTION: "trades",
+    TOP_VOLUME_OPTION: "volume",
 }
 
 def format_presentation_timestamp(
@@ -308,7 +313,9 @@ def render_new_run_console(
 
     state = get_console_state(console_id, run_id)
     initial_load = clear_console or not state["initialized"]
-    if initial_load:
+    if clear_console:
+        lines, next_cursor, cursor_start = [], 0, 0
+    elif initial_load:
         lines, next_cursor, _ = streaming_module.read_console_tail(
             console_path,
             1000,
@@ -343,8 +350,7 @@ def render_new_run_console(
                 file_name=console_path.name,
                 mime="text/plain",
                 key=f"download-{console_id}-{run_id}",
-                help="Descargar consola completa",
-                type="secondary",
+                help="Descargar log completo",
             )
     render_log_console(
         lines,
@@ -468,7 +474,11 @@ with st.container(width="content"):
                 if st.session_state.dark_mode
                 else ":material/dark_mode:"
             ),
-            type="secondary",
+            help=(
+                "Light Mode"
+                if st.session_state.dark_mode
+                else "Dark Mode"
+            ),
             width="content",
         ):
             st.session_state.dark_mode = not st.session_state.dark_mode
@@ -540,7 +550,6 @@ def render_streaming() -> None:
                     if snapshot["is_active"]
                     else "▶ Iniciar streaming"
                 ),
-                type="secondary",
                 disabled=bool(
                     snapshot["is_active"]
                     or st.session_state.start_pending
@@ -554,17 +563,17 @@ def render_streaming() -> None:
                     "⟳ Deteniendo..."
                     if st.session_state.stop_pending
                     else "■ Detener streaming",
-                    type="secondary",
                     disabled=st.session_state.stop_pending,
                     key="stop-button",
                     on_click=mark_stop_pending,
                     width="content",
                 )
     symbols = list(SYMBOL_GROUPS[selected_option])
+    symbol_ranking = SYMBOL_RANKINGS.get(selected_option)
     selected_replay_speed = 1.0
     clear_consoles = st.session_state.start_requested
 
-    if st.session_state.start_pending and not clear_consoles:
+    if st.session_state.start_pending:
         st.session_state.start_pending = False
         if (
             not streaming_module.ALPACA_API_KEY
@@ -580,6 +589,7 @@ def render_streaming() -> None:
                     streaming_module.ALPACA_API_KEY,
                     streaming_module.ALPACA_SECRET_KEY,
                     symbols,
+                    ranking=symbol_ranking,
                     replay_speed=selected_replay_speed,
                 )
             except RuntimeError as error:
@@ -656,6 +666,7 @@ def render_streaming() -> None:
             "Error": "Error.",
         }.get(snapshot["status"], f"{snapshot['status']}.")
         last_execution_notice = (
+            f"Datos de la "
             f"**Última ejecución:** {last_execution_text}. "
             f"**Duración:** {elapsed_text}. "
             f"**{completion_text}** | **Modo:** {history_mode}. | "
@@ -725,6 +736,12 @@ def render_streaming() -> None:
                 1,
             )[2],
         }
+        if clear_consoles:
+            new_console_counts = {
+                "execution-log-console": 0,
+                "alpaca-log-console": 0,
+                "spark-log-console": 0,
+            }
         new_console_titles = {
             "execution-log-console": "Log de ejecución",
             "alpaca-log-console": "Alpaca Streaming",
