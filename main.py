@@ -194,6 +194,8 @@ def initialize_state() -> None:
         st.session_state.stop_pending = False
     if "console_states" not in st.session_state:
         st.session_state.console_states = {}
+    if "rendered_run_active" not in st.session_state:
+        st.session_state.rendered_run_active = False
 
 def load_custom_css() -> None:
     """Cargo los estilos visuales administrados en el archivo del proyecto."""
@@ -407,6 +409,7 @@ def render_streaming() -> None:
     streaming_module = load_page_module("01_alpaca_streaming")
     spark_module = load_page_module("02_apache_spark")
     snapshot = streaming_module.get_run_snapshot()
+    previous_run_active = st.session_state.rendered_run_active
     active_run_id = snapshot["run_id"] if snapshot["is_active"] else None
     session_run_id = st.session_state.alpaca_run_id
     if session_run_id is None and active_run_id is not None:
@@ -521,6 +524,13 @@ def render_streaming() -> None:
         streaming_module.stop_active_run("manual_stop")
         snapshot = streaming_module.get_run_snapshot()
 
+    if (
+        previous_run_active
+        and not snapshot["is_active"]
+        and snapshot["run_id"] is not None
+    ):
+        st.session_state.console_states = {}
+
     elapsed_text = format_elapsed_time(
         snapshot["started_at"],
         snapshot["ended_at"],
@@ -552,6 +562,7 @@ def render_streaming() -> None:
 
     st.divider()
 
+    last_execution_notice = None
     if snapshot["run_id"] and not snapshot["is_active"]:
         last_execution_at = snapshot["ended_at"] or snapshot["started_at"]
         last_execution_text = (
@@ -570,12 +581,13 @@ def render_streaming() -> None:
             "Detenido": "Detenido.",
             "Error": "Error.",
         }.get(snapshot["status"], f"{snapshot['status']}.")
-        st.info(
+        last_execution_notice = (
             f"**Última ejecución:** {last_execution_text}. "
             f"**Duración:** {elapsed_text}. "
             f"**{completion_text}** | **Modo:** {history_mode}. | "
             f"**RUN:** {history_run_id[:12]}."
         )
+        st.info(last_execution_notice)
         if snapshot["error"]:
             st.error(snapshot["error"])
 
@@ -850,9 +862,12 @@ def render_streaming() -> None:
         st.session_state.start_requested = False
 
     st.divider()
+    if last_execution_notice:
+        st.info(last_execution_notice)
     st.subheader("Top 10 acciones con mayor volumen negociado")
 
     render_volume_chart(spark_result.get("top_volume", []))
+    st.session_state.rendered_run_active = snapshot["is_active"]
 
 render_streaming_fragment = st.fragment(render_streaming, run_every="5s")
 render_streaming_fragment()
