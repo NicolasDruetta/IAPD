@@ -126,7 +126,6 @@ textarea {
     overflow-y: scroll;
     scrollbar-gutter: stable;
     padding: 0.8rem;
-    border: 0;
     border-radius: 0.5rem;
     border: 1px solid var(--border-color);
     background: var(--console-background);
@@ -142,19 +141,19 @@ textarea {
     overflow: visible !important;
 }
 
-    .log-console::-webkit-scrollbar {
-        -webkit-appearance: none;
-        width: 12px;
-    }
+.log-console::-webkit-scrollbar {
+    -webkit-appearance: none;
+    width: 12px;
+}
 
-    .log-console::-webkit-scrollbar-track {
-        background: var(--scrollbar-track);
-    }
+.log-console::-webkit-scrollbar-track {
+    background: var(--scrollbar-track);
+}
 
-    .log-console::-webkit-scrollbar-thumb {
-        background: var(--scrollbar-thumb);
-        border-radius: 6px;
-    }
+.log-console::-webkit-scrollbar-thumb {
+    background: var(--scrollbar-thumb);
+    border-radius: 6px;
+}
 
 .metric-card {
     box-sizing: border-box;
@@ -190,37 +189,55 @@ textarea {
     transform: translateY(10px);
 }
 
+:is(.st-key-start-button, .st-key-stop-button) {
+    flex: 0 0 auto !important;
+    min-width: max-content !important;
+    width: max-content !important;
+}
+
+:is(.st-key-start-button, .st-key-stop-button) button {
+    color: #ffffff !important;
+    min-width: max-content;
+    width: max-content;
+}
+
+    :is(.st-key-start-button, .st-key-stop-button) button * {
+        color: #ffffff !important;
+    }
+
 .st-key-start-button button {
     background: #198754;
     border-color: #198754;
-    color: #ffffff !important;
 }
-
-    .st-key-start-button button * {
-        color: #ffffff !important;
-    }
 
     .st-key-start-button button:hover {
         background: #157347;
         border-color: #146c43;
-        color: #ffffff !important;
     }
 
 .st-key-stop-button button {
     background: #dc3545;
     border-color: #dc3545;
-    color: #ffffff !important;
 }
 
-    .st-key-stop-button button * {
-        color: #ffffff !important;
-    }
+:is(.st-key-start-button, .st-key-stop-button) button:disabled,
+:is(.st-key-start-button, .st-key-stop-button) button:disabled * {
+    background: var(--card-background) !important;
+    border-color: var(--border-color) !important;
+    color: var(--muted-text-color) !important;
+    -webkit-text-fill-color: var(--muted-text-color) !important;
+}
 
-    .st-key-stop-button button:hover {
-        background: #bb2d3b;
-        border-color: #b02a37;
-        color: #ffffff !important;
-    }
+.stApp:has(.st-key-theme-light) :is( .st-key-start-button, .st-key-stop-button ) button:disabled,
+.stApp:has(.st-key-theme-light) :is( .st-key-start-button, .st-key-stop-button ) button:disabled * {
+    color: #000000 !important;
+    -webkit-text-fill-color: #000000 !important;
+}
+
+.st-key-stop-button button:hover {
+    background: #bb2d3b;
+    border-color: #b02a37;
+}
 
 .st-key-symbol-universe > div,
 .st-key-symbol-universe > div > div {
@@ -235,8 +252,8 @@ textarea {
 }
 
 .st-key-symbol-universe * {
-        color: var(--text-color) !important;
-    }
+    color: var(--text-color) !important;
+}
 
 body:has(.st-key-theme-dark) > div:last-of-type {
     --card-background: #171a22;

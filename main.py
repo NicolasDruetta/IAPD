@@ -50,7 +50,7 @@ LOG_CONSOLE_COMPONENT = st.components.v2.component(
         if (isNewBatch && cursorStart === state.appliedCursor) {
             if (data.initial_load) {
                 consoleElement.value = lines.join("\\n");
-            } else if (lines.length > 0) {
+            } else if (!data.placeholder && lines.length > 0) {
                 const separator = consoleElement.value.length > 0 ? "\\n" : "";
                 const suffix = separator + lines.join("\\n");
                 consoleElement.value += suffix;
@@ -263,6 +263,7 @@ def render_log_console(
     cursor_start: int = 0,
     has_more: bool = False,
     initial_load: bool = False,
+    placeholder: bool = False,
 ) -> None:
     """Muestro y actualizo incrementalmente una consola de registros."""
 
@@ -275,7 +276,8 @@ def render_log_console(
         "has_more": has_more,
         "initial_load": initial_load,
         "lines": lines,
-        "reset": cursor_start == 0,
+        "placeholder": placeholder,
+        "reset": initial_load and cursor_start == 0,
         "run_key": run_key,
     }
     LOG_CONSOLE_COMPONENT(
@@ -447,43 +449,40 @@ def render_streaming() -> None:
             )
     stop_clicked = False
     with actions_col:
-        start_col, stop_col, spacer_col = st.columns(
-            [2, 2, 2],
-            gap="small",
+        with st.container(
+            horizontal=True,
+            horizontal_alignment="left",
             vertical_alignment="bottom",
-        )
-        with start_col:
-            with st.container(key="start-button"):
-                start_clicked = st.button(
-                    "⟳ Iniciando..."
-                    if st.session_state.start_pending
-                    else (
-                        "⟳ Ejecutando streaming..."
-                        if snapshot["is_active"]
-                        else "▶ Iniciar streaming"
-                    ),
+            gap="small",
+        ):
+            start_clicked = st.button(
+                "⟳ Iniciando..."
+                if st.session_state.start_pending
+                else (
+                    "⟳ Ejecutando streaming..."
+                    if snapshot["is_active"]
+                    else "▶ Iniciar streaming"
+                ),
+                type="secondary",
+                disabled=bool(
+                    snapshot["is_active"]
+                    or st.session_state.start_pending
+                ),
+                key="start-button",
+                on_click=mark_start_pending,
+                width="content",
+            )
+            if snapshot["is_active"] or st.session_state.stop_pending:
+                stop_clicked = st.button(
+                    "⟳ Deteniendo..."
+                    if st.session_state.stop_pending
+                    else "■ Detener streaming",
                     type="secondary",
-                    disabled=bool(
-                        snapshot["is_active"]
-                        or st.session_state.start_pending
-                    ),
-                    on_click=mark_start_pending,
-                    width="stretch",
+                    disabled=st.session_state.stop_pending,
+                    key="stop-button",
+                    on_click=mark_stop_pending,
+                    width="content",
                 )
-        if snapshot["is_active"] or st.session_state.stop_pending:
-            with stop_col:
-                with st.container(key="stop-button"):
-                    stop_clicked = st.button(
-                        "⟳ Deteniendo..."
-                        if st.session_state.stop_pending
-                        else "■ Detener streaming",
-                        type="secondary",
-                        disabled=st.session_state.stop_pending,
-                        on_click=mark_stop_pending,
-                        width="stretch",
-                    )
-        with spacer_col:
-            st.empty()
     symbols = list(SYMBOL_GROUPS[selected_option])
     selected_replay_speed = 1.0
     clear_consoles = st.session_state.start_requested
@@ -677,7 +676,11 @@ def render_streaming() -> None:
                 f"[#{persisted_sequence}] "
                 f"{format_presentation_log_line(line)}"
             )
-        if not log_display_lines and execution_state["line_number"] == 0:
+        is_placeholder = (
+            not log_display_lines
+            and execution_state["line_number"] == 0
+        )
+        if is_placeholder:
             log_display_lines = [
                 "Log de ejecución | esperando actividad."
             ]
@@ -691,6 +694,7 @@ def render_streaming() -> None:
             cursor_start=cursor_start,
             has_more=has_more,
             initial_load=initial_load,
+            placeholder=is_placeholder,
         )
     with alpaca_column:
         st.subheader("Alpaca Streaming")
@@ -738,7 +742,11 @@ def render_streaming() -> None:
         else:
             alpaca_state["line_number"] += len(event_lines)
         has_event_lines = bool(event_lines)
-        if not event_lines and alpaca_state["line_number"] == 0:
+        is_placeholder = (
+            not event_lines
+            and alpaca_state["line_number"] == 0
+        )
+        if is_placeholder:
             event_lines = ["Alpaca | esperando operaciones."]
         st.caption(f"Eventos recibidos: {alpaca_state['line_number']}")
         render_log_console(
@@ -748,6 +756,7 @@ def render_streaming() -> None:
             cursor_start=cursor_start,
             has_more=has_more,
             initial_load=initial_load,
+            placeholder=is_placeholder,
         )
         if not has_event_lines and status == "Conectado":
             st.info(
@@ -822,7 +831,8 @@ def render_streaming() -> None:
                 spark_state["line_number"] += len(spark_lines)
             has_more = False
             spark_state["initialized"] = True
-        if not spark_lines and spark_state["line_number"] == 0:
+        is_placeholder = not spark_lines and spark_state["line_number"] == 0
+        if is_placeholder:
             spark_lines = ["Spark | esperando un lote de operaciones."]
         st.caption(
             f"Eventos recibidos: {spark_state['line_number']}"
@@ -834,6 +844,7 @@ def render_streaming() -> None:
             cursor_start=cursor_start,
             has_more=has_more,
             initial_load=initial_load,
+            placeholder=is_placeholder,
         )
     if clear_consoles:
         st.session_state.start_requested = False
