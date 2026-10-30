@@ -740,7 +740,7 @@ def render_streaming() -> None:
         run_id = snapshot["run_id"] if snapshot["is_active"] else None
         with st.container(border=True):
             st.caption("RUN")
-            st.text(run_id[:12] if run_id else "-")
+            st.text(run_id if run_id else "-")
     with status_col:
         with st.container(border=True):
             st.caption("Estado")
@@ -774,7 +774,7 @@ def render_streaming() -> None:
             "Detenido": "Detenido.",
             "Error": "Error.",
         }.get(snapshot["status"], f"{snapshot['status']}.")
-        last_execution_notice = f"Datos de la **última ejecución:** {last_execution_text}. **Duración:** {elapsed_text}. **{completion_text}** | **Modo:** {history_mode}. | **RUN:** {history_run_id[:12]}."
+        last_execution_notice = f"Datos de la **última ejecución:** {last_execution_text}. **Duración:** {elapsed_text}. **{completion_text}** | **Modo:** {history_mode}. | **RUN:** {history_run_id}."
         st.info(last_execution_notice)
         if snapshot["error"]:
             st.error(snapshot["error"])
