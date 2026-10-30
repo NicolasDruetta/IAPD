@@ -201,3 +201,9 @@ truncar, sobrescribir ni descartar entradas silenciosamente. La consulta
 visual utiliza lectura incremental, paginación o cursor, sin convertir ese
 mecanismo en un límite de retención. Los heartbeats actualizan el estado de la
 ejecución sin desplazar información de progreso útil.
+
+## 14. Textos visibles de la interfaz
+
+Los textos visibles de la interfaz y de las consolas se escriben completos en
+una sola línea de código. No se dividen cadenas literales entre varias líneas
+ni se altera su contenido, incluidos espacios, tildes, puntuación y mayúsculas.

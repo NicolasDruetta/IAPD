@@ -45,7 +45,7 @@ MARKET_CLOCK_URLS = (
     "https://api.alpaca.markets/v2/clock",
     "https://paper-api.alpaca.markets/v2/clock",
 )
-MAX_HTTP_CONCURRENCY = 4
+MAX_HTTP_CONCURRENCY = 6
 NEW_YORK_TIMEZONE = ZoneInfo("America/New_York")
 RANKED_SYMBOL_COUNT = 20
 REPLAY_BATCH_SIZE = 100
@@ -55,7 +55,7 @@ REPLAY_SPEEDS = {
     "100 eventos por segundo": 0.01,
     "Máxima velocidad controlada": 0.0,
 }
-REPLAY_WINDOW_MINUTES = 15
+REPLAY_WINDOW_MINUTES = 1
 SP500_COMPONENTS_URL = (
     "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 )
@@ -174,18 +174,11 @@ class AlpacaEvent:
         )
         if self.event_type == "QUOTE":
             return (
-                f"{timestamp} | {self.symbol} | QUOTE | "
-                f"bid={self._format_number(self.bid_price)} | "
-                f"bid_size={self._format_number(self.bid_size)} | "
-                f"ask={self._format_number(self.ask_price)} | "
-                f"ask_size={self._format_number(self.ask_size)}"
+                f"{timestamp} | {self.symbol} | QUOTE | bid={self._format_number(self.bid_price)} | bid_size={self._format_number(self.bid_size)} | ask={self._format_number(self.ask_price)} | ask_size={self._format_number(self.ask_size)}"
             )
         price = self._format_number(self.price, decimals=4)
         size = self._format_number(self.size)
-        return (
-            f"{timestamp} | {self.symbol} | {self.event_type} | "
-            f"{price} | {size}"
-        )
+        return f"{timestamp} | {self.symbol} | {self.event_type} | {price} | {size}"
 
     @staticmethod
     def _format_number(
@@ -340,8 +333,7 @@ class AlpacaStreamingService:
             self._add_log(f"{self._mode} | RUN iniciado")
             if self._universe_metadata.get("selection") == "sp500":
                 self._add_log(
-                    "{mode} | S&P 500 | componentes={components} | "
-                    "disponibles={available} | no_disponibles={missing}"
+                    "{mode} | S&P 500 | componentes={components} | disponibles={available} | no_disponibles={missing}"
                     .format(
                         mode=self._mode,
                         components=self._universe_metadata["component_count"],
@@ -350,8 +342,7 @@ class AlpacaStreamingService:
                     )
                 )
                 self._add_log(
-                    "{mode} | S&P 500 | fuente={source} | "
-                    "actualizada={updated} | consultada={fetched}".format(
+                    "{mode} | S&P 500 | fuente={source} | actualizada={updated} | consultada={fetched}".format(
                         mode=self._mode,
                         source=self._universe_metadata["source"],
                         updated=self._universe_metadata["source_updated_at"],
@@ -601,8 +592,7 @@ class AlpacaStreamingService:
         with self._lock:
             self._historical_date = historical_date
             self._add_log(
-                f"REPLAY | histórico listo: {historical_date} | "
-                f"archivo={historical_path.name}"
+                f"REPLAY | histórico listo: {historical_date} | archivo={historical_path.name}"
             )
             self._append_run_info_locked(
                 "historical_complete",
@@ -656,9 +646,7 @@ class AlpacaStreamingService:
             )
             quote_count = len(events) - trade_count
             self._add_log(
-                f"REPLAY | lote emitido={self._replay_batch_number} | "
-                f"operaciones={trade_count} | cotizaciones={quote_count} | "
-                f"total_emitidos={self._event_count}"
+                f"REPLAY | lote emitido={self._replay_batch_number} | operaciones={trade_count} | cotizaciones={quote_count} | total_emitidos={self._event_count}"
             )
             self._append_state_locked()
 
@@ -1025,8 +1013,7 @@ def download_historical_dataset(
 
     if ALL_MARKET_SYMBOL in symbols:
         raise RuntimeError(
-            "El universo automático debe resolverse como S&P 500 antes "
-            "de iniciar REPLAY."
+            "El universo automático debe resolverse como S&P 500 antes de iniciar REPLAY."
         )
     market_symbols = symbols
     symbol_groups = [
@@ -1038,8 +1025,7 @@ def download_historical_dataset(
     cleanup_run_temporary_files()
     if progress_callback is not None:
         progress_callback(
-            f"REPLAY | grupos de símbolos={len(symbol_groups)} | "
-            f"símbolos consultados={len(market_symbols)}"
+            f"REPLAY | grupos de símbolos={len(symbol_groups)} | símbolos consultados={len(market_symbols)}"
         )
     event_count = 0
     ssl_context = ssl.create_default_context(cafile=certifi.where())
@@ -1269,10 +1255,7 @@ def download_historical_dataset(
             day_end = session_end
             if progress_callback is not None:
                 progress_callback(
-                    f"REPLAY | sesión={date_text} | "
-                    f"apertura="
-                    f"{format_presentation_timestamp(session_start)} | "
-                    f"cierre={format_presentation_timestamp(session_end)}"
+                    f"REPLAY | sesión={date_text} | apertura={format_presentation_timestamp(session_start)} | cierre={format_presentation_timestamp(session_end)}"
                 )
             while window_start < day_end:
                 if stop_event is not None and stop_event.is_set():
@@ -1319,17 +1302,7 @@ def download_historical_dataset(
                         completed_groups += 1
                         if progress_callback is not None:
                             progress_callback(
-                                f"REPLAY | ventana="
-                                f"{format_presentation_timestamp(window_start)}-"
-                                f"{format_presentation_timestamp(window_end)} | "
-                                f"grupos={completed_groups}/"
-                                f"{len(symbol_groups)} | "
-                                f"respuestas={window_pages} | "
-                                f"páginas_con_operaciones="
-                                f"{window_pages_with_trades} | "
-                                f"páginas_con_cotizaciones="
-                                f"{window_pages_with_quotes} | "
-                                f"descargados={window_downloaded}"
+                                f"REPLAY | ventana={format_presentation_timestamp(window_start)}-{format_presentation_timestamp(window_end)} | grupos={completed_groups}/{len(symbol_groups)} | respuestas={window_pages} | páginas_con_operaciones={window_pages_with_trades} | páginas_con_cotizaciones={window_pages_with_quotes} | descargados={window_downloaded}"
                             )
                 group_paths.sort()
                 merged_count, pending_batch = merge_window(
@@ -1345,16 +1318,7 @@ def download_historical_dataset(
                 os.fsync(historical_file.fileno())
                 if progress_callback is not None:
                     progress_callback(
-                        f"REPLAY | ventana="
-                        f"{format_presentation_timestamp(window_start)}-"
-                        f"{format_presentation_timestamp(window_end)} | "
-                        f"respuestas={window_pages} | "
-                        f"páginas_con_operaciones="
-                        f"{window_pages_with_trades} | "
-                        f"páginas_con_cotizaciones="
-                        f"{window_pages_with_quotes} | "
-                        f"descargados={window_downloaded} | "
-                        f"emitidos_acumulados={event_count}"
+                        f"REPLAY | ventana={format_presentation_timestamp(window_start)}-{format_presentation_timestamp(window_end)} | respuestas={window_pages} | páginas_con_operaciones={window_pages_with_trades} | páginas_con_cotizaciones={window_pages_with_quotes} | descargados={window_downloaded} | emitidos_acumulados={event_count}"
                     )
                 window_start = window_end
         if event_count == 0:
@@ -1509,9 +1473,7 @@ def get_historical_dataset(
     )
     if progress_callback is not None:
         progress_callback(
-            f"REPLAY | sesión bursátil seleccionada={date_text} | "
-            f"apertura={format_presentation_timestamp(session_start)} | "
-            f"cierre={format_presentation_timestamp(session_end)}"
+            f"REPLAY | sesión bursátil seleccionada={date_text} | apertura={format_presentation_timestamp(session_start)} | cierre={format_presentation_timestamp(session_end)}"
         )
     cache_path = historical_file_path(date_text, symbols, feed)
     metadata = read_json(cache_path.with_suffix(".json"))
@@ -1532,14 +1494,12 @@ def get_historical_dataset(
         except OSError:
             if progress_callback is not None:
                 progress_callback(
-                    "REPLAY | caché válida no reutilizada sin duplicar; "
-                    "se descargará el RUN"
+                    "REPLAY | caché válida no reutilizada sin duplicar; se descargará el RUN"
                 )
         else:
             if progress_callback is not None:
                 progress_callback(
-                    f"REPLAY | caché local reutilizada sin duplicar: "
-                    f"{date_text} | eventos={metadata['event_count']}"
+                    f"REPLAY | caché local reutilizada sin duplicar: {date_text} | eventos={metadata['event_count']}"
                 )
             return historical_path, date_text, False
     event_count, streamed = download_historical_dataset(
@@ -1559,8 +1519,7 @@ def get_historical_dataset(
     if event_count > 0:
         return historical_path, date_text, streamed
     raise RuntimeError(
-        f"Alpaca no devolvió cotizaciones u operaciones para la sesión "
-        f"{date_text}."
+        f"Alpaca no devolvió cotizaciones u operaciones para la sesión {date_text}."
     )
 
 def get_latest_metadata() -> dict[str, Any] | None:
@@ -1632,8 +1591,7 @@ def get_latest_market_session(
                 authentication_error = True
                 continue
             raise RuntimeError(
-                f"Alpaca devolvió HTTP {error.code} al consultar el "
-                "calendario."
+                    f"Alpaca devolvió HTTP {error.code} al consultar el calendario."
             ) from error
         except (OSError, json.JSONDecodeError) as error:
             raise RuntimeError(
@@ -1642,8 +1600,7 @@ def get_latest_market_session(
     else:
         if authentication_error:
             raise RuntimeError(
-                "Alpaca rechazó las credenciales para consultar el "
-                "calendario."
+                "Alpaca rechazó las credenciales para consultar el calendario."
             )
         raise RuntimeError("No se pudo consultar el calendario de Alpaca.")
     if not isinstance(calendar, list):
@@ -1721,8 +1678,7 @@ def get_market_mode(api_key: str, api_secret: str) -> str:
             payload.get("is_open"), bool
         ):
             raise RuntimeError(
-                "Alpaca devolvió una respuesta inválida para el estado del "
-                "mercado."
+                "Alpaca devolvió una respuesta inválida para el estado del mercado."
             )
         return "LIVE" if payload["is_open"] else "REPLAY"
     if authentication_error:
@@ -1851,8 +1807,7 @@ def get_sp500_ranked_symbols(
     ]
     if len(symbols) != RANKED_SYMBOL_COUNT:
         raise RuntimeError(
-            "Alpaca no devolvió 20 componentes del S&P 500 con datos "
-            "suficientes para el ranking."
+            "Alpaca no devolvió 20 componentes del S&P 500 con datos suficientes para el ranking."
         )
     universe_metadata.update({
         "ranking": ranking,
@@ -2040,8 +1995,7 @@ def read_log_delta(
                             int(record["console_sequence"])
                             if record.get("console_sequence") is not None
                             else None,
-                            f"{record.get('recorded_at', '-')} | "
-                            f"{record.get('message', '')}",
+                            f"{record.get('recorded_at', '-')} | {record.get('message', '')}",
                         )
                     )
             file_size = stream_file.seek(0, os.SEEK_END)
@@ -2225,8 +2179,7 @@ def read_log_page_with_cursor(
                 if isinstance(cursor, int) and sequence <= cursor:
                     continue
                 log_line = (
-                    f"{record.get('recorded_at', '-')} | "
-                    f"{record.get('message', '')}"
+                    f"{record.get('recorded_at', '-')} | {record.get('message', '')}"
                 )
                 lines.append((sequence, log_line))
                 if len(lines) == page_size:
@@ -2269,8 +2222,7 @@ def read_tail_log_records(
                     records.append(
                         (
                             sequence,
-                            f"{record.get('recorded_at', '-')} | "
-                            f"{record.get('message', '')}",
+                            f"{record.get('recorded_at', '-')} | {record.get('message', '')}",
                         )
                     )
                     if len(records) == page_size:
@@ -2284,8 +2236,7 @@ def read_tail_log_records(
                     records.append(
                         (
                             int(record.get("sequence", 0)),
-                            f"{record.get('recorded_at', '-')} | "
-                            f"{record.get('message', '')}",
+                            f"{record.get('recorded_at', '-')} | {record.get('message', '')}",
                         )
                     )
     except OSError:

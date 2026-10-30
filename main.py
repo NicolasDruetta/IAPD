@@ -3,6 +3,7 @@
 import importlib.util
 import streamlit as st
 import sys
+import threading
 
 from datetime import datetime, timezone, tzinfo
 from pathlib import Path
@@ -199,6 +200,8 @@ def initialize_state() -> None:
         st.session_state.start_requested = False
     if "start_pending" not in st.session_state:
         st.session_state.start_pending = False
+    if "start_operation" not in st.session_state:
+        st.session_state.start_operation = None
     if "stop_pending" not in st.session_state:
         st.session_state.stop_pending = False
     if "console_states" not in st.session_state:
@@ -268,6 +271,29 @@ def mark_start_pending() -> None:
 
     st.session_state.start_requested = True
     st.session_state.start_pending = True
+
+def start_run_in_background(
+    operation: dict[str, Any],
+    controller_module: ModuleType,
+    streaming_module: ModuleType,
+    symbols: list[str],
+    symbol_ranking: str | None,
+    replay_speed: float,
+) -> None:
+    """Inicio el RUN sin bloquear el refresco visual de Streamlit."""
+
+    try:
+        operation["service"] = controller_module.start_run(
+            streaming_module.ALPACA_API_KEY,
+            streaming_module.ALPACA_SECRET_KEY,
+            symbols,
+            ranking=symbol_ranking,
+            replay_speed=replay_speed,
+        )
+    except Exception as error:
+        operation["error"] = error
+    finally:
+        operation["done"] = True
 
 def mark_stop_pending() -> None:
     """Marco que el usuario acaba de solicitar la detención."""
@@ -420,7 +446,7 @@ def render_volume_chart(rows: list[dict[str, Any]]) -> None:
     ]
     dark_mode = bool(st.session_state.get("dark_mode", False))
     chart_border_color = "#3b404d" if dark_mode else "#dfe3eb"
-    chart_text_color = "#f1f3f8" if dark_mode else "#2f3342"
+    chart_text_color = "#ffffff" if dark_mode else "#2f3342"
     volume_encoding = {
         "field": "volume",
         "title": "Volumen negociado (acciones)",
@@ -463,7 +489,12 @@ def render_volume_chart(rows: list[dict[str, Any]]) -> None:
                 },
             },
             {
-                "mark": {"type": "text", "align": "left", "dx": 4},
+                "mark": {
+                    "type": "text",
+                    "align": "left",
+                    "color": chart_text_color,
+                    "dx": 4,
+                },
                 "encoding": {
                     "y": {
                         "field": "symbol",
@@ -529,8 +560,7 @@ with st.container(width="content"):
             st.session_state.dark_mode = not st.session_state.dark_mode
             st.rerun()
 st.subheader(
-    "Análisis de operaciones bursátiles con procesamiento distribuido de "
-    "Apache Spark."
+    "Análisis de operaciones bursátiles con procesamiento distribuido en Apache Spark."
 )
 st.caption("Alumno: Nicolás Druetta. Materia: IAPD. Año: 2026.")
 st.divider()
@@ -627,34 +657,54 @@ def render_streaming() -> None:
     )
 
     if st.session_state.start_pending:
-        st.session_state.start_pending = False
         if (
             not streaming_module.ALPACA_API_KEY
             or not streaming_module.ALPACA_SECRET_KEY
         ):
+            st.session_state.start_pending = False
             st.error(
-                "Completá ALPACA_API_KEY y ALPACA_SECRET_KEY en "
-                "pages/02_alpaca_stream.py."
+                "Completá ALPACA_API_KEY y ALPACA_SECRET_KEY en pages/02_alpaca_stream.py."
             )
         else:
-            try:
-                service = controller_module.start_run(
-                    streaming_module.ALPACA_API_KEY,
-                    streaming_module.ALPACA_SECRET_KEY,
-                    symbols,
-                    ranking=symbol_ranking,
-                    replay_speed=selected_replay_speed,
+            operation = st.session_state.start_operation
+            if operation is None:
+                operation = {
+                    "done": False,
+                    "error": None,
+                    "service": None,
+                }
+                start_thread = threading.Thread(
+                    target=start_run_in_background,
+                    args=(
+                        operation,
+                        controller_module,
+                        streaming_module,
+                        symbols,
+                        symbol_ranking,
+                        selected_replay_speed,
+                    ),
+                    daemon=True,
+                    name="start-streaming-run",
                 )
-            except RuntimeError as error:
-                st.error(str(error))
-            else:
-                st.session_state.alpaca_run_id = service.get_snapshot()[
-                    "run_id"
-                ]
-                controller_module.register_heartbeat(
-                    st.session_state.alpaca_run_id
-                )
-                snapshot = controller_module.get_run_snapshot()
+                operation["thread"] = start_thread
+                st.session_state.start_operation = operation
+                start_thread.start()
+            elif not operation["thread"].is_alive():
+                if operation["error"] is not None:
+                    st.session_state.start_pending = False
+                    st.session_state.start_operation = None
+                    st.error(str(operation["error"]))
+                else:
+                    service = operation["service"]
+                    st.session_state.alpaca_run_id = service.get_snapshot()[
+                        "run_id"
+                    ]
+                    controller_module.register_heartbeat(
+                        st.session_state.alpaca_run_id
+                    )
+                    st.session_state.start_pending = False
+                    st.session_state.start_operation = None
+                    snapshot = controller_module.get_run_snapshot()
 
     if stop_clicked or st.session_state.stop_pending:
         st.session_state.stop_pending = False
@@ -674,7 +724,9 @@ def render_streaming() -> None:
     )
     status = snapshot["status"]
     status_text = "Listo para ejecutar."
-    if snapshot["is_active"]:
+    if st.session_state.start_pending:
+        status_text = "Iniciando..."
+    elif snapshot["is_active"]:
         status_text = f"Ejecutando... {elapsed_text}."
     mode_col, run_col, status_col = st.columns(
         [2, 2, 8],
@@ -700,7 +752,11 @@ def render_streaming() -> None:
     st.divider()
 
     last_execution_notice = None
-    if snapshot["run_id"] and not snapshot["is_active"]:
+    if (
+        snapshot["run_id"]
+        and not snapshot["is_active"]
+        and not st.session_state.start_pending
+    ):
         last_execution_at = snapshot["ended_at"] or snapshot["started_at"]
         last_execution_text = (
             format_presentation_timestamp(last_execution_at)
@@ -718,13 +774,7 @@ def render_streaming() -> None:
             "Detenido": "Detenido.",
             "Error": "Error.",
         }.get(snapshot["status"], f"{snapshot['status']}.")
-        last_execution_notice = (
-            f"Datos de la "
-            f"**Última ejecución:** {last_execution_text}. "
-            f"**Duración:** {elapsed_text}. "
-            f"**{completion_text}** | **Modo:** {history_mode}. | "
-            f"**RUN:** {history_run_id[:12]}."
-        )
+        last_execution_notice = f"Datos de la **última ejecución:** {last_execution_text}. **Duración:** {elapsed_text}. **{completion_text}** | **Modo:** {history_mode}. | **RUN:** {history_run_id[:12]}."
         st.info(last_execution_notice)
         if snapshot["error"]:
             st.error(snapshot["error"])
@@ -748,8 +798,7 @@ def render_streaming() -> None:
         spark_console_lines.append("")
         spark_console_lines.append("Resultados por símbolo:")
         spark_console_lines.extend(
-            "{symbol} | operaciones={operations} | "
-            "cotizaciones={quotes} | volumen={volume}".format(
+            "{symbol} | operaciones={operations} | cotizaciones={quotes} | volumen={volume}".format(
                 symbol=row["symbol"],
                 operations=row["operations"],
                 quotes=row.get("quotes", 0),
@@ -800,10 +849,7 @@ def render_streaming() -> None:
         new_console_titles = {
             "execution-log-console": "1. Log del controlador",
             "alpaca-log-console": "2. Log de descarga de datos (Alpaca)",
-            "spark-log-console": (
-                "3. Log de procesamiento (Spark) - "
-                "[Spark Master ↗](http://localhost:8080/)"
-            ),
+            "spark-log-console": "3. Log de procesamiento (Spark) - [Spark Master ↗](http://localhost:8080/)",
         }
         new_console_labels = {
             "execution-log-console": "Eventos recibidos",
@@ -849,7 +895,7 @@ def render_streaming() -> None:
                 run_id,
                 clear_consoles,
             )
-        if clear_consoles:
+        if clear_consoles and not st.session_state.start_pending:
             st.session_state.start_requested = False
         st.divider()
         if last_execution_notice:
@@ -920,8 +966,7 @@ def render_streaming() -> None:
             else:
                 execution_state["persisted"] = True
             log_display_lines.append(
-                f"[#{persisted_sequence}] "
-                f"{format_presentation_log_line(line)}"
+                f"[#{persisted_sequence}] {format_presentation_log_line(line)}"
             )
         is_placeholder = (
             not log_display_lines
@@ -1028,15 +1073,13 @@ def render_streaming() -> None:
         )
         if not has_event_lines and status == "Conectado":
             st.info(
-                "Conexión activa; todavía no se recibieron cotizaciones u "
-                "operaciones. El mercado puede estar cerrado."
+                "Conexión activa; todavía no se recibieron cotizaciones u operaciones. El mercado puede estar cerrado."
             )
 
     with spark_column:
         with st.container(key="console-title-spark-log-console"):
             st.subheader(
-                "3. Log de procesamiento (Spark) - "
-                "[Spark Master ↗](http://localhost:8080/)"
+                "3. Log de procesamiento (Spark) - [Spark Master ↗](http://localhost:8080/)"
             )
         spark_state = get_console_state("spark-log-console", run_id)
         initial_load = not spark_state["initialized"]

@@ -194,7 +194,7 @@ textarea {
 .st-key-console-title-alpaca-log-console,
 .st-key-console-title-execution-log-console,
 .st-key-console-title-spark-log-console {
-    min-height: calc(2 * 1.75rem + 1rem);
+    min-height: calc(2 * 1.75rem + 1.5rem);
 }
 
 .st-key-start-button button,

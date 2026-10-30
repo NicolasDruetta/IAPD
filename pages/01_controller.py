@@ -268,8 +268,7 @@ def start_run(
             )
         except FileExistsError as error:
             raise RuntimeError(
-                "El identificador del RUN ya existe; esperá un segundo y "
-                "volvé a iniciar."
+                "El identificador del RUN ya existe; esperá un segundo y volvé a iniciar."
             ) from error
         _ACTIVE_SERVICE.start()
         _SUPERVISOR_THREAD = threading.Thread(
