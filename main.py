@@ -362,78 +362,6 @@ def render_console_download_button(
         width="content",
     )
 
-def render_new_run_console(
-    streaming_module: ModuleType,
-    console_id: str,
-    console_path: Path,
-    console_title: str,
-    count_label: str,
-    count: int,
-    run_id: str,
-    clear_console: bool = False,
-) -> None:
-    """Muestro las últimas líneas persistidas de un TXT de consola."""
-
-    state = get_console_state(console_id, run_id)
-    initial_load = (
-        clear_console
-        or not state["initialized"]
-        or int(state["cursor"]) == 0
-    )
-    if clear_console:
-        lines, next_cursor, cursor_start = [], 0, 0
-    elif initial_load:
-        lines, next_cursor, _ = streaming_module.read_console_tail(
-            console_path,
-            1000,
-        )
-        cursor_start = 0
-    else:
-        cursor_start = int(state["cursor"])
-        lines, next_cursor, _ = streaming_module.read_console_delta(
-            console_path,
-            cursor_start,
-            None,
-        )
-    state["initialized"] = True
-    state["cursor"] = next_cursor
-    visible_count = count
-    if lines:
-        persisted_count = streaming_module.console_line_number(lines[-1])
-        if persisted_count > 0:
-            state["line_number"] = persisted_count
-            visible_count = persisted_count
-    elif initial_load or clear_console:
-        state["line_number"] = 0
-        visible_count = 0
-    else:
-        visible_count = int(state["line_number"])
-    if not lines:
-        lines = [
-            {
-                "execution-log-console": "Log del controlador | esperando actividad.",
-                "alpaca-log-console": "Alpaca | esperando cotizaciones u operaciones.",
-                "spark-log-console": "Spark | esperando eventos bursátiles.",
-            }[console_id]
-        ]
-    with st.container(key=f"console-title-{console_id}"):
-        st.subheader(console_title)
-    counter_col, download_col = st.columns([10, 1], gap="small")
-    with counter_col:
-        st.caption(f"{count_label}: {visible_count}")
-    with download_col:
-        with st.container(horizontal=True, horizontal_alignment="right"):
-            render_console_download_button(console_path, console_id, run_id)
-    render_log_console(
-        lines,
-        console_id,
-        cursor_end=next_cursor,
-        cursor_start=cursor_start,
-        initial_load=initial_load,
-        placeholder=False,
-    )
-
-
 def render_volume_chart(rows: list[dict[str, Any]]) -> None:
     """Muestro el gráfico con el acumulado confirmado por Spark."""
 
@@ -829,104 +757,19 @@ def render_streaming() -> None:
             run_id,
             spark_console_lines,
         )
-    if snapshot.get("console_schema_version", 0) >= 3 and run_id:
-        new_console_paths = {
-            "execution-log-console": streaming_module.get_run_file(
-                run_id,
-                "handler",
-            ),
-            "alpaca-log-console": streaming_module.get_run_file(
-                run_id,
-                "alpaca",
-            ),
-            "spark-log-console": streaming_module.get_run_file(
-                run_id,
-                "spark",
-            ),
-        }
-        new_console_counts = {
-            "execution-log-console": int(snapshot.get("log_count", 0)),
-            "alpaca-log-console": int(snapshot.get("event_count", 0)),
-            "spark-log-console": streaming_module.read_console_tail(
-                new_console_paths["spark-log-console"],
-                1,
-            )[2],
-        }
-        if clear_consoles:
-            new_console_counts = {
-                "execution-log-console": 0,
-                "alpaca-log-console": 0,
-                "spark-log-console": 0,
-            }
-        new_console_titles = {
-            "execution-log-console": "1. Log del controlador",
-            "alpaca-log-console": "2. Log de descarga de datos (Alpaca)",
-            "spark-log-console": "3. Log de procesamiento (Spark) - [Spark Master ↗](http://localhost:8080/)",
-        }
-        new_console_labels = {
-            "execution-log-console": "Eventos recibidos",
-            "alpaca-log-console": "Eventos recibidos",
-            "spark-log-console": "Eventos recibidos",
-        }
-        execution_column, alpaca_column, spark_column = st.columns(
-            3,
-            gap="small",
-            vertical_alignment="top",
-            wrap=True,
-        )
-        with execution_column:
-            render_new_run_console(
-                streaming_module,
-                "execution-log-console",
-                new_console_paths["execution-log-console"],
-                new_console_titles["execution-log-console"],
-                new_console_labels["execution-log-console"],
-                new_console_counts["execution-log-console"],
-                run_id,
-                clear_consoles,
-            )
-        with alpaca_column:
-            render_new_run_console(
-                streaming_module,
-                "alpaca-log-console",
-                new_console_paths["alpaca-log-console"],
-                new_console_titles["alpaca-log-console"],
-                new_console_labels["alpaca-log-console"],
-                new_console_counts["alpaca-log-console"],
-                run_id,
-                clear_consoles,
-            )
-        with spark_column:
-            render_new_run_console(
-                streaming_module,
-                "spark-log-console",
-                new_console_paths["spark-log-console"],
-                new_console_titles["spark-log-console"],
-                new_console_labels["spark-log-console"],
-                new_console_counts["spark-log-console"],
-                run_id,
-                clear_consoles,
-            )
-        if clear_consoles and not st.session_state.start_pending:
-            st.session_state.start_requested = False
-        st.divider()
-        if last_execution_notice:
-            st.info(last_execution_notice)
-        with st.container(border=True):
-            date_col, time_col, elapsed_col = st.columns(3, gap="small")
-            with date_col:
-                st.caption("Fecha analizada")
-                st.text(market_date)
-            with time_col:
-                st.caption("Última hora procesada")
-                st.text(market_time)
-            with elapsed_col:
-                st.caption("Tiempo transcurrido de ejecución")
-                st.text(elapsed_text)
-        st.subheader("Top 10 de acciones por volumen negociado")
-        render_volume_chart(spark_result.get("top_volume", []))
-        st.session_state.rendered_run_active = snapshot["is_active"]
-        return
+    console_header_columns = st.columns(
+        3,
+        gap="small",
+        vertical_alignment="top",
+        wrap=True,
+    )
+    with console_header_columns[0]:
+        st.subheader("1. Log del controlador")
+    with console_header_columns[1]:
+        st.subheader("2. Log de descarga de datos (Alpaca)")
+    with console_header_columns[2]:
+        st.subheader("3. Log de procesamiento (Spark)")
+        st.write("[Spark Master ↗](http://localhost:8080/)")
     execution_column, alpaca_column, spark_column = st.columns(
         3,
         gap="small",
@@ -934,12 +777,10 @@ def render_streaming() -> None:
         wrap=True,
     )
     with execution_column:
-        with st.container(key="console-title-execution-log-console"):
-            st.subheader("1. Log del controlador")
-            execution_state = get_console_state(
-                "execution-log-console",
-                run_id,
-            )
+        execution_state = get_console_state(
+            "execution-log-console",
+            run_id,
+        )
         streaming_file = snapshot.get("streaming_file")
         streaming_path = (
             (
@@ -950,7 +791,25 @@ def render_streaming() -> None:
             if streaming_file
             else None
         )
-        if streaming_path is not None:
+        execution_path = (
+            streaming_module.get_run_file(run_id, "handler")
+            if snapshot.get("console_schema_version", 0) >= 3
+            and run_id
+            else streaming_path
+        )
+        alpaca_path = (
+            streaming_module.get_run_file(run_id, "alpaca")
+            if snapshot.get("console_schema_version", 0) >= 3
+            and run_id
+            else streaming_path
+        )
+        spark_path = (
+            streaming_module.get_run_file(run_id, "spark")
+            if snapshot.get("console_schema_version", 0) >= 3
+            and run_id
+            else streaming_path
+        )
+        if execution_path is not None:
             if clear_consoles:
                 cursor_start, next_cursor, has_more = 0, 0, False
                 initial_load, log_lines = True, []
@@ -958,8 +817,8 @@ def render_streaming() -> None:
                 cursor_start = int(execution_state["cursor"])
                 initial_load = not execution_state["initialized"]
                 log_lines, next_cursor, has_more = (
-                    streaming_module.read_log_delta(
-                        streaming_path,
+                    streaming_module.read_console_delta(
+                        execution_path,
                         0 if initial_load else cursor_start,
                         None
                         if initial_load
@@ -980,17 +839,10 @@ def render_streaming() -> None:
             execution_state["line_number"] = 0
         else:
             execution_state["line_number"] += len(log_lines)
-        log_display_lines = []
-        for persisted_sequence, line in log_lines:
-            if persisted_sequence is None:
-                persisted_sequence = execution_state["line_number"] - len(
-                    log_lines
-                ) + len(log_display_lines) + 1
-            else:
-                execution_state["persisted"] = True
-            log_display_lines.append(
-                f"[#{persisted_sequence}] {format_presentation_log_line(line)}"
-            )
+        log_display_lines = [
+            format_presentation_log_line(line)
+            for line in log_lines
+        ]
         is_placeholder = (
             not log_display_lines
             and execution_state["line_number"] == 0
@@ -1022,21 +874,19 @@ def render_streaming() -> None:
             placeholder=is_placeholder,
         )
     with alpaca_column:
-        with st.container(key="console-title-alpaca-log-console"):
-            st.subheader("2. Log de descarga de datos (Alpaca)")
         alpaca_state = get_console_state(
             "alpaca-log-console",
             run_id,
         )
         initial_load = not alpaca_state["initialized"]
-        if streaming_path is not None:
+        if alpaca_path is not None:
             if clear_consoles:
                 events, next_cursor, has_more = [], 0, False
                 initial_load = True
             else:
                 events, next_cursor, has_more = (
-                    streaming_module.read_event_delta(
-                        streaming_path,
+                    streaming_module.read_console_delta(
+                        alpaca_path,
                         0 if initial_load else int(alpaca_state["cursor"]),
                         None
                         if initial_load
@@ -1048,18 +898,10 @@ def render_streaming() -> None:
             events, has_more = [], False
             initial_load = True if clear_consoles else initial_load
         alpaca_state["initialized"] = True
-        event_lines = []
-        for event in events:
-            if event.console_sequence is None:
-                event_sequence = alpaca_state["line_number"] + len(
-                    event_lines
-                ) + 1
-            else:
-                event_sequence = event.console_sequence
-                alpaca_state["persisted"] = True
-            event_lines.append(
-                f"[#{event_sequence}] {event.to_display_line()}"
-            )
+        event_lines = [
+            format_presentation_log_line(line)
+            for line in events
+        ]
         cursor_start = int(alpaca_state["cursor"])
         alpaca_state["cursor"] = next_cursor
         if clear_consoles:
@@ -1102,72 +944,35 @@ def render_streaming() -> None:
             )
 
     with spark_column:
-        with st.container(key="console-title-spark-log-console"):
-            st.subheader(
-                "3. Log de procesamiento (Spark) - [Spark Master ↗](http://localhost:8080/)"
-            )
         spark_state = get_console_state("spark-log-console", run_id)
         initial_load = not spark_state["initialized"]
-        if snapshot.get("console_schema_version", 0) >= 2:
-            cursor_start = int(spark_state["cursor"])
-            if clear_consoles:
-                spark_records, next_cursor, has_more, schema_found = (
-                    [], 0, False, False
-                )
-                cursor_start, initial_load = 0, True
-            else:
-                spark_records, next_cursor, has_more, schema_found = (
-                    streaming_module.read_spark_delta(
-                        streaming_path,
-                        0 if initial_load else cursor_start,
-                        None
-                        if initial_load
-                        else CONSOLE_TRANSFER_BATCH_SIZE,
-                    )
-                    if streaming_path is not None
-                    else ([], cursor_start, False, False)
-                )
-            spark_records = [
-                (sequence, line)
-                for sequence, line in spark_records
-                if line != "Spark | esperando eventos bursátiles."
-            ]
-            spark_state["cursor"] = next_cursor
-            if clear_consoles:
-                spark_state["line_number"] = 0
-            else:
-                spark_state["line_number"] += len(spark_records)
-            spark_state["persisted"] = (
-                spark_state["persisted"] or schema_found
-            )
-            spark_lines = [
-                f"[#{sequence}] {line}"
-                for sequence, line in spark_records
-            ]
-            spark_cursor_end = next_cursor
-            spark_state["initialized"] = True
+        cursor_start = int(spark_state["cursor"])
+        if clear_consoles:
+            spark_records, next_cursor, has_more = [], 0, False
+            cursor_start, initial_load = 0, True
         else:
-            spark_signature = () if clear_consoles else tuple(
-                spark_console_lines
+            spark_records, next_cursor, has_more = (
+                streaming_module.read_console_delta(
+                    spark_path,
+                    0 if initial_load else cursor_start,
+                    None
+                    if initial_load
+                    else CONSOLE_TRANSFER_BATCH_SIZE,
+                )
+                if spark_path is not None
+                else ([], cursor_start, False)
             )
-            if spark_signature == spark_state.get("signature"):
-                spark_lines = []
-            else:
-                spark_lines = [
-                    line
-                    for line in spark_console_lines
-                    if line != "Spark | esperando eventos bursátiles."
-                ]
-                spark_state["signature"] = spark_signature
-            cursor_start = int(spark_state["cursor"])
-            spark_cursor_end = cursor_start + len(spark_lines)
-            spark_state["cursor"] = spark_cursor_end
-            if clear_consoles:
-                spark_state["line_number"] = 0
-            else:
-                spark_state["line_number"] += len(spark_lines)
-            has_more = False
-            spark_state["initialized"] = True
+        spark_state["cursor"] = next_cursor
+        if clear_consoles:
+            spark_state["line_number"] = 0
+        else:
+            spark_state["line_number"] += len(spark_records)
+        spark_lines = [
+            format_presentation_log_line(line)
+            for line in spark_records
+        ]
+        spark_cursor_end = next_cursor
+        spark_state["initialized"] = True
         is_placeholder = not spark_lines and spark_state["line_number"] == 0
         if is_placeholder:
             spark_lines = ["Spark | esperando eventos bursátiles."]
