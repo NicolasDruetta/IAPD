@@ -351,6 +351,7 @@ def render_new_run_console(
                 mime="text/plain",
                 key=f"download-{console_id}-{run_id}",
                 help="Descargar log completo",
+                width="content",
             )
     render_log_console(
         lines,
@@ -873,7 +874,7 @@ def render_streaming() -> None:
                 "Log de ejecución | esperando actividad."
             ]
         st.caption(
-            f"Entradas recibidas: {execution_state['line_number']}"
+            f"Eventos recibidos: {execution_state['line_number']}"
         )
         render_log_console(
             log_display_lines,

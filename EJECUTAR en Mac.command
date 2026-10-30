@@ -9,4 +9,4 @@ else
     echo "No se pudo iniciar Apache Big Data Lab. Revise los errores anteriores."
 fi
 echo ""
-read -r -p "Presione Enter para cerrar..."
+exec "${SHELL:-/bin/zsh}" -i

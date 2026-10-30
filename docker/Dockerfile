@@ -33,7 +33,5 @@ COPY assets ./assets
 COPY README.md ./README.md
 COPY AGENTS.md ./AGENTS.md
 
-RUN mkdir -p /app/data/historical /app/data/streaming
-
 EXPOSE 8501 7077 8080 8081 8082
 

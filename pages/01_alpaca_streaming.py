@@ -1286,11 +1286,6 @@ def ensure_data_directory() -> None:
 
     DATA_DIRECTORY.mkdir(parents=True, exist_ok=True)
 
-def ensure_historical_directory() -> None:
-    """Creo el directorio separado para copias históricas originales."""
-
-    HISTORICAL_DIRECTORY.mkdir(parents=True, exist_ok=True)
-
 def event_from_record(
     record: dict[str, Any],
     mode: str | None = None,
