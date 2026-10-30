@@ -150,7 +150,7 @@ services:
       spark-worker-2:
         condition: service_healthy
     ports:
-      - "8501:8501"
+      - "8502:8501"
     volumes:
       - lab-data:/app/data
 

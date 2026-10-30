@@ -6,11 +6,6 @@
     --card-background: #ffffff;
     --console-background: #f0f2f6;
     --console-text: #a4a9b3;
-    --download-background: #f1f3f5;
-    --download-border: #ced4da;
-    --download-hover-background: #e2e6ea;
-    --download-hover-border: #adb5bd;
-    --download-text: #495057;
     --muted-text-color: #68707f;
     --page-background: #ffffff;
     --scrollbar-thumb: #9aa1ad;
@@ -25,11 +20,6 @@
         --card-background: #171a22;
         --console-background: #1d212b;
         --console-text: #aeb6c5;
-        --download-background: #2f3542;
-        --download-border: #4b5563;
-        --download-hover-background: #3b4352;
-        --download-hover-border: #64748b;
-        --download-text: #e5e7eb;
         --muted-text-color: #b6bdca;
         --page-background: #0e1016;
         --scrollbar-thumb: #596273;
@@ -44,11 +34,6 @@
     --card-background: #ffffff;
     --console-background: #f0f2f6;
     --console-text: #a4a9b3;
-    --download-background: #f1f3f5;
-    --download-border: #ced4da;
-    --download-hover-background: #e2e6ea;
-    --download-hover-border: #adb5bd;
-    --download-text: #495057;
     --muted-text-color: #68707f;
     --page-background: #ffffff;
     --text-color: #2f3342;
@@ -60,11 +45,6 @@
     --card-background: #171a22;
     --console-background: #1d212b;
     --console-text: #aeb6c5;
-    --download-background: #2f3542;
-    --download-border: #4b5563;
-    --download-hover-background: #3b4352;
-    --download-hover-border: #64748b;
-    --download-text: #e5e7eb;
     --muted-text-color: #b6bdca;
     --page-background: #0e1016;
     --text-color: #f1f3f8;
@@ -104,7 +84,7 @@ h1, h2, h3, h4, h5, h6, label, p {
 hr {
     border: 0 !important;
     border-top: 1px solid var(--border-color) !important;
-    margin: 1.5rem 0 !important;
+    margin: 1rem 0 !important;
 }
 
 input, select, textarea {
@@ -285,27 +265,28 @@ textarea {
 .stDownloadButton button,
 .stDownloadButton button:disabled {
     box-sizing: border-box;
-    width: 44px !important;
-    background: var(--download-background) !important;
-    border-color: var(--download-border) !important;
-    color: var(--download-text) !important;
-    -webkit-text-fill-color: var(--download-text) !important;
+    padding: 0 !important;
+    width: 36px !important;
+    background: var(--console-background) !important;
+    border-color: var(--border-color) !important;
+    color: var(--text-color) !important;
+    -webkit-text-fill-color: var(--text-color) !important;
 }
 
 .stApp:has(.st-key-theme-dark) .stDownloadButton button:disabled,
 .stApp:has(.st-key-theme-dark) .stDownloadButton button:disabled:hover,
 .stDownloadButton button:disabled,
 .stDownloadButton button:disabled:hover {
-    background: var(--download-background) !important;
-    border-color: var(--download-border) !important;
-    color: var(--download-text) !important;
-    -webkit-text-fill-color: var(--download-text) !important;
+    background: var(--console-background) !important;
+    border-color: var(--border-color) !important;
+    color: var(--text-color) !important;
+    -webkit-text-fill-color: var(--text-color) !important;
 }
 
 .stApp:has(.st-key-theme-dark) .stDownloadButton button:hover,
 .stDownloadButton button:hover {
-    background: var(--download-hover-background) !important;
-    border-color: var(--download-hover-border) !important;
+    background: var(--console-background) !important;
+    border-color: var(--border-color) !important;
 }
 
 .stApp:has(.st-key-theme-dark) button {

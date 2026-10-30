@@ -7,7 +7,7 @@ if errorlevel 1 (
 ) else (
     echo.
     echo Para ver el sitio, haga clic en el siguiente enlace:
-    echo http://localhost:8501
+    echo http://localhost:8502
 )
 echo.
 cmd /k

@@ -88,6 +88,24 @@ def get_spark_session() -> Any:
             _SPARK_ERROR = f"No se pudo iniciar Spark: {error}"
         return _SPARK_SESSION
 
+def normalize_totals(totals: Any) -> dict[str, float]:
+    """Normalizo los acumulados numéricos de los checkpoints disponibles."""
+
+    if not isinstance(totals, dict):
+        return {}
+    normalized: dict[str, float] = {}
+    for symbol, value in totals.items():
+        if isinstance(value, dict):
+            value = value.get(
+                "total_volume",
+                value.get("volume", value.get("v", 0)),
+            )
+        try:
+            normalized[str(symbol)] = float(value or 0)
+        except (TypeError, ValueError):
+            continue
+    return normalized
+
 def process_events(
     events: list[Any],
     run_id: str | None = None,
@@ -107,13 +125,12 @@ def process_events(
                 "batch_number": int(
                     (checkpoint or {}).get("batch_number", 0)
                 ),
-                "trade_totals": {
-                    str(symbol): float(volume)
-                    for symbol, volume in (checkpoint or {}).get(
-                            "trade_totals",
-                            (checkpoint or {}).get("totals", {}),
-                        ).items()
-                },
+                "trade_totals": normalize_totals(
+                    (checkpoint or {}).get(
+                        "trade_totals",
+                        (checkpoint or {}).get("totals", {}),
+                    )
+                ),
                 "processed_events_by_type": {
                     "TRADE": int(
                         (checkpoint or {}).get(
@@ -128,13 +145,12 @@ def process_events(
                         ).get("QUOTE", 0)
                     ),
                 },
-                "totals": {
-                    str(symbol): float(volume)
-                    for symbol, volume in (checkpoint or {}).get(
+                "totals": normalize_totals(
+                    (checkpoint or {}).get(
                         "trade_totals",
                         (checkpoint or {}).get("totals", {}),
-                    ).items()
-                },
+                    )
+                ),
                 "result": None,
             }
             _RUN_STATES[state_key] = state
@@ -296,7 +312,7 @@ def top_volume_rows(totals: dict[str, float]) -> list[dict[str, Any]]:
             "total_volume": volume,
         }
         for symbol, volume in sorted(
-            totals.items(),
+            normalize_totals(totals).items(),
             key=lambda item: (-item[1], item[0]),
         )[:10]
     ]

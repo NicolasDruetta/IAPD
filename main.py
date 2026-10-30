@@ -422,7 +422,8 @@ def render_new_run_console(
     with counter_col:
         st.caption(f"{count_label}: {visible_count}")
     with download_col:
-        render_console_download_button(console_path, console_id, run_id)
+        with st.container(horizontal=True, horizontal_alignment="right"):
+            render_console_download_button(console_path, console_id, run_id)
     render_log_console(
         lines,
         console_id,
@@ -562,7 +563,7 @@ with st.container(width="content"):
 st.subheader(
     "Análisis de operaciones bursátiles con procesamiento distribuido en Apache Spark."
 )
-st.caption("Alumno: Nicolás Druetta. Materia: IAPD. Año: 2026.")
+st.caption("Materia: IAPD. Autor: Nicolás Druetta. Año: 2026.")
 st.divider()
 
 def render_streaming() -> None:
@@ -722,6 +723,15 @@ def render_streaming() -> None:
         snapshot["started_at"],
         snapshot["ended_at"],
     )
+    market_timestamp = snapshot.get("market_timestamp")
+    presentation_market_timestamp = format_presentation_timestamp(
+        market_timestamp,
+    )
+    if presentation_market_timestamp == "-":
+        market_date = snapshot.get("historical_date") or "-"
+        market_time = "-"
+    else:
+        market_date, market_time = presentation_market_timestamp.split(" ", 1)
     status = snapshot["status"]
     status_text = "Listo para ejecutar."
     if st.session_state.start_pending:
@@ -780,6 +790,8 @@ def render_streaming() -> None:
             st.error(snapshot["error"])
 
     run_id = snapshot["run_id"]
+    if clear_consoles and not snapshot["is_active"]:
+        run_id = None
     spark_checkpoint = controller_module.get_spark_checkpoint(run_id)
     processed_events = int(
         (spark_checkpoint or {}).get("processed_events", 0)
@@ -900,6 +912,17 @@ def render_streaming() -> None:
         st.divider()
         if last_execution_notice:
             st.info(last_execution_notice)
+        with st.container(border=True):
+            date_col, time_col, elapsed_col = st.columns(3, gap="small")
+            with date_col:
+                st.caption("Fecha analizada")
+                st.text(market_date)
+            with time_col:
+                st.caption("Última hora procesada")
+                st.text(market_time)
+            with elapsed_col:
+                st.caption("Tiempo transcurrido de ejecución")
+                st.text(elapsed_text)
         st.subheader("Top 10 de acciones por volumen negociado")
         render_volume_chart(spark_result.get("top_volume", []))
         st.session_state.rendered_run_active = snapshot["is_active"]
@@ -982,12 +1005,13 @@ def render_streaming() -> None:
                 f"Eventos recibidos: {execution_state['line_number']}"
             )
         with download_col:
-            render_console_download_button(
-                streaming_module.get_run_file(run_id, "handler")
-                if run_id is not None else None,
-                "execution-log-console",
-                run_id or "no-run",
-            )
+            with st.container(horizontal=True, horizontal_alignment="right"):
+                render_console_download_button(
+                    streaming_module.get_run_file(run_id, "handler")
+                    if run_id is not None else None,
+                    "execution-log-console",
+                    run_id or "no-run",
+                )
         render_log_console(
             log_display_lines,
             "execution-log-console",
@@ -1056,12 +1080,13 @@ def render_streaming() -> None:
         with counter_col:
             st.caption(f"Eventos recibidos: {alpaca_state['line_number']}")
         with download_col:
-            render_console_download_button(
-                streaming_module.get_run_file(run_id, "alpaca")
-                if run_id is not None else None,
-                "alpaca-log-console",
-                run_id or "no-run",
-            )
+            with st.container(horizontal=True, horizontal_alignment="right"):
+                render_console_download_button(
+                    streaming_module.get_run_file(run_id, "alpaca")
+                    if run_id is not None else None,
+                    "alpaca-log-console",
+                    run_id or "no-run",
+                )
         render_log_console(
             event_lines,
             "alpaca-log-console",
@@ -1150,12 +1175,13 @@ def render_streaming() -> None:
         with counter_col:
             st.caption(f"Eventos recibidos: {spark_state['line_number']}")
         with download_col:
-            render_console_download_button(
-                streaming_module.get_run_file(run_id, "spark")
-                if run_id is not None else None,
-                "spark-log-console",
-                run_id or "no-run",
-            )
+            with st.container(horizontal=True, horizontal_alignment="right"):
+                render_console_download_button(
+                    streaming_module.get_run_file(run_id, "spark")
+                    if run_id is not None else None,
+                    "spark-log-console",
+                    run_id or "no-run",
+                )
         render_log_console(
             spark_lines,
             "spark-log-console",
@@ -1171,6 +1197,17 @@ def render_streaming() -> None:
     st.divider()
     if last_execution_notice:
         st.info(last_execution_notice)
+    with st.container(border=True):
+        date_col, time_col, elapsed_col = st.columns(3, gap="small")
+        with date_col:
+            st.caption("Fecha analizada")
+            st.text(market_date)
+        with time_col:
+            st.caption("Última hora procesada")
+            st.text(market_time)
+        with elapsed_col:
+            st.caption("Tiempo transcurrido de ejecución")
+            st.text(elapsed_text)
     st.subheader("Top 10 de acciones por volumen negociado")
 
     render_volume_chart(spark_result.get("top_volume", []))

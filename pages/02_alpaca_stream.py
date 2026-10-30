@@ -260,6 +260,7 @@ class AlpacaStreamingService:
         self._historical_date: str | None = None
         self._finished = False
         self._log_count = 0
+        self._market_timestamp: str | None = None
         self._spark_checkpoint: dict[str, Any] | None = None
         self._spark_console_initialized = False
         self._sequence = 0
@@ -440,6 +441,7 @@ class AlpacaStreamingService:
                 "error": self._error,
                 "event_count": self._event_count,
                 "log_count": self._log_count,
+                "market_timestamp": self._market_timestamp,
                 "replay_position": self._replay_position,
                 "historical_date": self._historical_date,
                 "logs": [],
@@ -633,6 +635,7 @@ class AlpacaStreamingService:
                 )
             self._events.extend(events)
             self._event_count += len(events)
+            self._market_timestamp = events[-1].timestamp
             self._replay_position += len(events)
             self._status = "Reproduciendo"
             self._replay_batch_number += 1
@@ -780,6 +783,7 @@ class AlpacaStreamingService:
             )
             self._events.append(event)
             self._event_count += 1
+            self._market_timestamp = event.timestamp
             if replay_position is not None:
                 self._replay_position = replay_position
             self._append_state_locked()
@@ -837,6 +841,7 @@ class AlpacaStreamingService:
                         "error": self._error,
                         "event_count": self._event_count,
                         "log_count": self._log_count,
+                        "market_timestamp": self._market_timestamp,
                         "replay_position": self._replay_position,
                         "historical_date": self._historical_date,
                         "started_at": self._started_at,
@@ -1082,7 +1087,7 @@ def download_historical_dataset(
         symbol_group: list[str],
         window_start: datetime,
         window_end: datetime,
-    ) -> tuple[int, list[tuple[int, Path]], int, int, int, int]:
+    ) -> tuple[int, list[tuple[tuple[int, int], Path]], int, int, int, int]:
         """Descargo un grupo y separo sus símbolos en temporales."""
 
         symbol_positions = {
@@ -1180,7 +1185,7 @@ def download_historical_dataset(
         return (
             group_index,
             [
-                (group_index * 100 + position, path)
+                ((group_index, position), path)
                 for position, path in enumerate(group_paths.values())
             ],
             event_count,
@@ -1189,7 +1194,10 @@ def download_historical_dataset(
             pages_with_quotes,
         )
 
-    def record_key(record: dict[str, Any], group_index: int) -> tuple[str, str, str, int]:
+    def record_key(
+        record: dict[str, Any],
+        group_index: tuple[int, int],
+    ) -> tuple[str, str, str, tuple[int, int]]:
         """Genero un desempate estable para timestamps iguales."""
 
         raw = record.get("raw")
@@ -1207,8 +1215,8 @@ def download_historical_dataset(
     ) -> tuple[int, list[AlpacaEvent]]:
         """Mezclo archivos temporales sin cargar la ventana completa."""
 
-        handles: dict[int, Any] = {}
-        heap: list[tuple[tuple[str, str, str, int], int, dict[str, Any]]] = []
+        handles: dict[tuple[int, int], Any] = {}
+        heap: list[tuple[tuple[str, str, str, tuple[int, int]], tuple[int, int], dict[str, Any]]] = []
         batch: list[AlpacaEvent] = []
         merged_count = 0
         try:
@@ -2259,6 +2267,7 @@ def read_streaming_state(path: Path) -> dict[str, Any] | None:
         "error": None,
         "event_count": 0,
         "log_count": 0,
+        "market_timestamp": None,
         "replay_position": 0,
         "historical_date": None,
         "started_at": None,
@@ -2321,6 +2330,7 @@ def read_streaming_state(path: Path) -> dict[str, Any] | None:
                         "error",
                         "event_count",
                         "log_count",
+                        "market_timestamp",
                         "replay_position",
                         "historical_date",
                         "started_at",
@@ -2338,6 +2348,29 @@ def read_streaming_state(path: Path) -> dict[str, Any] | None:
                     state["is_active"] = False
     except OSError:
         return None
+    if state["market_timestamp"] is None and state["event_count"] > 0:
+        data_path = get_run_file(state["run_id"], "data")
+        try:
+            with data_path.open("rb") as data_file:
+                position = data_file.seek(0, os.SEEK_END)
+                pending = b""
+                while position > 0 and state["market_timestamp"] is None:
+                    block_size = min(8192, position)
+                    position -= block_size
+                    data_file.seek(position)
+                    pending = data_file.read(block_size) + pending
+                    lines = pending.split(b"\n")
+                    pending = lines[0]
+                    for raw_line in reversed(lines[1:]):
+                        try:
+                            record = json.loads(raw_line.decode("utf-8"))
+                        except (UnicodeDecodeError, json.JSONDecodeError):
+                            continue
+                        if isinstance(record, dict) and record.get("timestamp"):
+                            state["market_timestamp"] = record["timestamp"]
+                            break
+        except OSError:
+            pass
     return state if started else None
 
 def read_recent_events(run_id: str) -> list[AlpacaEvent]:

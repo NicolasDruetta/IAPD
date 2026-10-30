@@ -207,3 +207,10 @@ ejecución sin desplazar información de progreso útil.
 Los textos visibles de la interfaz y de las consolas se escriben completos en
 una sola línea de código. No se dividen cadenas literales entre varias líneas
 ni se altera su contenido, incluidos espacios, tildes, puntuación y mayúsculas.
+
+## 15. Servicios y contenedores
+
+No se reinician, reconstruyen, recrean, detienen ni levantan servicios o
+contenedores de Docker. Estas acciones requieren autorización expresa del
+usuario en cada ocasión. Las verificaciones se realizan sin modificar el
+estado operativo de los servicios.
