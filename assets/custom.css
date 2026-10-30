@@ -2,63 +2,102 @@
 
 :root {
     color-scheme: light;
-    --page-background: #ffffff;
-    --text-color: #2f3342;
-    --muted-text-color: #68707f;
     --border-color: #dfe3eb;
     --card-background: #ffffff;
     --console-background: #f0f2f6;
     --console-text: #a4a9b3;
-    --scrollbar-track: #dfe3eb;
+    --download-background: #f1f3f5;
+    --download-border: #ced4da;
+    --download-hover-background: #e2e6ea;
+    --download-hover-border: #adb5bd;
+    --download-text: #495057;
+    --muted-text-color: #68707f;
+    --page-background: #ffffff;
     --scrollbar-thumb: #9aa1ad;
+    --scrollbar-track: #dfe3eb;
+    --text-color: #2f3342;
 }
 
 @media (prefers-color-scheme: dark) {
     :root {
         color-scheme: dark;
-        --page-background: #0e1016;
-        --text-color: #f1f3f8;
-        --muted-text-color: #b6bdca;
         --border-color: #3b404d;
         --card-background: #171a22;
         --console-background: #1d212b;
         --console-text: #aeb6c5;
-        --scrollbar-track: #292e39;
+        --download-background: #2f3542;
+        --download-border: #4b5563;
+        --download-hover-background: #3b4352;
+        --download-hover-border: #64748b;
+        --download-text: #e5e7eb;
+        --muted-text-color: #b6bdca;
+        --page-background: #0e1016;
         --scrollbar-thumb: #596273;
+        --scrollbar-track: #292e39;
+        --text-color: #f1f3f8;
     }
 }
 
 .stApp:has(.st-key-theme-light) {
     color-scheme: light;
-    --page-background: #ffffff;
-    --text-color: #2f3342;
-    --muted-text-color: #68707f;
     --border-color: #dfe3eb;
     --card-background: #ffffff;
     --console-background: #f0f2f6;
     --console-text: #a4a9b3;
+    --download-background: #f1f3f5;
+    --download-border: #ced4da;
+    --download-hover-background: #e2e6ea;
+    --download-hover-border: #adb5bd;
+    --download-text: #495057;
+    --muted-text-color: #68707f;
+    --page-background: #ffffff;
+    --text-color: #2f3342;
 }
 
 .stApp:has(.st-key-theme-dark) {
     color-scheme: dark;
-    --page-background: #0e1016;
-    --text-color: #f1f3f8;
-    --muted-text-color: #b6bdca;
     --border-color: #3b404d;
     --card-background: #171a22;
     --console-background: #1d212b;
     --console-text: #aeb6c5;
+    --download-background: #2f3542;
+    --download-border: #4b5563;
+    --download-hover-background: #3b4352;
+    --download-hover-border: #64748b;
+    --download-text: #e5e7eb;
+    --muted-text-color: #b6bdca;
+    --page-background: #0e1016;
+    --text-color: #f1f3f8;
 }
 
 /* Etiquetas clásicas de HTML. */
 
-html, body, .stApp {
+body, html {
     background: var(--page-background) !important;
     color: var(--text-color) !important;
 }
 
-h1, h2, h3, h4, h5, h6, p,
-label, .stMarkdown, .stText {
+button, input, select, textarea {
+    color-scheme: inherit;
+}
+
+button, input, textarea {
+    color: var(--text-color) !important;
+}
+
+button:disabled {
+    background: #adb5bd !important;
+    border-color: #adb5bd !important;
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+}
+
+button:disabled:hover {
+    background: #98a1aa !important;
+    border-color: #8f98a1 !important;
+}
+
+h1, h2, h3, h4, h5, h6, label, p {
     color: var(--text-color) !important;
 }
 
@@ -68,27 +107,13 @@ hr {
     margin: 1.5rem 0 !important;
 }
 
-input,
-textarea,
-button,
-select {
-    color-scheme: inherit;
-}
-
-button {
-    color: var(--text-color) !important;
-}
-
-input,
-textarea {
+input, select, textarea {
     border-color: var(--border-color) !important;
-    color: var(--text-color) !important;
 }
 
-    input:disabled,
-    textarea:disabled {
-        color: var(--muted-text-color) !important;
-    }
+input:disabled, textarea:disabled {
+    color: var(--muted-text-color) !important;
+}
 
 select {
     border: 1px solid var(--border-color) !important;
@@ -108,8 +133,8 @@ textarea {
     overflow-y: scroll;
     scrollbar-gutter: stable;
     padding: 0.8rem;
-    border-radius: 0.5rem;
     border: 1px solid var(--border-color);
+    border-radius: 0.5rem;
     background: var(--console-background);
     color: var(--console-text);
     font-family: monospace;
@@ -118,18 +143,9 @@ textarea {
     white-space: pre-wrap;
 }
 
-.stElementContainer:has(.log-console),
-.stElementContainer:has(.log-console) > div {
-    overflow: visible !important;
-}
-
 .log-console::-webkit-scrollbar {
     -webkit-appearance: none;
     width: 12px;
-}
-
-.log-console::-webkit-scrollbar-track {
-    background: var(--scrollbar-track);
 }
 
 .log-console::-webkit-scrollbar-thumb {
@@ -137,22 +153,30 @@ textarea {
     border-radius: 6px;
 }
 
-.metric-card {
+.log-console::-webkit-scrollbar-track {
+    background: var(--scrollbar-track);
+}
+
+.metric-card,
+.stMetric {
     box-sizing: border-box;
-    width: 100%;
-    padding: 0.5rem 1rem;
     border: 1px solid var(--border-color);
     border-radius: 0.5rem;
     background: var(--card-background);
     color: var(--text-color);
-    display: flex;
-    align-items: center;
 }
 
-    .metric-card p {
-        width: 100%;
-        margin: 0;
-    }
+.metric-card {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    padding: 0.5rem 1rem;
+}
+
+.metric-card p {
+    width: 100%;
+    margin: 0;
+}
 
 .st-key-card-symbols input {
     background: transparent !important;
@@ -162,14 +186,58 @@ textarea {
     -webkit-text-fill-color: var(--text-color) !important;
 }
 
-    .st-key-card-symbols input::placeholder {
-        color: var(--muted-text-color) !important;
-        opacity: 1 !important;
-    }
+.st-key-card-symbols input::placeholder {
+    color: var(--muted-text-color) !important;
+    opacity: 1 !important;
+}
 
-.st-key-symbol-universe > div,
-.st-key-symbol-universe > div > div {
-    background: var(--card-background) !important;
+.st-key-console-title-alpaca-log-console,
+.st-key-console-title-execution-log-console,
+.st-key-console-title-spark-log-console {
+    min-height: calc(2 * 1.75rem + 1rem);
+}
+
+.st-key-start-button button,
+.st-key-stop-button button,
+.stApp:has(.st-key-theme-dark) .st-key-start-button button,
+.stApp:has(.st-key-theme-dark) .st-key-stop-button button {
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+}
+
+.st-key-start-button button,
+.stApp:has(.st-key-theme-dark) .st-key-start-button button {
+    background: #198754 !important;
+    border-color: #198754 !important;
+}
+
+.st-key-start-button button *,
+.st-key-stop-button button *,
+.stApp:has(.st-key-theme-dark) .st-key-start-button button *,
+.stApp:has(.st-key-theme-dark) .st-key-stop-button button * {
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+}
+
+.st-key-start-button button:hover,
+.stApp:has(.st-key-theme-dark) .st-key-start-button button:hover {
+    background: #157347 !important;
+    border-color: #146c43 !important;
+}
+
+.st-key-stop-button button,
+.stApp:has(.st-key-theme-dark) .st-key-stop-button button {
+    background: #dc3545 !important;
+    border-color: #dc3545 !important;
+}
+
+.st-key-stop-button button:hover,
+.stApp:has(.st-key-theme-dark) .st-key-stop-button button:hover {
+    background: #bb2d3b !important;
+    border-color: #b02a37 !important;
+}
+
+.st-key-symbol-universe * {
     color: var(--text-color) !important;
 }
 
@@ -179,109 +247,10 @@ textarea {
     border-radius: 0.5rem !important;
 }
 
-.st-key-symbol-universe * {
-    color: var(--text-color) !important;
-}
-
-body:has(.st-key-theme-dark) > div:last-of-type {
-    --card-background: #171a22;
-    --text-color: #f1f3f8;
+.st-key-symbol-universe > div,
+.st-key-symbol-universe > div > div {
     background: var(--card-background) !important;
     color: var(--text-color) !important;
-    color-scheme: dark;
-}
-
-    body:has(.st-key-theme-dark) > div:last-of-type * {
-        background: var(--card-background) !important;
-        color: var(--text-color) !important;
-    }
-
-.stApp:has(.st-key-theme-dark) button {
-    background: var(--card-background) !important;
-    border-color: var(--border-color) !important;
-    color: var(--text-color) !important;
-}
-
-.stApp:has(.st-key-theme-dark) .st-key-start-button button,
-.st-key-start-button button {
-    background: #198754 !important;
-    border-color: #198754 !important;
-    color: #ffffff !important;
-    -webkit-text-fill-color: #ffffff !important;
-}
-
-.stApp:has(.st-key-theme-dark) .st-key-start-button button *,
-.st-key-start-button button * {
-    color: #ffffff !important;
-    -webkit-text-fill-color: #ffffff !important;
-}
-
-.stApp:has(.st-key-theme-dark) .st-key-start-button button:hover,
-.st-key-start-button button:hover {
-    background: #157347 !important;
-    border-color: #146c43 !important;
-}
-
-.stApp:has(.st-key-theme-dark) .st-key-stop-button button,
-.st-key-stop-button button {
-    background: #dc3545 !important;
-    border-color: #dc3545 !important;
-    color: #ffffff !important;
-    -webkit-text-fill-color: #ffffff !important;
-}
-
-.stApp:has(.st-key-theme-dark) .st-key-stop-button button *,
-.st-key-stop-button button * {
-    color: #ffffff !important;
-    -webkit-text-fill-color: #ffffff !important;
-}
-
-.stApp:has(.st-key-theme-dark) .st-key-stop-button button:hover,
-.st-key-stop-button button:hover {
-    background: #bb2d3b !important;
-    border-color: #b02a37 !important;
-}
-
-.stApp:has(.st-key-theme-dark) .stDownloadButton button,
-.stDownloadButton button {
-    background: #f1f3f5 !important;
-    border-color: #ced4da !important;
-    color: #495057 !important;
-    -webkit-text-fill-color: #495057 !important;
-    box-sizing: border-box;
-    width: 44px !important;
-}
-
-.stApp:has(.st-key-theme-dark) .stDownloadButton button {
-    background: #2f3542 !important;
-    border-color: #4b5563 !important;
-    color: #e5e7eb !important;
-    -webkit-text-fill-color: #e5e7eb !important;
-}
-
-.stApp:has(.st-key-theme-dark) .stDownloadButton button:hover,
-.stDownloadButton button:hover {
-    background: #e2e6ea !important;
-    border-color: #adb5bd !important;
-}
-
-.stApp:has(.st-key-theme-dark) .stDownloadButton button:hover {
-    background: #3b4352 !important;
-    border-color: #64748b !important;
-}
-
-.stApp:has(.st-key-theme-dark) button:disabled,
-button:disabled {
-    background: #adb5bd !important;
-    border-color: #adb5bd !important;
-    color: #ffffff !important;
-    -webkit-text-fill-color: #ffffff !important;
-}
-
-.stApp:has(.st-key-theme-dark) button:disabled:hover,
-button:disabled:hover {
-    background: #98a1aa !important;
-    border-color: #8f98a1 !important;
 }
 
 .st-key-symbol-universe button:disabled,
@@ -294,8 +263,9 @@ button:disabled:hover {
     -webkit-text-fill-color: var(--text-color) !important;
 }
 
-.stApp h1 {
-    margin-top: -28px !important; /* Custom Nico. No tocar. */
+.stApp {
+    background: var(--page-background) !important;
+    color: var(--text-color) !important;
 }
 
 .stApp > div,
@@ -306,22 +276,73 @@ button:disabled:hover {
     transition: none !important;
 }
 
-.stAppHeader,
-.stAppToolbar {
-    background: var(--page-background) !important;
+.stApp h1 {
+    margin-top: -20px !important; /* Custom Nico. No tocar. */
+}
+
+.stApp:has(.st-key-theme-dark) .stDownloadButton button,
+.stApp:has(.st-key-theme-dark) .stDownloadButton button:disabled,
+.stDownloadButton button,
+.stDownloadButton button:disabled {
+    box-sizing: border-box;
+    width: 44px !important;
+    background: var(--download-background) !important;
+    border-color: var(--download-border) !important;
+    color: var(--download-text) !important;
+    -webkit-text-fill-color: var(--download-text) !important;
+}
+
+.stApp:has(.st-key-theme-dark) .stDownloadButton button:disabled,
+.stApp:has(.st-key-theme-dark) .stDownloadButton button:disabled:hover,
+.stDownloadButton button:disabled,
+.stDownloadButton button:disabled:hover {
+    background: var(--download-background) !important;
+    border-color: var(--download-border) !important;
+    color: var(--download-text) !important;
+    -webkit-text-fill-color: var(--download-text) !important;
+}
+
+.stApp:has(.st-key-theme-dark) .stDownloadButton button:hover,
+.stDownloadButton button:hover {
+    background: var(--download-hover-background) !important;
+    border-color: var(--download-hover-border) !important;
+}
+
+.stApp:has(.st-key-theme-dark) button {
+    background: var(--card-background) !important;
+    border-color: var(--border-color) !important;
     color: var(--text-color) !important;
 }
 
-    .stAppHeader *,
-    .stAppToolbar * {
-        color: var(--text-color) !important;
-    }
+.stApp:has(.st-key-theme-dark) button:disabled {
+    background: #adb5bd !important;
+    border-color: #adb5bd !important;
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+}
 
-.stMetricLabel,
-.stMetricLabel *,
-.stMetricValue,
-.stMetricValue * {
+.stApp:has(.st-key-theme-dark) button:disabled:hover {
+    background: #98a1aa !important;
+    border-color: #8f98a1 !important;
+}
+
+.stAppHeader, .stAppHeader *,
+.stAppToolbar, .stAppToolbar *,
+.stMarkdown,
+.stMetricLabel, .stMetricLabel *,
+.stMetricValue, .stMetricValue *,
+.stText, .stText * {
     color: var(--text-color) !important;
+}
+
+.stAppHeader,
+.stAppToolbar {
+    background: var(--page-background) !important;
+}
+
+.stElementContainer:has(.log-console),
+.stElementContainer:has(.log-console) > div {
+    overflow: visible !important;
 }
 
 .stMainBlockContainer {
@@ -331,10 +352,6 @@ button:disabled:hover {
 .stMetric {
     min-height: 108px;
     padding: 0.8rem 1rem;
-    border: 1px solid var(--border-color);
-    border-radius: 0.5rem;
-    background: var(--card-background);
-    color: var(--text-color);
 }
 
 .stMetricLabel p {
@@ -346,9 +363,35 @@ button:disabled:hover {
     line-height: 1.2;
 }
 
-.stText,
-.stText * {
+body:has(.st-key-theme-dark) > div:last-of-type {
+    --card-background: #171a22;
+    --text-color: #f1f3f8;
+    background: var(--card-background) !important;
     color: var(--text-color) !important;
+    color-scheme: dark;
+}
+
+body:has(.st-key-theme-dark) > div:last-of-type * {
+    background: var(--card-background) !important;
+    color: var(--text-color) !important;
+}
+
+.stApp button:disabled,
+.stApp button:disabled:hover,
+.stApp:has(.st-key-theme-dark) button:disabled,
+.stApp:has(.st-key-theme-dark) button:disabled:hover {
+    background: #d9dde3 !important;
+    border-color: #c7cdd5 !important;
+    color: #495057 !important;
+    -webkit-text-fill-color: #495057 !important;
+}
+
+.stApp button:disabled *,
+.stApp button:disabled:hover *,
+.stApp:has(.st-key-theme-dark) button:disabled *,
+.stApp:has(.st-key-theme-dark) button:disabled:hover * {
+    color: #495057 !important;
+    -webkit-text-fill-color: #495057 !important;
 }
 
 /* Media Queries. */
@@ -358,10 +401,10 @@ button:disabled:hover {
         flex-wrap: wrap !important;
     }
 
-        .stHorizontalBlock > .stColumn {
-            flex: 1 1 100% !important;
-            min-width: 100% !important;
-        }
+    .stHorizontalBlock > .stColumn {
+        flex: 1 1 100% !important;
+        min-width: 100% !important;
+    }
 }
 
 @media (max-width: 767.98px) {

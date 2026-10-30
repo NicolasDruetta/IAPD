@@ -8,7 +8,8 @@
 
 Apache Big Data Lab es un proyecto académico orientado al procesamiento de
 datos financieros mediante herramientas de Big Data. La aplicación integra
-una interfaz Streamlit con Alpaca Market Data para obtener operaciones reales y
+una interfaz Streamlit con Alpaca Market Data para obtener cotizaciones y
+operaciones bursátiles reales y
 con Apache Spark distribuido dentro de Docker.
 
 El sistema permite observar el ciclo de obtención, persistencia, recuperación
@@ -24,7 +25,7 @@ mediante herramientas de paralelismo, streaming y Big Data.
 
 ### Objetivos específicos
 
-- Obtener operaciones bursátiles reales mediante una fuente externa.
+- Obtener cotizaciones y operaciones bursátiles reales mediante una fuente externa.
 - Procesar datos en tiempo real y mediante reproducción histórica.
 - Persistir los eventos recibidos en formato JSONL.
 - Aplicar procesamiento local mediante PySpark sobre lotes acotados.
@@ -39,9 +40,9 @@ mediante herramientas de paralelismo, streaming y Big Data.
 - **Python 3.15:** lenguaje principal del proyecto.
 - **Streamlit:** interfaz de usuario y actualización periódica de la
   aplicación.
-- **Alpaca Market Data:** estado del mercado, operaciones LIVE y datos
-  históricos REPLAY.
-- **WebSocket:** recepción de operaciones durante el modo LIVE.
+- **Alpaca Market Data:** estado del mercado, cotizaciones y operaciones LIVE y
+  datos históricos REPLAY.
+- **WebSocket:** recepción de cotizaciones y operaciones durante el modo LIVE.
 - **JSONL:** persistencia incremental de eventos y registros de ejecución.
 - **certifi:** almacén de certificados utilizado para conexiones seguras.
 - **Apache Spark y PySpark:** procesamiento distribuido mediante un Driver,
@@ -68,13 +69,13 @@ El flujo conceptual considerado por el proyecto es:
 ```text
 Navegador
     ↓
-Streamlit + Alpaca + Spark Driver
+    Controller → Alpaca → Spark Driver
     ↓
 Spark Master
     ├── Spark Worker 1
     └── Spark Worker 2
 
-Alpaca Market Data → Persistencia JSONL → Lotes PySpark → Streamlit
+Alpaca Market Data → Persistencia JSONL → Controller → Lotes PySpark → Streamlit
 ```
 
 Kafka, Hadoop HDFS, Parquet, Flink y Airflow forman parte de la arquitectura
@@ -87,18 +88,18 @@ obligatorio para ejecutar el proyecto.
 
 Los datos se obtienen directamente desde Alpaca Market Data:
 
-- **LIVE:** recibe operaciones bursátiles reales mediante WebSocket cuando el
-  mercado presenta actividad.
-- **REPLAY:** consulta la API histórica de Alpaca, descarga operaciones reales
-  y las reproduce progresivamente cuando corresponde utilizar datos
-  históricos.
+- **LIVE:** recibe cotizaciones y operaciones bursátiles reales mediante
+  WebSocket cuando el mercado presenta actividad.
+- **REPLAY:** consulta las APIs históricas de Alpaca, descarga cotizaciones y
+  operaciones reales y las reproduce progresivamente cuando corresponde
+  utilizar datos históricos.
 
 Al presionar «Iniciar streaming», la aplicación consulta el estado oficial del
 mercado proporcionado por Alpaca. Si informa que el mercado está abierto, se
 inicia LIVE mediante WebSocket. Si informa que está cerrado, se inicia REPLAY.
 La decisión contempla fines de semana, feriados y cierres especiales mediante
 el estado operativo de Alpaca; no depende de la ausencia temporal de
-operaciones recibidas.
+  eventos bursátiles recibidos.
 
 El modo seleccionado queda asociado al RUN y no cambia mientras la ejecución
 está activa. Al refrescar Streamlit, la aplicación recupera el RUN existente y
@@ -110,16 +111,17 @@ hora de `America/Argentina/Cordoba` y el identificador `YYYYMMDD_HHMMSS`:
 
 ```text
 data/
-├── YYYYMMDD_HHMMSS_run_info.jsonl
-├── YYYYMMDD_HHMMSS_alpaca_trades.jsonl
-├── YYYYMMDD_HHMMSS_log_handler.txt
-├── YYYYMMDD_HHMMSS_log_alpaca.txt
-└── YYYYMMDD_HHMMSS_log_spark.txt
+├── YYYYMMDD_HHMMSS_data_alpaca.jsonl
+├── YYYYMMDD_HHMMSS_log_01_controller.txt
+├── YYYYMMDD_HHMMSS_log_02_alpaca_stream.txt
+├── YYYYMMDD_HHMMSS_log_03_apache_spark.txt
+└── YYYYMMDD_HHMMSS_run_info.jsonl
 ```
 
 `_run_info.jsonl` contiene solo información estructurada de control,
-recuperación y checkpoints Spark. `_alpaca_trades.jsonl` conserva las
-operaciones originales de Alpaca. Cada TXT es la fuente única de verdad de su
+recuperación y checkpoints Spark. `_data_alpaca.jsonl` conserva las
+cotizaciones y operaciones originales de Alpaca, identificadas como `QUOTE` o
+`TRADE`. Cada TXT es la fuente única de verdad de su
 consola: Python genera la línea numerada y la agrega una sola vez; la interfaz
 lee ese TXT sin renumerar ni reformatear. Los RUN históricos conservan su
 formato anterior y continúan siendo legibles.
@@ -210,8 +212,9 @@ NicolasDruetta_TP2/
 ├── docker/
 │   └── Dockerfile
 ├── pages/
-│   ├── 01_alpaca_streaming.py
-│   └── 02_apache_spark.py
+│   ├── 01_controller.py
+│   ├── 02_alpaca_stream.py
+│   └── 03_apache_spark.py
 ├── data/
 │   └── (archivos de RUN y directorios legacy conservados)
 └── assets/
@@ -220,9 +223,10 @@ NicolasDruetta_TP2/
 
 - `main.py`: punto de entrada de Streamlit, controles, tarjetas de estado,
   consolas y funciones comunes.
-- `pages/01_alpaca_streaming.py`: conexión LIVE, descarga histórica,
+- `pages/01_controller.py`: ciclo de vida, estados y supervisión del RUN.
+- `pages/02_alpaca_stream.py`: conexión LIVE, descarga histórica,
   reproducción REPLAY, ciclo de vida y persistencia de Alpaca.
-- `pages/02_apache_spark.py`: procesamiento específico de Spark distribuido.
+- `pages/03_apache_spark.py`: procesamiento específico de Spark distribuido.
 - `compose.yaml`: servicios Streamlit/Driver, Master y dos Workers.
 - `docker/Dockerfile`: imagen común con Python, PySpark y Java.
 - `.dockerignore`: archivos excluidos del contexto de construcción.
@@ -237,8 +241,9 @@ control de versiones.
 
 ## 7. Interfaz de usuario
 
-La interfaz presenta un encabezado con el nombre del laboratorio, la
-descripción del trabajo y los datos académicos del autor. Debajo se ubican el
+La interfaz presenta un encabezado con el nombre del laboratorio, el subtítulo
+«Análisis de operaciones bursátiles con procesamiento distribuido de Apache
+Spark.» y los datos académicos del autor. Debajo se ubican el
 selector de símbolos y los controles de ejecución. La organización mantiene
 una distribución responsive para evitar que los textos y botones se compriman
 en pantallas pequeñas.
@@ -274,11 +279,12 @@ ejecución activa o la última ejecución disponible.
 
 La interfaz presenta tres consolas:
 
-1. **Log de ejecución:** ciclo de vida, conexión, descarga, workers, heartbeat
+1. **Log del controlador:** ciclo de vida, conexión, descarga, workers, heartbeat
    y cierre.
-2. **Alpaca Streaming:** operaciones actuales en LIVE u operaciones históricas
-   en REPLAY.
-3. **Apache Spark:** estado y resultados del procesamiento Spark disponible.
+2. **Obtención de cotizaciones y operaciones bursátiles:** datos actuales en
+   LIVE o datos históricos en REPLAY.
+3. **Procesamiento distribuido de cotizaciones y operaciones bursátiles:**
+   estado y resultados de Spark.
 
 Las consolas se actualizan junto con el estado del RUN y mantienen una
 presentación uniforme. En pantallas reducidas, las columnas se reorganizan
@@ -299,9 +305,11 @@ Top 10 continúa dentro del fragmento periódico y solo utiliza los resultados
 Spark ya disponibles, sin ejecutar trabajos adicionales para la actualización
 visual.
 
-Debajo de las consolas se presenta el gráfico **Top 10 acciones con mayor
-volumen negociado**. El volumen se calcula sumando el campo `size` de las
-operaciones reales emitidas por Alpaca y confirmadas por Apache Spark. Cada
+Debajo de las consolas se presenta el gráfico **Top 10 de acciones por volumen
+negociado**. El volumen se calcula exclusivamente sumando el campo `size` de
+las operaciones `TRADE` reales emitidas por Alpaca y confirmadas por Apache
+Spark. Las cantidades `bid_size` y `ask_size` de las cotizaciones `QUOTE` no
+forman parte de ese volumen. Cada
 lote procesado actualiza un acumulado pequeño por símbolo, recalcula el ranking
 y actualiza las diez barras ordenadas de forma descendente durante LIVE o
 REPLAY, sin esperar la finalización del RUN.
@@ -321,11 +329,11 @@ compuesto por dos Workers.
 El procesamiento realiza lo siguiente:
 
 - Reutiliza una única `SparkSession` distribuida.
-- Procesa todos los eventos disponibles del RUN.
+- Procesa todos los eventos disponibles del RUN, separando `TRADE` y `QUOTE`.
 - Crea un DataFrame con esquema explícito.
 - Reparte el lote por símbolo.
-- Agrupa las operaciones por símbolo.
-- Calcula cantidad de operaciones y volumen total.
+- Agrupa los eventos por símbolo y tipo.
+- Calcula operaciones ejecutadas, cotizaciones recibidas y volumen negociado.
 - Informa particiones y duración mediante `time.perf_counter()`.
 
 Los lotes se procesan sin crear un job por cada evento individual. Los

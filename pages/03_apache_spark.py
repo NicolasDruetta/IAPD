@@ -1,11 +1,11 @@
-"""Procesamiento local de lotes de operaciones mediante Apache Spark."""
+"""Procesamiento distribuido de cotizaciones y operaciones con Spark."""
 
 import os
 import threading
 import time
 
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import count, sum as sum_rows
+from pyspark.sql.functions import count, sum as sum_rows, when
 from pyspark.sql.types import DoubleType, StringType, StructField, StructType
 from typing import Any
 
@@ -23,7 +23,7 @@ SPARK_MASTER = os.getenv(
 _BATCH_NUMBER = 0
 _LAST_RESULT: dict[str, Any] = {
     "status": "sin_datos",
-    "logs": ["Spark | esperando un lote de operaciones."],
+    "logs": ["Spark | esperando eventos bursátiles."],
     "rows": [],
     "top_volume": [],
     "checkpoint": None,
@@ -107,11 +107,32 @@ def process_events(
                 "batch_number": int(
                     (checkpoint or {}).get("batch_number", 0)
                 ),
+                "trade_totals": {
+                    str(symbol): float(volume)
+                    for symbol, volume in (checkpoint or {}).get(
+                            "trade_totals",
+                            (checkpoint or {}).get("totals", {}),
+                        ).items()
+                },
+                "processed_events_by_type": {
+                    "TRADE": int(
+                        (checkpoint or {}).get(
+                            "processed_events_by_type",
+                            {},
+                        ).get("TRADE", 0)
+                    ),
+                    "QUOTE": int(
+                        (checkpoint or {}).get(
+                            "processed_events_by_type",
+                            {},
+                        ).get("QUOTE", 0)
+                    ),
+                },
                 "totals": {
                     str(symbol): float(volume)
                     for symbol, volume in (checkpoint or {}).get(
-                        "totals",
-                        {},
+                        "trade_totals",
+                        (checkpoint or {}).get("totals", {}),
                     ).items()
                 },
                 "result": None,
@@ -127,7 +148,7 @@ def process_events(
             return result
         result = {
             "status": "sin_datos",
-            "logs": ["Spark | esperando un lote de operaciones."],
+            "logs": ["Spark | esperando eventos bursátiles."],
             "rows": [],
             "top_volume": top_volume_rows(state["totals"]),
             "checkpoint": spark_checkpoint(state, run_id),
@@ -152,18 +173,28 @@ def process_events(
     rows = [
         {
             "symbol": event.symbol,
+            "event_type": event.event_type,
             "price": event.price,
             "size": event.size,
             "timestamp": event.timestamp,
+            "bid_price": event.bid_price,
+            "bid_size": event.bid_size,
+            "ask_price": event.ask_price,
+            "ask_size": event.ask_size,
         }
         for event in events
     ]
     schema = StructType(
         [
             StructField("symbol", StringType(), False),
+            StructField("event_type", StringType(), False),
             StructField("price", DoubleType(), True),
             StructField("size", DoubleType(), True),
             StructField("timestamp", StringType(), False),
+            StructField("bid_price", DoubleType(), True),
+            StructField("bid_size", DoubleType(), True),
+            StructField("ask_price", DoubleType(), True),
+            StructField("ask_size", DoubleType(), True),
         ]
     )
     started_at = time.perf_counter()
@@ -175,8 +206,15 @@ def process_events(
         grouped = (
             data_frame.groupBy("symbol")
             .agg(
-                count("*").alias("operations"),
-                sum_rows("size").alias("total_volume"),
+                count(
+                    when(data_frame.event_type == "TRADE", True)
+                ).alias("operations"),
+                count(
+                    when(data_frame.event_type == "QUOTE", True)
+                ).alias("quotes"),
+                sum_rows(
+                    when(data_frame.event_type == "TRADE", data_frame.size)
+                ).alias("total_volume"),
             )
             .orderBy("symbol")
         )
@@ -188,9 +226,18 @@ def process_events(
             for row in result_rows
         }
         for symbol, volume in batch_totals.items():
-            state["totals"][symbol] = (
-                state["totals"].get(symbol, 0.0) + volume
+            state["trade_totals"][symbol] = (
+                state["trade_totals"].get(symbol, 0.0) + volume
             )
+        state["totals"] = state["trade_totals"]
+        state["processed_events_by_type"]["TRADE"] += sum(
+            event.event_type == "TRADE" for event in events
+        )
+        state["processed_events_by_type"]["QUOTE"] += sum(
+            event.event_type == "QUOTE" for event in events
+        )
+        trade_count = state["processed_events_by_type"]["TRADE"]
+        quote_count = state["processed_events_by_type"]["QUOTE"]
         _BATCH_NUMBER += 1
         state["batch_number"] += 1
         state["processed_events"] += len(events)
@@ -201,12 +248,14 @@ def process_events(
                 f"Spark | master: {SPARK_MASTER}",
                 f"Spark | lote={state['batch_number']}",
                 f"Spark | registros procesados={len(events)}",
+                f"Spark | operaciones procesadas={trade_count}",
+                f"Spark | cotizaciones procesadas={quote_count}",
                 f"Spark | particiones utilizadas={partitions}",
                 f"Spark | duración={duration:.4f} s",
                 "Spark | agrupación por símbolo completada.",
             ],
             "rows": result_rows,
-            "top_volume": top_volume_rows(state["totals"]),
+            "top_volume": top_volume_rows(state["trade_totals"]),
             "checkpoint": checkpoint_data,
         }
         state["result"] = result
@@ -233,7 +282,9 @@ def spark_checkpoint(
         "run_id": run_id,
         "processed_events": state["processed_events"],
         "batch_number": state["batch_number"],
-        "totals": dict(state["totals"]),
+        "totals": dict(state["trade_totals"]),
+        "trade_totals": dict(state["trade_totals"]),
+        "processed_events_by_type": dict(state["processed_events_by_type"]),
     }
 
 def top_volume_rows(totals: dict[str, float]) -> list[dict[str, Any]]:

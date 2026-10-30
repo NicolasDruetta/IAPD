@@ -1,7 +1,6 @@
-"""Gestión del ciclo de vida del streaming WebSocket de Alpaca."""
+"""Obtención de cotizaciones y operaciones bursátiles mediante Alpaca."""
 
 import asyncio
-import atexit
 import certifi
 import heapq
 import itertools
@@ -37,8 +36,8 @@ CALENDAR_API_URLS = (
     "https://paper-api.alpaca.markets/v2/calendar",
 )
 DATA_DIRECTORY = Path(__file__).resolve().parent.parent / "data"
-HEARTBEAT_TIMEOUT_SECONDS = 30
-HISTORICAL_API_URL = "https://data.alpaca.markets/v2/stocks/trades"
+HISTORICAL_QUOTES_API_URL = "https://data.alpaca.markets/v2/stocks/quotes"
+HISTORICAL_TRADES_API_URL = "https://data.alpaca.markets/v2/stocks/trades"
 HISTORICAL_DIRECTORY = DATA_DIRECTORY / "historical"
 HTTP_MAX_RETRIES = 5
 LEGACY_STREAMING_DIRECTORY = DATA_DIRECTORY / "streaming"
@@ -64,7 +63,6 @@ SP500_INDEX_URL = (
     "https://www.spglobal.com/spdji/en/indices/equity/sp-500/"
 )
 STOCK_SNAPSHOTS_URL = "https://data.alpaca.markets/v2/stocks/snapshots"
-SUPERVISOR_INTERVAL_SECONDS = 1
 TEMPORARY_DIRECTORY = Path("/tmp")
 
 class SP500TableParser(HTMLParser):
@@ -133,6 +131,11 @@ class AlpacaEvent:
     event_type: str
     price: float | None
     size: float | None
+    bid_price: float | None
+    bid_size: float | None
+    ask_price: float | None
+    ask_size: float | None
+    raw: dict[str, Any]
 
     def __init__(
         self,
@@ -143,12 +146,22 @@ class AlpacaEvent:
         size: float | None,
         mode: str = "LIVE",
         console_sequence: int | None = None,
+        bid_price: float | None = None,
+        bid_size: float | None = None,
+        ask_price: float | None = None,
+        ask_size: float | None = None,
+        raw: dict[str, Any] | None = None,
     ) -> None:
         self.timestamp = timestamp
         self.symbol = symbol
         self.event_type = event_type
         self.price = price
         self.size = size
+        self.bid_price = bid_price
+        self.bid_size = bid_size
+        self.ask_price = ask_price
+        self.ask_size = ask_size
+        self.raw = dict(raw or {})
         self.mode = mode
         self.console_sequence = console_sequence
 
@@ -159,12 +172,33 @@ class AlpacaEvent:
             self.timestamp,
             source_timezone=timezone.utc,
         )
-        price = "-" if self.price is None else f"{self.price:.4f}"
-        size = "-" if self.size is None else f"{self.size:g}"
+        if self.event_type == "QUOTE":
+            return (
+                f"{timestamp} | {self.symbol} | QUOTE | "
+                f"bid={self._format_number(self.bid_price)} | "
+                f"bid_size={self._format_number(self.bid_size)} | "
+                f"ask={self._format_number(self.ask_price)} | "
+                f"ask_size={self._format_number(self.ask_size)}"
+            )
+        price = self._format_number(self.price, decimals=4)
+        size = self._format_number(self.size)
         return (
             f"{timestamp} | {self.symbol} | {self.event_type} | "
             f"{price} | {size}"
         )
+
+    @staticmethod
+    def _format_number(
+        value: float | None,
+        decimals: int | None = None,
+    ) -> str:
+        """Formateo un número sin perder la distinción de cada campo."""
+
+        if value is None:
+            return "-"
+        if decimals is not None:
+            return f"{value:.{decimals}f}"
+        return f"{value:g}"
 
     def to_record(self, run_id: str) -> dict[str, Any]:
         """Convierto el evento al registro JSONL persistido."""
@@ -177,7 +211,12 @@ class AlpacaEvent:
             "event_type": self.event_type,
             "price": self.price,
             "size": self.size,
+            "bid_price": self.bid_price,
+            "bid_size": self.bid_size,
+            "ask_price": self.ask_price,
+            "ask_size": self.ask_size,
             "mode": self.mode,
+            "raw": dict(self.raw),
         }
 
 class AlpacaStreamingService:
@@ -195,6 +234,8 @@ class AlpacaStreamingService:
         feed: str = "iex",
         mode: str = "LIVE",
         replay_speed: float = 1.0,
+        release_callback: Callable[["AlpacaStreamingService"], None]
+        | None = None,
     ) -> None:
         self._api_key = api_key
         self._api_secret = api_secret
@@ -205,11 +246,11 @@ class AlpacaStreamingService:
         self._feed = feed
         self._mode = mode
         self._replay_speed = replay_speed
+        self._release_callback = release_callback
         self._events: deque[AlpacaEvent] = deque()
         self._stop_event = threading.Event()
         self._lock = threading.RLock()
         self._stream_thread: threading.Thread | None = None
-        self._supervisor_thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._task: asyncio.Task[None] | None = None
         self._websocket: ClientConnection | None = None
@@ -236,17 +277,17 @@ class AlpacaStreamingService:
             "log": 0,
             "spark": 0,
         }
-        self._historical_path = (
-            DATA_DIRECTORY / f"{run_stem}_alpaca_trades.jsonl"
-        )
+        self._historical_path = DATA_DIRECTORY / f"{run_stem}_data_alpaca.jsonl"
         self._run_info_path = DATA_DIRECTORY / f"{run_stem}_run_info.jsonl"
         self._log_handler_path = (
-            DATA_DIRECTORY / f"{run_stem}_log_handler.txt"
+            DATA_DIRECTORY / f"{run_stem}_log_01_controller.txt"
         )
         self._log_alpaca_path = (
-            DATA_DIRECTORY / f"{run_stem}_log_alpaca.txt"
+            DATA_DIRECTORY / f"{run_stem}_log_02_alpaca_stream.txt"
         )
-        self._log_spark_path = DATA_DIRECTORY / f"{run_stem}_log_spark.txt"
+        self._log_spark_path = (
+            DATA_DIRECTORY / f"{run_stem}_log_03_apache_spark.txt"
+        )
         self._streaming_path = self._run_info_path
         ensure_data_directory()
         if any(
@@ -287,9 +328,9 @@ class AlpacaStreamingService:
                     "feed": self._feed,
                     "replay_speed": self._replay_speed,
                     "started_at": self._started_at,
-                    "trades_file": self._historical_path.name,
+                    "data_file": self._historical_path.name,
                     "run_info_file": self._run_info_path.name,
-                    "log_handler_file": self._log_handler_path.name,
+                    "log_controller_file": self._log_handler_path.name,
                     "log_alpaca_file": self._log_alpaca_path.name,
                     "log_spark_file": self._log_spark_path.name,
                     "universe": self._universe_metadata,
@@ -327,13 +368,7 @@ class AlpacaStreamingService:
                 daemon=True,
                 name=f"alpaca-stream-{self._run_id}",
             )
-            self._supervisor_thread = threading.Thread(
-                target=self._supervise_heartbeat,
-                daemon=True,
-                name=f"alpaca-supervisor-{self._run_id}",
-            )
             self._stream_thread.start()
-            self._supervisor_thread.start()
             self._add_log(f"{self._mode} | worker de supervisión iniciado")
             self._append_state_locked()
         return True
@@ -348,6 +383,12 @@ class AlpacaStreamingService:
             self._last_heartbeat_at = get_utc_timestamp()
             self._append_state_locked()
         return True
+
+    def heartbeat_elapsed(self) -> float:
+        """Devuelvo los segundos desde el último heartbeat válido."""
+
+        with self._lock:
+            return time.monotonic() - self._last_heartbeat_monotonic
 
     def stop(self, end_reason: str) -> None:
         """Detengo el RUN y solicito el cierre real del WebSocket."""
@@ -417,8 +458,8 @@ class AlpacaStreamingService:
                 "last_heartbeat": self._last_heartbeat_at,
                 "end_reason": self._end_reason,
                 "run_info_file": self._run_info_path.name,
-                "trades_file": self._historical_path.name,
-                "log_handler_file": self._log_handler_path.name,
+                "data_file": self._historical_path.name,
+                "log_controller_file": self._log_handler_path.name,
                 "log_alpaca_file": self._log_alpaca_path.name,
                 "log_spark_file": self._log_spark_path.name,
                 "is_active": self.is_active(),
@@ -442,7 +483,7 @@ class AlpacaStreamingService:
             if processed_count <= self._spark_checkpoint_processed:
                 return False
             for line in console_lines:
-                if line == "Spark | esperando un lote de operaciones.":
+                if line == "Spark | esperando eventos bursátiles.":
                     continue
                 self._append_console_line_locked("spark", line)
             self._append_run_info_locked("spark_checkpoint", checkpoint)
@@ -458,7 +499,7 @@ class AlpacaStreamingService:
             if self._spark_console_initialized:
                 return
             for line in console_lines:
-                if line == "Spark | esperando un lote de operaciones.":
+                if line == "Spark | esperando eventos bursátiles.":
                     continue
                 self._append_console_line_locked("spark", line)
             self._spark_console_initialized = True
@@ -566,7 +607,7 @@ class AlpacaStreamingService:
             self._append_run_info_locked(
                 "historical_complete",
                 {
-                    "trades_file": historical_path.name,
+                    "data_file": historical_path.name,
                     "ordered_by_timestamp": True,
                 },
             )
@@ -610,9 +651,13 @@ class AlpacaStreamingService:
                     "alpaca",
                     event_from_record(record, mode="REPLAY").to_display_line(),
                 )
+            trade_count = sum(
+                event.event_type == "TRADE" for event in events
+            )
+            quote_count = len(events) - trade_count
             self._add_log(
                 f"REPLAY | lote emitido={self._replay_batch_number} | "
-                f"operaciones={len(events)} | "
+                f"operaciones={trade_count} | cotizaciones={quote_count} | "
                 f"total_emitidos={self._event_count}"
             )
             self._append_state_locked()
@@ -657,6 +702,7 @@ class AlpacaStreamingService:
                     {
                         "action": "subscribe",
                         "trades": self._symbols,
+                        "quotes": self._symbols,
                     }
                 )
             )
@@ -693,16 +739,6 @@ class AlpacaStreamingService:
                 if item.get("T") == "error":
                     raise RuntimeError(self._format_server_error(item))
 
-    def _supervise_heartbeat(self) -> None:
-        """Detengo el RUN cuando la página deja de informar actividad."""
-
-        while not self._stop_event.wait(SUPERVISOR_INTERVAL_SECONDS):
-            with self._lock:
-                elapsed = time.monotonic() - self._last_heartbeat_monotonic
-            if elapsed > HEARTBEAT_TIMEOUT_SECONDS:
-                self.stop("heartbeat_timeout")
-                return
-
     def _handle_message(self, message: str | bytes) -> None:
         """Transformo y persisto cada operación recibida de Alpaca."""
 
@@ -721,8 +757,19 @@ class AlpacaStreamingService:
                 timestamp=self._format_timestamp(payload.get("t")),
                 symbol=str(payload.get("S", "-")),
                 event_type="TRADE" if event_type == "t" else "QUOTE",
-                price=self._number(payload.get("p", payload.get("ap"))),
-                size=self._number(payload.get("s", payload.get("as"))),
+                price=self._number(payload.get("p"))
+                if event_type == "t" else None,
+                size=self._number(payload.get("s"))
+                if event_type == "t" else None,
+                bid_price=self._number(payload.get("bp"))
+                if event_type == "q" else None,
+                bid_size=self._number(payload.get("bs"))
+                if event_type == "q" else None,
+                ask_price=self._number(payload.get("ap"))
+                if event_type == "q" else None,
+                ask_size=self._number(payload.get("as"))
+                if event_type == "q" else None,
+                raw=payload,
             )
             self._persist_event(event)
 
@@ -789,7 +836,8 @@ class AlpacaStreamingService:
                 },
             )
             self._append_state_locked()
-        release_active_service(self)
+        if self._release_callback is not None:
+            self._release_callback(self)
 
     def _append_state_locked(self) -> None:
         """Agrego el estado actual al único registro persistente del RUN."""
@@ -890,7 +938,7 @@ class AlpacaStreamingService:
         """Espero el cierre de los hilos sin bloquearse a sí mismos."""
 
         current_thread = threading.current_thread()
-        for thread in (self._stream_thread, self._supervisor_thread):
+        for thread in (self._stream_thread,):
             if thread is not None and thread is not current_thread:
                 thread.join(timeout=5)
 
@@ -996,13 +1044,16 @@ def download_historical_dataset(
     event_count = 0
     ssl_context = ssl.create_default_context(cafile=certifi.where())
 
-    def request_page(query: dict[str, str]) -> dict[str, Any]:
+    def request_page(
+        api_url: str,
+        query: dict[str, str],
+    ) -> dict[str, Any]:
         """Obtengo una página respetando límites y reintentos de Alpaca."""
 
         for attempt in range(HTTP_MAX_RETRIES):
             if stop_event is not None and stop_event.is_set():
                 raise InterruptedError("Descarga REPLAY detenida.")
-            url = f"{HISTORICAL_API_URL}?{urllib.parse.urlencode(query)}"
+            url = f"{api_url}?{urllib.parse.urlencode(query)}"
             request = urllib.request.Request(
                 url,
                 headers={
@@ -1045,85 +1096,111 @@ def download_historical_dataset(
         symbol_group: list[str],
         window_start: datetime,
         window_end: datetime,
-    ) -> tuple[int, list[tuple[int, Path]], int, int, int]:
+    ) -> tuple[int, list[tuple[int, Path]], int, int, int, int]:
         """Descargo un grupo y separo sus símbolos en temporales."""
 
         symbol_positions = {
             symbol: position
             for position, symbol in enumerate(symbol_group)
         }
-        handles: dict[str, Any] = {}
+        handles: dict[tuple[str, str], Any] = {}
         group_paths: dict[str, Path] = {}
         event_count = 0
         page_count = 0
         pages_with_trades = 0
-        next_page_token: str | None = None
+        pages_with_quotes = 0
         try:
-            while True:
-                query = {
-                    "symbols": ",".join(symbol_group),
-                    "start": window_start.isoformat().replace("+00:00", "Z"),
-                    "end": (
-                        (window_end - timedelta(seconds=1)).strftime(
-                            "%Y-%m-%dT%H:%M:%S"
-                        )
-                        + ".999999999Z"
-                    ),
-                    "feed": feed,
-                    "limit": "10000",
-                }
-                if next_page_token:
-                    query["page_token"] = next_page_token
-                payload = request_page(query)
-                page_count += 1
-                page_trades = payload.get("trades", {})
-                if any(page_trades.values()):
-                    pages_with_trades += 1
-                for symbol, trades in page_trades.items():
-                    if symbol not in handles:
-                        group_path = TEMPORARY_DIRECTORY / (
-                            f"{temporary_prefix}"
-                            f"{date_text}_{feed}_"
-                            f"{window_start.strftime('%Y%m%dT%H%M%SZ')}_"
-                            f"g{group_index:05d}_"
-                            f"s{symbol_positions.get(symbol, 0):03d}.jsonl"
-                        )
-                        group_paths[symbol] = group_path
-                        handles[symbol] = group_path.open(
-                            "w",
-                            encoding="utf-8",
-                        )
-                    group_file = handles[symbol]
-                    for trade in trades:
-                        record = {
-                            "symbol": symbol,
-                            "event_type": "TRADE",
-                            "timestamp": trade.get("t"),
-                            "price": trade.get("p"),
-                            "size": trade.get("s"),
-                            "mode": "REPLAY",
-                            "source": "alpaca_historical",
-                            "raw": trade,
-                        }
-                        group_file.write(
-                            json.dumps(record, ensure_ascii=False) + "\n"
-                        )
-                        event_count += 1
-                next_page_token = payload.get("next_page_token")
-                if not next_page_token:
-                    break
+            for event_type, api_url, payload_key in (
+                ("TRADE", HISTORICAL_TRADES_API_URL, "trades"),
+                ("QUOTE", HISTORICAL_QUOTES_API_URL, "quotes"),
+            ):
+                next_page_token: str | None = None
+                while True:
+                    query = {
+                        "symbols": ",".join(symbol_group),
+                        "start": window_start.isoformat().replace(
+                            "+00:00",
+                            "Z",
+                        ),
+                        "end": (
+                            (window_end - timedelta(seconds=1)).strftime(
+                                "%Y-%m-%dT%H:%M:%S"
+                            )
+                            + ".999999999Z"
+                        ),
+                        "feed": feed,
+                        "limit": "10000",
+                        "sort": "asc",
+                    }
+                    if next_page_token:
+                        query["page_token"] = next_page_token
+                    payload = request_page(api_url, query)
+                    page_count += 1
+                    page_events = payload.get(payload_key, {})
+                    if any(page_events.values()):
+                        if event_type == "TRADE":
+                            pages_with_trades += 1
+                        else:
+                            pages_with_quotes += 1
+                    for symbol, source_events in page_events.items():
+                        handle_key = (symbol, event_type)
+                        if handle_key not in handles:
+                            group_path = TEMPORARY_DIRECTORY / (
+                                f"{temporary_prefix}"
+                                f"{date_text}_{feed}_"
+                                f"{window_start.strftime('%Y%m%dT%H%M%SZ')}_"
+                                f"g{group_index:05d}_"
+                                f"s{symbol_positions.get(symbol, 0):03d}_"
+                                f"{event_type.lower()}.jsonl"
+                            )
+                            group_paths[f"{symbol}:{event_type}"] = group_path
+                            handles[handle_key] = group_path.open(
+                                "w",
+                                encoding="utf-8",
+                            )
+                        group_file = handles[handle_key]
+                        for source_event in source_events:
+                            record = {
+                                "symbol": symbol,
+                                "event_type": event_type,
+                                "timestamp": source_event.get("t"),
+                                "price": source_event.get("p")
+                                if event_type == "TRADE" else None,
+                                "size": source_event.get("s")
+                                if event_type == "TRADE" else None,
+                                "bid_price": source_event.get("bp")
+                                if event_type == "QUOTE" else None,
+                                "bid_size": source_event.get("bs")
+                                if event_type == "QUOTE" else None,
+                                "ask_price": source_event.get("ap")
+                                if event_type == "QUOTE" else None,
+                                "ask_size": source_event.get("as")
+                                if event_type == "QUOTE" else None,
+                                "mode": "REPLAY",
+                                "source": "alpaca_historical",
+                                "raw": source_event,
+                            }
+                            group_file.write(
+                                json.dumps(record, ensure_ascii=False)
+                                + "\n"
+                            )
+                            event_count += 1
+                    next_page_token = payload.get("next_page_token")
+                    if not next_page_token:
+                        break
         finally:
             for group_file in handles.values():
                 group_file.close()
         return (
             group_index,
             [
-                (group_index * 100 + symbol_positions[symbol], path)
-                for symbol, path in group_paths.items()
+                (group_index * 100 + position, path)
+                for position, path in enumerate(group_paths.values())
             ],
             event_count,
             page_count,
             pages_with_trades,
+            pages_with_quotes,
         )
 
     def record_key(record: dict[str, Any], group_index: int) -> tuple[str, str, str, int]:
@@ -1208,6 +1285,7 @@ def download_historical_dataset(
                 window_downloaded = 0
                 window_pages = 0
                 window_pages_with_trades = 0
+                window_pages_with_quotes = 0
                 completed_groups = 0
                 with ThreadPoolExecutor(
                     max_workers=MAX_HTTP_CONCURRENCY
@@ -1231,11 +1309,13 @@ def download_historical_dataset(
                             group_count,
                             group_pages,
                             group_pages_with_trades,
+                            group_pages_with_quotes,
                         ) = future.result()
                         group_paths.extend(symbol_paths)
                         window_downloaded += group_count
                         window_pages += group_pages
                         window_pages_with_trades += group_pages_with_trades
+                        window_pages_with_quotes += group_pages_with_quotes
                         completed_groups += 1
                         if progress_callback is not None:
                             progress_callback(
@@ -1247,6 +1327,8 @@ def download_historical_dataset(
                                 f"respuestas={window_pages} | "
                                 f"páginas_con_operaciones="
                                 f"{window_pages_with_trades} | "
+                                f"páginas_con_cotizaciones="
+                                f"{window_pages_with_quotes} | "
                                 f"descargados={window_downloaded}"
                             )
                 group_paths.sort()
@@ -1269,6 +1351,8 @@ def download_historical_dataset(
                         f"respuestas={window_pages} | "
                         f"páginas_con_operaciones="
                         f"{window_pages_with_trades} | "
+                        f"páginas_con_cotizaciones="
+                        f"{window_pages_with_quotes} | "
                         f"descargados={window_downloaded} | "
                         f"emitidos_acumulados={event_count}"
                     )
@@ -1304,19 +1388,41 @@ def event_from_record(
             if record.get("console_sequence") is not None
             else None
         ),
+        bid_price=to_number(record.get("bid_price")),
+        bid_size=to_number(record.get("bid_size")),
+        ask_price=to_number(record.get("ask_price")),
+        ask_size=to_number(record.get("ask_size")),
+        raw=(
+            dict(record.get("raw"))
+            if isinstance(record.get("raw"), dict)
+            else {}
+        ),
     )
 
 def get_run_file(run_id: str, file_kind: str) -> Path:
     """Obtengo la ruta de un archivo de un RUN nuevo."""
 
     suffixes = {
+        "alpaca": "log_02_alpaca_stream.txt",
+        "data": "data_alpaca.jsonl",
+        "handler": "log_01_controller.txt",
+        "info": "run_info.jsonl",
+        "spark": "log_03_apache_spark.txt",
+        "trades": "data_alpaca.jsonl",
+    }
+    path = DATA_DIRECTORY / f"{run_id}_{suffixes[file_kind]}"
+    legacy_suffixes = {
         "alpaca": "log_alpaca.txt",
         "handler": "log_handler.txt",
-        "info": "run_info.jsonl",
-        "spark": "log_spark.txt",
-        "trades": "alpaca_trades.jsonl",
+        "spark": "log_04_apache_spark.txt",
     }
-    return DATA_DIRECTORY / f"{run_id}_{suffixes[file_kind]}"
+    if file_kind in legacy_suffixes and not path.exists():
+        legacy_path = DATA_DIRECTORY / (
+            f"{run_id}_{legacy_suffixes[file_kind]}"
+        )
+        if legacy_path.exists():
+            return legacy_path
+    return path
 
 def read_console_delta(
     path: Path,
@@ -1384,12 +1490,6 @@ def console_line_number(line: str) -> int:
     match = re.match(r"\[#(\d+)\]", line)
     return int(match.group(1)) if match else 0
 
-def get_active_service() -> AlpacaStreamingService | None:
-    """Devuelvo el RUN LIVE compartido por las sesiones de Streamlit."""
-
-    with _MANAGER_LOCK:
-        return _ACTIVE_SERVICE
-
 def get_historical_dataset(
     api_key: str,
     api_secret: str,
@@ -1420,6 +1520,7 @@ def get_historical_dataset(
         and metadata.get("complete") is True
         and metadata.get("ordered_by_timestamp") is True
         and int(metadata.get("event_count", 0)) > 0
+        and set(metadata.get("event_types", [])) >= {"TRADE", "QUOTE"}
         and metadata.get("regular_session") is True
         and metadata.get("session_start") == session_start.isoformat()
         and metadata.get("session_end") == session_end.isoformat()
@@ -1458,7 +1559,8 @@ def get_historical_dataset(
     if event_count > 0:
         return historical_path, date_text, streamed
     raise RuntimeError(
-        f"Alpaca no devolvió operaciones para la sesión {date_text}."
+        f"Alpaca no devolvió cotizaciones u operaciones para la sesión "
+        f"{date_text}."
     )
 
 def get_latest_metadata() -> dict[str, Any] | None:
@@ -1869,19 +1971,6 @@ def get_recent_events(run_id: str | None) -> list[AlpacaEvent]:
         256,
     )[0]
 
-def get_events_after(
-    run_id: str | None,
-    processed_count: int,
-) -> list[AlpacaEvent]:
-    """Obtengo solo eventos pendientes de confirmar por Spark."""
-
-    if run_id is None:
-        return []
-    service = get_active_service()
-    if service is not None and service.get_snapshot()["run_id"] == run_id:
-        return service.get_events_after(processed_count)
-    return read_events_after(run_id, processed_count)
-
 def read_event_delta(
     path: Path,
     byte_offset: int,
@@ -2005,49 +2094,6 @@ def read_spark_delta(
     except OSError:
         return [], byte_offset, False, schema_found
     return lines, next_offset, next_offset < file_size, schema_found
-
-def get_run_snapshot() -> dict[str, Any]:
-    """Obtengo el estado live o la última ejecución persistida."""
-
-    service = get_active_service()
-    if service is not None:
-        return service.get_snapshot()
-    metadata = get_latest_metadata()
-    if metadata is not None:
-        metadata.setdefault("mode", "LIVE")
-        metadata.setdefault("universe", {"selection": "manual"})
-        metadata.setdefault("replay_speed", 1.0)
-        metadata.setdefault("replay_position", 0)
-        metadata.setdefault("historical_date", None)
-        metadata.setdefault("log_count", 0)
-        metadata.setdefault("logs", [])
-        metadata.setdefault("streaming_file", None)
-        metadata.setdefault("historical_file", None)
-        metadata.setdefault("console_schema_version", 0)
-        run_id = metadata.get("run_id")
-        return metadata
-    return {
-        "run_id": None,
-        "symbols": [],
-        "universe": {"selection": "manual", "symbols": []},
-        "mode": "LIVE",
-        "replay_speed": 1.0,
-        "status": "Listo para ejecutar",
-        "error": None,
-        "event_count": 0,
-        "log_count": 0,
-        "replay_position": 0,
-        "historical_date": None,
-        "logs": [],
-        "streaming_file": None,
-        "historical_file": None,
-        "started_at": None,
-        "ended_at": None,
-        "last_heartbeat": None,
-        "end_reason": None,
-        "is_active": False,
-        "console_schema_version": 0,
-    }
 
 def get_utc_timestamp() -> str:
     """Genero una marca temporal UTC reproducible para cada registro."""
@@ -2269,7 +2315,7 @@ def read_streaming_state(path: Path) -> dict[str, Any] | None:
         "last_heartbeat": None,
         "end_reason": None,
         "run_info_file": path.name,
-        "trades_file": None,
+        "data_file": None,
         "log_handler_file": None,
         "log_alpaca_file": None,
         "log_spark_file": None,
@@ -2304,8 +2350,10 @@ def read_streaming_state(path: Path) -> dict[str, Any] | None:
                         "mode",
                         "replay_speed",
                         "started_at",
+                        "data_file",
                         "trades_file",
                         "run_info_file",
+                        "log_controller_file",
                         "log_handler_file",
                         "log_alpaca_file",
                         "log_spark_file",
@@ -2344,8 +2392,9 @@ def read_streaming_state(path: Path) -> dict[str, Any] | None:
 def read_recent_events(run_id: str) -> list[AlpacaEvent]:
     """Leo un lote inicial sin materializar el historial completo."""
 
-    trades_path = get_run_file(run_id, "trades")
-    if trades_path.exists():
+    data_path = get_run_file(run_id, "data")
+    legacy_data_path = DATA_DIRECTORY / f"{run_id}_alpaca_trades.jsonl"
+    if data_path.exists() or legacy_data_path.exists():
         return read_events_after(run_id, 0)[:256]
     return read_event_delta(
         LEGACY_STREAMING_DIRECTORY / f"{run_id}.jsonl",
@@ -2359,8 +2408,15 @@ def read_events_after(
 ) -> list[AlpacaEvent]:
     """Leo únicamente los eventos posteriores al checkpoint persistido."""
 
-    new_events_path = get_run_file(run_id, "trades")
-    if new_events_path.exists():
+    event_paths = [
+        get_run_file(run_id, "data"),
+        DATA_DIRECTORY / f"{run_id}_alpaca_trades.jsonl",
+    ]
+    new_events_path = next(
+        (path for path in event_paths if path.exists()),
+        None,
+    )
+    if new_events_path is not None:
         events: list[AlpacaEvent] = []
         event_index = 0
         try:
@@ -2448,169 +2504,6 @@ def read_spark_checkpoint(path: Path) -> dict[str, Any] | None:
         return None
     return checkpoint
 
-def register_heartbeat(run_id: str) -> bool:
-    """Valido y registro el heartbeat de una sesión visual activa."""
-
-    service = get_active_service()
-    return service.heartbeat(run_id) if service is not None else False
-
-def append_spark_checkpoint(
-    run_id: str | None,
-    checkpoint: dict[str, Any],
-    console_lines: list[str] | None = None,
-) -> None:
-    """Persisto el acumulado de Spark en el JSONL del RUN correspondiente."""
-
-    if run_id is None:
-        return
-    service = get_active_service()
-    if service is not None and service.get_snapshot()["run_id"] == run_id:
-        service.append_spark_checkpoint(checkpoint, console_lines or [])
-        return
-    streaming_path = get_run_file(run_id, "info")
-    if streaming_path.exists():
-        previous = read_spark_checkpoint(streaming_path)
-        processed_count = int(checkpoint.get("processed_events", 0))
-        if previous is not None and processed_count <= int(
-            previous.get("processed_events", 0)
-        ):
-            return
-        append_stream_record(
-            streaming_path,
-            run_id,
-            int(read_streaming_state(streaming_path).get("sequence", 0)) + 1,
-            "spark_checkpoint",
-            checkpoint,
-        )
-        for line in console_lines or []:
-            with get_run_file(run_id, "spark").open(
-                "a",
-                encoding="utf-8",
-            ) as spark_file:
-                previous_number = read_console_tail(
-                    get_run_file(run_id, "spark"),
-                    1,
-                )[2]
-                spark_file.write(
-                    f"[#{previous_number + 1}] {line}\n"
-                )
-        return
-    previous = read_spark_checkpoint(streaming_path)
-    processed_count = int(checkpoint.get("processed_events", 0))
-    if previous is not None and processed_count <= int(
-        previous.get("processed_events", 0)
-    ):
-        return
-    state = read_streaming_state(streaming_path)
-    sequence = int(state.get("sequence", 0)) if state else 0
-    append_stream_record(
-        streaming_path,
-        run_id,
-        sequence + 1,
-        "spark_checkpoint",
-        checkpoint,
-    )
-
-def ensure_spark_console_records(
-    run_id: str | None,
-    console_lines: list[str],
-) -> None:
-    """Persisto la primera salida Spark del RUN activo."""
-
-    if run_id is None:
-        return
-    service = get_active_service()
-    if service is not None and service.get_snapshot()["run_id"] == run_id:
-        service.ensure_spark_console_records(console_lines)
-
-def get_spark_checkpoint(run_id: str | None) -> dict[str, Any] | None:
-    """Obtengo el checkpoint Spark del RUN activo o persistido."""
-
-    if run_id is None:
-        return None
-    service = get_active_service()
-    if service is not None and service.get_snapshot()["run_id"] == run_id:
-        return service.get_spark_checkpoint()
-    new_path = get_run_file(run_id, "info")
-    if new_path.exists():
-        return read_spark_checkpoint(new_path)
-    return read_spark_checkpoint(LEGACY_STREAMING_DIRECTORY / f"{run_id}.jsonl")
-
-def release_active_service(service: AlpacaStreamingService) -> None:
-    """Libero el RUN terminado para permitir una nueva ejecución."""
-
-    global _ACTIVE_SERVICE
-    with _MANAGER_LOCK:
-        if _ACTIVE_SERVICE is service:
-            _ACTIVE_SERVICE = None
-
-def shutdown_active_run() -> None:
-    """Cierro el RUN administrado cuando finaliza el proceso Python."""
-
-    stop_active_run("process_shutdown")
-
-def start_run(
-    api_key: str,
-    api_secret: str,
-    symbols: list[str],
-    feed: str = "iex",
-    ranking: str | None = None,
-    replay_speed: float = 1.0,
-) -> AlpacaStreamingService:
-    """Creo un único RUN y comienzo su ciclo de vida."""
-
-    global _ACTIVE_SERVICE
-    with _MANAGER_LOCK:
-        if _ACTIVE_SERVICE is not None and _ACTIVE_SERVICE.is_active():
-            return _ACTIVE_SERVICE
-        selected_mode = get_market_mode(api_key, api_secret)
-        if ranking is not None:
-            resolved_symbols, universe_metadata = get_sp500_ranked_symbols(
-                api_key,
-                api_secret,
-                ranking,
-            )
-        elif ALL_MARKET_SYMBOL in symbols:
-            resolved_symbols, universe_metadata = resolve_automatic_symbols(
-                api_key,
-                api_secret,
-            )
-        else:
-            resolved_symbols = symbols
-            universe_metadata = {
-                "selection": "manual",
-                "symbols": list(symbols),
-            }
-        started_at = get_utc_timestamp()
-        run_id = build_run_stem(started_at)
-        try:
-            _ACTIVE_SERVICE = AlpacaStreamingService(
-                api_key,
-                api_secret,
-                run_id,
-                resolved_symbols,
-                started_at,
-                run_id,
-                universe_metadata,
-                feed,
-                selected_mode,
-                replay_speed,
-            )
-        except FileExistsError as error:
-            raise RuntimeError(
-                "El identificador del RUN ya existe; esperá un segundo y "
-                "volvé a iniciar."
-            ) from error
-        _ACTIVE_SERVICE.start()
-        return _ACTIVE_SERVICE
-
-def stop_active_run(end_reason: str) -> None:
-    """Detengo el único RUN LIVE administrado por el proyecto."""
-
-    service = get_active_service()
-    if service is not None:
-        service.stop(end_reason)
-
 def to_number(value: Any) -> float | None:
     """Convierto números persistidos a un valor seguro para la interfaz."""
 
@@ -2619,11 +2512,7 @@ def to_number(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
 
-_ACTIVE_SERVICE: AlpacaStreamingService | None = None
 _LATEST_METADATA_CACHE: dict[
     str,
     tuple[int, int, dict[str, Any] | None],
 ] = {}
-_MANAGER_LOCK = threading.RLock()
-mark_interrupted_run()
-atexit.register(shutdown_active_run)
