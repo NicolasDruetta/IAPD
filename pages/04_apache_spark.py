@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 import threading
 import urllib.request
 
@@ -14,6 +15,7 @@ from pyspark.sql.functions import col, count, from_json, sum as sum_rows, when
 from pyspark.sql.types import DoubleType, StringType, StructField, StructType
 
 DATA_DIRECTORY = Path(__file__).resolve().parent.parent / "data"
+SPARK_DIRECTORY = DATA_DIRECTORY / "spark"
 KAFKA_BOOTSTRAP_SERVERS = os.getenv(
     "KAFKA_BOOTSTRAP_SERVERS",
     "kafka:9092",
@@ -53,7 +55,7 @@ EVENT_SCHEMA = StructType(
 def append_spark_log(run_id: str, message: str) -> None:
     """Agrego un mensaje agrupado al TXT persistente de Spark."""
 
-    path = DATA_DIRECTORY / f"{run_id}_log_04_apache_spark.txt"
+    path = DATA_DIRECTORY / f"{run_id}_04_spark_log.txt"
     with _SPARK_LOCK:
         path.parent.mkdir(parents=True, exist_ok=True)
         sequence = 0
@@ -98,7 +100,9 @@ def get_checkpoint(run_id: str | None) -> dict[str, Any] | None:
         return None
     path = DATA_DIRECTORY / f"{run_id}_spark_checkpoint.json"
     if not path.exists():
-        legacy_path = DATA_DIRECTORY / f"{run_id}_run_info.jsonl"
+        legacy_path = DATA_DIRECTORY / f"{run_id}_00_run_info.jsonl"
+        if not legacy_path.exists():
+            legacy_path = DATA_DIRECTORY / f"{run_id}_run_info.jsonl"
         if not legacy_path.exists():
             return None
         checkpoint = None
@@ -471,7 +475,9 @@ def process_batch(run_id: str, data_frame: DataFrame, batch_id: int) -> None:
             f"DATAFRAME | batch_id={batch_id} | registros_entrada={input_count} | validos=0 | invalidos={invalid_count} | duplicados_eliminados={duplicate_count}",
         )
         return
-    parquet_path = str(DATA_DIRECTORY / f"{run_id}_parquet")
+    parquet_path = str(
+        SPARK_DIRECTORY / f"{run_id}_04_spark_data.parquet.parts"
+    )
     processed_frame.write.mode("append").parquet(parquet_path)
     grouped = (
         processed_frame.groupBy("symbol")
@@ -515,15 +521,55 @@ def process_batch(run_id: str, data_frame: DataFrame, batch_id: int) -> None:
             "trade_totals": dict(state["trade_totals"]),
             "processed_events_by_type": dict(state["processed_events_by_type"]),
         }
-        checkpoint_path = DATA_DIRECTORY / f"{run_id}_spark_checkpoint.json"
-        checkpoint_path.write_text(
-            json.dumps(state["checkpoint"], ensure_ascii=False),
-            encoding="utf-8",
-        )
     input_frame.unpersist()
     processed_frame.unpersist()
     for line in state["logs"]:
         append_spark_log(run_id, line)
+
+def consolidate_parquet(run_id: str) -> bool:
+    """Consolido los archivos Parquet temporales en un único archivo final."""
+
+    parts_path = SPARK_DIRECTORY / f"{run_id}_04_spark_data.parquet.parts"
+    legacy_parts_path = (
+        DATA_DIRECTORY / f"{run_id}_04_spark_data.parquet.parts"
+    )
+    final_path = DATA_DIRECTORY / f"{run_id}_04_spark_data.parquet"
+    temporary_path = SPARK_DIRECTORY / f"{run_id}_04_spark_data.parquet.tmp"
+    checkpoint_path = SPARK_DIRECTORY / f"{run_id}_04_spark_checkpoint"
+    legacy_checkpoint_path = (
+        DATA_DIRECTORY / f"{run_id}_04_spark_checkpoint"
+    )
+    if final_path.exists():
+        return True
+    if not parts_path.exists() and legacy_parts_path.exists():
+        parts_path = legacy_parts_path
+    if not checkpoint_path.exists() and legacy_checkpoint_path.exists():
+        checkpoint_path = legacy_checkpoint_path
+    if not parts_path.exists():
+        return False
+    if temporary_path.exists():
+        raise FileExistsError(
+            f"Existe una consolidación temporal pendiente para {run_id}."
+        )
+    spark = get_spark_session()
+    if spark is None:
+        raise RuntimeError("Spark no está disponible para consolidar Parquet.")
+    processed_frame = spark.read.parquet(str(parts_path))
+    if processed_frame.limit(1).count() == 0:
+        return False
+    processed_frame.coalesce(1).write.mode("overwrite").parquet(
+        str(temporary_path)
+    )
+    part_files = sorted(temporary_path.glob("part-*.parquet"))
+    if len(part_files) != 1:
+        raise RuntimeError(
+            f"La consolidación de {run_id} generó {len(part_files)} archivos."
+        )
+    os.replace(part_files[0], final_path)
+    shutil.rmtree(temporary_path)
+    shutil.rmtree(parts_path)
+    shutil.rmtree(checkpoint_path, ignore_errors=True)
+    return True
 
 def start_streaming(run_id: str, mode: str = "LIVE") -> None:
     """Inicio Structured Streaming Kafka para un RUN sin duplicar queries."""
@@ -570,7 +616,8 @@ def start_streaming(run_id: str, mode: str = "LIVE") -> None:
             _RUN_STATES[run_id]["logs"] = [error_message]
         append_spark_log(run_id, error_message)
         raise RuntimeError(error_message)
-    checkpoint_path = str(DATA_DIRECTORY / f"{run_id}_structured_checkpoint")
+    SPARK_DIRECTORY.mkdir(parents=True, exist_ok=True)
+    checkpoint_path = str(SPARK_DIRECTORY / f"{run_id}_04_spark_checkpoint")
     try:
         events = (
             spark.readStream.format("kafka")
@@ -599,7 +646,7 @@ def start_streaming(run_id: str, mode: str = "LIVE") -> None:
         _STARTING_RUNS.discard(run_id)
         _RUN_STATES[run_id]["query"] = query
 
-def stop_streaming(run_id: str | None) -> None:
+def stop_streaming(run_id: str | None, finalize: bool = False) -> None:
     """Detengo la consulta Structured Streaming del RUN indicado."""
 
     if run_id is None:
@@ -607,21 +654,20 @@ def stop_streaming(run_id: str | None) -> None:
     with _SPARK_LOCK:
         state = _RUN_STATES.get(run_id)
         query = state.get("query") if state else None
-    if query is None:
-        return
-    try:
-        if not query.isActive:
-            return
-    except Exception:
-        return
-    try:
-        query.stop()
-    except Exception:
-        return
-    try:
-        query.awaitTermination(10)
-    except Exception:
-        return
+    if query is not None:
+        try:
+            if query.isActive:
+                query.stop()
+        except Exception:
+            if not finalize:
+                return
+        try:
+            query.awaitTermination(10)
+        except Exception:
+            if not finalize:
+                return
+    if finalize:
+        consolidate_parquet(run_id)
 
 def top_volume_rows(totals: dict[str, float]) -> list[dict[str, Any]]:
     """Ordeno el ranking acumulado por volumen exclusivamente TRADE."""

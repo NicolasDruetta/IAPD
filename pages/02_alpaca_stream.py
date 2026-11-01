@@ -397,16 +397,16 @@ class AlpacaStreamingService:
             "log": 0,
             "spark": 0,
         }
-        self._historical_path = DATA_DIRECTORY / f"{run_stem}_data_alpaca.jsonl"
-        self._run_info_path = DATA_DIRECTORY / f"{run_stem}_run_info.jsonl"
+        self._historical_path = DATA_DIRECTORY / f"{run_stem}_02_alpaca_data.jsonl"
+        self._run_info_path = DATA_DIRECTORY / f"{run_stem}_00_run_info.jsonl"
         self._log_handler_path = (
-            DATA_DIRECTORY / f"{run_stem}_log_01_controller.txt"
+            DATA_DIRECTORY / f"{run_stem}_01_controller_log.txt"
         )
         self._log_alpaca_path = (
-            DATA_DIRECTORY / f"{run_stem}_log_02_alpaca_stream.txt"
+            DATA_DIRECTORY / f"{run_stem}_02_alpaca_log.txt"
         )
         self._log_spark_path = (
-            DATA_DIRECTORY / f"{run_stem}_log_04_apache_spark.txt"
+            DATA_DIRECTORY / f"{run_stem}_04_spark_log.txt"
         )
         self._kafka_log_path = (
             KAFKA_MODULE.initialize_run(run_stem)
@@ -427,10 +427,6 @@ class AlpacaStreamingService:
         ):
             raise FileExistsError(f"El RUN ya existe: {run_stem}")
         self._run_info_path.touch(exist_ok=False)
-        self._historical_path.touch(exist_ok=False)
-        self._log_handler_path.touch(exist_ok=False)
-        self._log_alpaca_path.touch(exist_ok=False)
-        self._log_spark_path.touch(exist_ok=False)
 
     def start(self) -> bool:
         """Inicio los hilos de streaming y supervisión del RUN."""
@@ -464,7 +460,7 @@ class AlpacaStreamingService:
                         else None
                     ),
                     "universe": self._universe_metadata,
-                    "console_schema_version": 3,
+                    "console_schema_version": 4,
                 },
             )
             self._add_log(f"{self._mode} | RUN iniciado")
@@ -1041,6 +1037,7 @@ class AlpacaStreamingService:
             "spark": self._log_spark_path,
         }
         persisted_line = f"[#{next_sequence}] {line}"
+        console_paths[console_name].parent.mkdir(parents=True, exist_ok=True)
         with console_paths[console_name].open(
             "a",
             encoding="utf-8",
@@ -1558,25 +1555,28 @@ def get_run_file(run_id: str, file_kind: str) -> Path:
     """Obtengo la ruta de un archivo de un RUN nuevo."""
 
     suffixes = {
-        "alpaca": "log_02_alpaca_stream.txt",
-        "data": "data_alpaca.jsonl",
-        "handler": "log_01_controller.txt",
-        "info": "run_info.jsonl",
-        "spark": "log_04_apache_spark.txt",
-        "trades": "data_alpaca.jsonl",
+        "alpaca": "02_alpaca_log.txt",
+        "data": "02_alpaca_data.jsonl",
+        "handler": "01_controller_log.txt",
+        "info": "00_run_info.jsonl",
+        "parquet": "04_spark_data.parquet",
+        "spark": "04_spark_log.txt",
+        "trades": "02_alpaca_data.jsonl",
     }
     path = DATA_DIRECTORY / f"{run_id}_{suffixes[file_kind]}"
     legacy_suffixes = {
-        "alpaca": "log_alpaca.txt",
-        "handler": "log_handler.txt",
-        "spark": "log_03_apache_spark.txt",
+        "alpaca": ("log_02_alpaca_stream.txt", "log_alpaca.txt"),
+        "data": ("data_alpaca.jsonl",),
+        "handler": ("log_01_controller.txt", "log_handler.txt"),
+        "info": ("run_info.jsonl",),
+        "spark": ("log_04_apache_spark.txt", "log_03_apache_spark.txt"),
+        "trades": ("data_alpaca.jsonl",),
     }
     if file_kind in legacy_suffixes and not path.exists():
-        legacy_path = DATA_DIRECTORY / (
-            f"{run_id}_{legacy_suffixes[file_kind]}"
-        )
-        if legacy_path.exists():
-            return legacy_path
+        for legacy_suffix in legacy_suffixes[file_kind]:
+            legacy_path = DATA_DIRECTORY / f"{run_id}_{legacy_suffix}"
+            if legacy_path.exists():
+                return legacy_path
     return path
 
 def read_console_delta(

@@ -282,16 +282,6 @@ def _has_active_spark_query(module: ModuleType) -> bool:
     except Exception:
         return False
 
-def get_friendly_start_error(error: Exception) -> str:
-    """Convierto errores técnicos de inicio en mensajes comprensibles."""
-
-    error_text = str(error).lower()
-    if "connection refused" in error_text or "[errno 111]" in error_text:
-        return "No se pudo conectar con Spark. El servicio de procesamiento no está disponible."
-    if "failed to find data source: kafka" in error_text:
-        return "Spark no puede iniciar porque falta el conector de Kafka."
-    return "No se pudo iniciar el procesamiento. Revisá el log del RUN para ver el detalle."
-
 def mark_start_pending() -> None:
     """Marco que el usuario acaba de solicitar el inicio."""
 
@@ -307,14 +297,14 @@ def handle_start_error(
 ) -> None:
     """Finalizo el RUN y conservo el error visible tras un fallo de inicio."""
 
-    friendly_error = get_friendly_start_error(error)
+    error_message = " ".join(str(error).split()) or error.__class__.__name__
     if run_id is not None:
-        spark_module.stop_streaming(run_id)
-    controller_module.fail_active_run(friendly_error)
+        spark_module.stop_streaming(run_id, finalize=False)
+    controller_module.fail_active_run(error_message)
     st.session_state.start_pending = False
     st.session_state.start_operation = None
     st.session_state.alpaca_run_id = None
-    st.session_state.start_error = friendly_error
+    st.session_state.start_error = error_message
 
 def start_run_in_background(
     operation: dict[str, Any],
@@ -738,6 +728,8 @@ def render_streaming() -> None:
         status_text = "Iniciando..."
     elif snapshot["is_active"]:
         status_text = f"Ejecutando... {elapsed_text}."
+    elif status == "Error":
+        status_text = "Finalizado con error."
     mode_col, run_col, status_col = st.columns(
         [2, 2, 8],
         gap="small",
@@ -756,8 +748,8 @@ def render_streaming() -> None:
             st.caption("Estado")
             st.text(status_text)
 
-    if snapshot["is_active"] and snapshot["error"]:
-        st.error(snapshot["error"])
+    if snapshot["error"] and not st.session_state.start_pending:
+        st.error("**Error:** " + (" ".join(str(snapshot["error"]).split())))
 
     st.divider()
 
@@ -785,8 +777,6 @@ def render_streaming() -> None:
             "Error": "Error.",
         }.get(snapshot["status"], f"{snapshot['status']}.")
         last_execution_notice = f"Datos de la **última ejecución:** {last_execution_text}. **Duración:** {elapsed_text}. **{completion_text}** | **Modo:** {history_mode}. | **RUN:** {history_run_id}."
-        if snapshot["error"]:
-            st.error(snapshot["error"])
         automatic_stop_messages = {
             "heartbeat_timeout": "La ejecución se detuvo automáticamente porque la interfaz dejó de enviar señales de actividad durante 5 minutos.",
             "process_restart": "La ejecución se detuvo automáticamente porque se reinició el proceso de la aplicación.",
@@ -818,7 +808,10 @@ def render_streaming() -> None:
             snapshot = controller_module.get_run_snapshot()
             run_id = None
     elif run_id is not None:
-        spark_module.stop_streaming(run_id)
+        spark_module.stop_streaming(
+            run_id,
+            finalize=snapshot.get("status") == "Completado",
+        )
     spark_result = spark_module.get_snapshot(run_id)
     execution_column, alpaca_column = st.columns(
         2,
@@ -970,7 +963,7 @@ def render_streaming() -> None:
                 file_name=(
                     alpaca_path.name
                     if alpaca_path is not None
-                    else "log_02_alpaca_stream.txt"
+                    else "02_alpaca_log.txt"
                 ),
                 mime="text/plain",
                 key=f"download-alpaca-log-console-{run_id or 'no-run'}",

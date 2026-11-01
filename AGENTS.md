@@ -184,12 +184,16 @@ número disponible y no se crean archivos anticipadamente para etapas futuras.
 
 ## 12. Organización de archivos generados
 
-Dentro de `/app/data/` se mantienen `historical/`, `streaming/`, los archivos
-JSONL y TXT de cada RUN, los Parquet procesados y los checkpoints de
-Structured Streaming. Cada RUN nuevo conserva los JSONL y TXT existentes con
-el mismo nombre base identificable por fecha, hora, milisegundos y UUID. Los
-archivos temporales de procesamiento se ubican directamente en el
-almacenamiento temporal del contenedor y se limpian por ejecución.
+Dentro de `/app/data/` cada RUN nuevo utiliza directamente el identificador
+`YYYYMMDD_HHMMSS` y genera, cuando la etapa correspondiente se ejecuta,
+`_00_run_info.jsonl`, `_01_controller_log.txt`, `_02_alpaca_data.jsonl`,
+`_02_alpaca_log.txt`, `_03_kafka_log.txt`, `_04_spark_data.parquet` y
+`_04_spark_log.txt`. Structured Streaming conserva durante el RUN sus partes
+Parquet y checkpoint temporales dentro de `spark/`, con el mismo identificador;
+al finalizar
+correctamente se consolida un único Parquet y se eliminan únicamente esos
+temporales. Si el RUN falla, los temporales se conservan para recuperación y
+diagnóstico. Los históricos existentes no se modifican automáticamente.
 
 ## 13. Logging operativo
 

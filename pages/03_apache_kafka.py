@@ -70,7 +70,7 @@ def close_producer() -> None:
 def get_log_path(run_id: str) -> Path:
     """Obtengo la ruta del log Kafka correspondiente al RUN."""
 
-    return DATA_DIRECTORY / f"{run_id}_log_03_apache_kafka.txt"
+    return DATA_DIRECTORY / f"{run_id}_03_kafka_log.txt"
 
 def get_producer() -> KafkaProducer:
     """Obtengo el productor Kafka único del proceso Streamlit."""
@@ -109,12 +109,11 @@ def ensure_topic() -> None:
         admin.close()
 
 def initialize_run(run_id: str) -> Path:
-    """Creo el TXT de Kafka sin alterar archivos de RUN anteriores."""
+    """Preparo el estado Kafka sin crear un TXT vacío para el RUN."""
 
     path = get_log_path(run_id)
     with _KAFKA_LOCK:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.touch(exist_ok=False)
         _RUN_CONNECTIONS.discard(run_id)
         _RUN_STATS.pop(run_id, None)
     return path
