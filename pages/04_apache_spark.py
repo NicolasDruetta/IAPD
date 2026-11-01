@@ -197,6 +197,7 @@ def get_spark_session() -> SparkSession | None:
                     .config("spark.executor.cores", "1")
                     .config("spark.cores.max", "2")
                     .config("spark.driver.memory", os.getenv("SPARK_DRIVER_MEMORY", "1g"))
+                    .config("spark.driver.maxResultSize", "128m")
                     .config("spark.executor.memory", os.getenv("SPARK_EXECUTOR_MEMORY", "512m"))
                     .config("spark.executor.memoryOverhead", "256m")
                 )

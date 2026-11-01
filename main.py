@@ -282,6 +282,16 @@ def _has_active_spark_query(module: ModuleType) -> bool:
     except Exception:
         return False
 
+def get_friendly_start_error(error: Exception) -> str:
+    """Convierto errores técnicos de inicio en mensajes comprensibles."""
+
+    error_text = str(error).lower()
+    if "connection refused" in error_text or "[errno 111]" in error_text:
+        return "No se pudo conectar con Spark. El servicio de procesamiento no está disponible."
+    if "failed to find data source: kafka" in error_text:
+        return "Spark no puede iniciar porque falta el conector de Kafka."
+    return "No se pudo iniciar el procesamiento. Revisá el log del RUN para ver el detalle."
+
 def mark_start_pending() -> None:
     """Marco que el usuario acaba de solicitar el inicio."""
 
@@ -297,13 +307,14 @@ def handle_start_error(
 ) -> None:
     """Finalizo el RUN y conservo el error visible tras un fallo de inicio."""
 
+    friendly_error = get_friendly_start_error(error)
     if run_id is not None:
         spark_module.stop_streaming(run_id)
-    controller_module.fail_active_run(str(error))
+    controller_module.fail_active_run(friendly_error)
     st.session_state.start_pending = False
     st.session_state.start_operation = None
     st.session_state.alpaca_run_id = None
-    st.session_state.start_error = str(error)
+    st.session_state.start_error = friendly_error
 
 def start_run_in_background(
     operation: dict[str, Any],
@@ -528,7 +539,7 @@ with theme_col:
         st.session_state.dark_mode = not st.session_state.dark_mode
         st.rerun()
 st.subheader(
-    "Análisis de operaciones bursátiles con procesamiento distribuido en Apache Spark."
+    "Streaming y análisis de operaciones bursátiles con procesamiento distribuido en tiempo real."
 )
 st.caption("Materia: IAPD. Autor: Nicolás Druetta. Año: 2026.")
 st.divider()
@@ -1045,7 +1056,7 @@ def render_streaming() -> None:
             resync=resync,
         )
     with spark_column:
-        st.subheader("4. Log de procesamiento (Spark) - [Spark Master ↗](http://localhost:8080/)")
+        st.subheader("4. Log de procesamiento (Spark)")
         spark_state = get_console_state("spark-log-console", run_id)
         spark_records, cursor_start, next_cursor, initial_load, resync = (
             get_console_buffer_view(
@@ -1095,6 +1106,7 @@ def render_streaming() -> None:
             placeholder=is_placeholder,
             resync=resync,
         )
+        st.caption("**[Spark Master ↗](http://localhost:8080/)** - **[Worker 1 ↗](http://localhost:8081/)** - **[Worker 2 ↗](http://localhost:8082/)**")
     if clear_consoles:
         st.session_state.start_requested = False
 

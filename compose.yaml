@@ -170,9 +170,9 @@ services:
     <<: *lab-image
     hostname: spark-driver
     cpus: "1.5"
-    mem_limit: 2g
-    mem_reservation: 1g
-    memswap_limit: 2g
+    mem_limit: 4g
+    mem_reservation: 2g
+    memswap_limit: 4g
     command:
       - streamlit
       - run
@@ -189,7 +189,7 @@ services:
       SPARK_BLOCK_MANAGER_PORT: "4042"
       SPARK_MASTER_UI_URL: http://spark-master:8080
       SPARK_UI_URL: http://localhost:4040
-      SPARK_DRIVER_MEMORY: 1g
+      SPARK_DRIVER_MEMORY: 2g
       SPARK_EXECUTOR_MEMORY: 512m
     depends_on:
       spark-master:
@@ -200,6 +200,7 @@ services:
         condition: service_healthy
     ports:
       - "8502:8501"
+      - "4040:4040"
     volumes:
       - ./data:/app/data
 
