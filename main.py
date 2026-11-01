@@ -496,33 +496,36 @@ icon_path = Path(__file__).parent / "assets" / "icon.png"
 theme_key = "theme-dark" if st.session_state.dark_mode else "theme-light"
 with st.container(key=theme_key):
     st.empty()
-with st.container(width="content"):
-    icon_col, title_col, theme_col = st.columns(
-        [0.8, 5.0, 0.5],
-        gap="small",
-        vertical_alignment="center",
-    )
-    with icon_col:
-        st.image(str(icon_path), width=50)
-    with title_col:
-        st.title("Apache Big Data Lab")
-    with theme_col:
-        if st.button(
-            "",
-            icon=(
-                ":material/light_mode:"
-                if st.session_state.dark_mode
-                else ":material/dark_mode:"
-            ),
-            help=(
-                "Light Mode"
-                if st.session_state.dark_mode
-                else "Dark Mode"
-            ),
-            width="content",
-        ):
-            st.session_state.dark_mode = not st.session_state.dark_mode
-            st.rerun()
+with st.container(
+    width="content",
+    horizontal=True,
+    gap="small",
+    vertical_alignment="center",
+):
+    icon_col = st.container(width="content")
+    title_col = st.container(width="stretch")
+    theme_col = st.container(width="content")
+with icon_col:
+    st.image(str(icon_path), width=50)
+with title_col:
+    st.title("Apache Big Data Lab")
+with theme_col:
+    if st.button(
+        "",
+        icon=(
+            ":material/light_mode:"
+            if st.session_state.dark_mode
+            else ":material/dark_mode:"
+        ),
+        help=(
+            "Light Mode"
+            if st.session_state.dark_mode
+            else "Dark Mode"
+        ),
+        width="content",
+    ):
+        st.session_state.dark_mode = not st.session_state.dark_mode
+        st.rerun()
 st.subheader(
     "Análisis de operaciones bursátiles con procesamiento distribuido en Apache Spark."
 )
@@ -696,9 +699,6 @@ def render_streaming() -> None:
         spark_module.stop_streaming(snapshot.get("run_id"))
         controller_module.stop_active_run("manual_stop")
         snapshot = controller_module.get_run_snapshot()
-
-    if st.session_state.start_error:
-        st.error(st.session_state.start_error)
 
     if (
         previous_run_active
@@ -1092,7 +1092,14 @@ def render_streaming() -> None:
     if last_execution_notice:
         st.info(last_execution_notice)
     with st.container(border=True):
-        date_col, time_col, elapsed_col = st.columns(3, gap="small")
+        with st.container(
+            horizontal=True,
+            gap="small",
+            vertical_alignment="top",
+        ):
+            date_col = st.container(width="stretch")
+            time_col = st.container(width="stretch")
+            elapsed_col = st.container(width="stretch")
         with date_col:
             st.caption("Fecha analizada")
             st.text(market_date)

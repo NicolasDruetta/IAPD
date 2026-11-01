@@ -8,6 +8,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from pyspark import SparkContext
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.functions import col, count, from_json, sum as sum_rows, when
 from pyspark.sql.types import DoubleType, StringType, StructField, StructType
@@ -157,7 +158,12 @@ def get_spark_session() -> SparkSession | None:
     global _SPARK_ERROR, _SPARK_SESSION
     with _SPARK_LOCK:
         if _SPARK_SESSION is not None:
-            return _SPARK_SESSION
+            try:
+                _SPARK_SESSION.sparkContext._jsc.sc().isStopped()
+            except Exception:
+                reset_spark_runtime()
+            else:
+                return _SPARK_SESSION
         try:
             builder = (
                 SparkSession.builder
@@ -187,6 +193,7 @@ def get_spark_session() -> SparkSession | None:
             _SPARK_SESSION = builder.getOrCreate()
             _SPARK_SESSION.sparkContext.setLogLevel("WARN")
         except Exception as error:
+            reset_spark_runtime()
             _SPARK_ERROR = f"No se pudo iniciar Spark: {error}"
         return _SPARK_SESSION
 
@@ -204,8 +211,28 @@ def has_active_query() -> bool:
             if query.isActive:
                 return True
         except Exception:
+            reset_spark_runtime()
             continue
     return False
+
+def reset_spark_runtime() -> None:
+    """Libero una sesión cuyo gateway JVM dejó de responder."""
+
+    global _SPARK_ERROR, _SPARK_SESSION
+    session = _SPARK_SESSION
+    _SPARK_SESSION = None
+    _SPARK_ERROR = None
+    try:
+        if session is not None:
+            session.stop()
+    except Exception:
+        pass
+    try:
+        SparkSession.clearActiveSession()
+        SparkSession.clearDefaultSession()
+    except Exception:
+        pass
+    SparkContext._active_spark_context = None
 
 def monitor_workers(run_id: str, state: dict[str, Any]) -> None:
     """Consulto jobs, stages y tasks reales del Driver y sus Workers."""
