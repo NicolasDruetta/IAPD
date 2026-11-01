@@ -1,7 +1,7 @@
 x-lab-image: &lab-image
   build:
     context: .
-    dockerfile: docker/Dockerfile
+    dockerfile: Dockerfile
   image: apache-big-data-lab:local
   restart: unless-stopped
 

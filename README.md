@@ -228,7 +228,7 @@ NicolasDruetta_TP2/
   reproducción REPLAY, ciclo de vida y persistencia de Alpaca.
 - `pages/03_apache_spark.py`: procesamiento específico de Spark distribuido.
 - `compose.yaml`: servicios Streamlit/Driver, Master y dos Workers.
-- `docker/Dockerfile`: imagen común con Python, PySpark y Java.
+- `Dockerfile`: imagen común con Python, PySpark y Java.
 - `.dockerignore`: archivos excluidos del contexto de construcción.
 - `data/`: cinco archivos por cada RUN nuevo; los directorios legacy existentes
   se conservan para compatibilidad.
