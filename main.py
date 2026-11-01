@@ -506,7 +506,7 @@ with st.container(
     title_col = st.container(width="stretch")
     theme_col = st.container(width="content")
 with icon_col:
-    st.image(str(icon_path), width=50)
+    st.image(str(icon_path), width=48)
 with title_col:
     st.title("Apache Big Data Lab")
 with theme_col:
@@ -522,7 +522,8 @@ with theme_col:
             if st.session_state.dark_mode
             else "Dark Mode"
         ),
-        width="content",
+        key="theme-toggle-button",
+        width=36,
     ):
         st.session_state.dark_mode = not st.session_state.dark_mode
         st.rerun()
@@ -569,7 +570,7 @@ def render_streaming() -> None:
         ]
         if tuple(manual_symbols) == MAGNIFICENT_7_SYMBOLS:
             default_option = SYMBOL_OPTIONS[1]
-    st.subheader("Símbolos")
+    st.subheader("Símbolos bursátiles")
     symbols_col, actions_col = st.columns(
         [4, 8],
         gap="small",
@@ -849,6 +850,15 @@ def render_streaming() -> None:
             and run_id
             else streaming_path
         )
+        downloads_disabled = any(
+            path is None or not path.exists()
+            for path in (
+                execution_path,
+                alpaca_path,
+                kafka_path,
+                spark_path,
+            )
+        )
         log_lines, cursor_start, next_cursor, initial_load, resync = (
             get_console_buffer_view(
                 streaming_module,
@@ -892,9 +902,9 @@ def render_streaming() -> None:
                 mime="text/plain",
                 key=f"download-execution-log-console-{run_id or 'no-run'}",
                 help="Descargar log completo",
-                disabled=execution_path is None or not execution_path.exists(),
+                disabled=downloads_disabled,
                 type="secondary",
-                width="content",
+                width=36,
             )
         render_log_console(
             log_display_lines,
@@ -940,7 +950,7 @@ def render_streaming() -> None:
             horizontal_alignment="distribute",
             vertical_alignment="center",
         ):
-            st.caption(f"Eventos recibidos: {alpaca_state['line_number']}")
+            st.caption(f"Datos descargados: {alpaca_state['line_number']}")
             st.download_button(
                 "↓",
                 data=alpaca_path.read_bytes()
@@ -954,9 +964,9 @@ def render_streaming() -> None:
                 mime="text/plain",
                 key=f"download-alpaca-log-console-{run_id or 'no-run'}",
                 help="Descargar log completo",
-                disabled=alpaca_path is None or not alpaca_path.exists(),
+                disabled=downloads_disabled,
                 type="secondary",
-                width="content",
+                width=36,
             )
         render_log_console(
             event_lines,
@@ -1020,9 +1030,9 @@ def render_streaming() -> None:
                 mime="text/plain",
                 key=f"download-kafka-log-console-{run_id or 'no-run'}",
                 help="Descargar log completo",
-                disabled=kafka_path is None or not kafka_path.exists(),
+                disabled=downloads_disabled,
                 type="secondary",
-                width="content",
+                width=36,
             )
         render_log_console(
             kafka_lines,
@@ -1071,9 +1081,9 @@ def render_streaming() -> None:
                 mime="text/plain",
                 key=f"download-spark-log-console-{run_id or 'no-run'}",
                 help="Descargar log completo",
-                disabled=spark_path is None or not spark_path.exists(),
+                disabled=downloads_disabled,
                 type="secondary",
-                width="content",
+                width=36,
             )
         render_log_console(
             spark_lines,

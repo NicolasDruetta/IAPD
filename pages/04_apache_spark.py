@@ -157,6 +157,16 @@ def get_spark_session() -> SparkSession | None:
 
     global _SPARK_ERROR, _SPARK_SESSION
     with _SPARK_LOCK:
+        if (
+            _SPARK_SESSION is None
+            and (
+                getattr(SparkContext, "_gateway", None) is not None
+                or SparkSession._instantiatedSession is not None
+                or SparkSession._activeSession is not None
+                or SparkContext._active_spark_context is not None
+            )
+        ):
+            reset_spark_runtime()
         if _SPARK_SESSION is not None:
             try:
                 _SPARK_SESSION.sparkContext._jsc.sc().isStopped()
@@ -219,6 +229,7 @@ def reset_spark_runtime() -> None:
     """Libero una sesión cuyo gateway JVM dejó de responder."""
 
     global _SPARK_ERROR, _SPARK_SESSION
+    gateway = getattr(SparkContext, "_gateway", None)
     session = _SPARK_SESSION
     _SPARK_SESSION = None
     _SPARK_ERROR = None
@@ -227,11 +238,15 @@ def reset_spark_runtime() -> None:
             session.stop()
     except Exception:
         pass
+    SparkSession._instantiatedSession = None
+    SparkSession._activeSession = None
     try:
-        SparkSession.clearActiveSession()
-        SparkSession.clearDefaultSession()
+        if gateway is not None:
+            gateway.shutdown()
     except Exception:
         pass
+    SparkContext._gateway = None
+    SparkContext._jvm = None
     SparkContext._active_spark_context = None
 
 def monitor_workers(run_id: str, state: dict[str, Any]) -> None:

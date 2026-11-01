@@ -213,3 +213,17 @@ No se reinician, reconstruyen, recrean, detienen ni levantan servicios o
 contenedores de Docker. Estas acciones requieren autorización expresa del
 usuario en cada ocasión. Las verificaciones se realizan sin modificar el
 estado operativo de los servicios.
+
+## 16. Anchos fijos y orden de propiedades CSS
+
+Los cinco botones de icono de la interfaz, el alternador de tema y los cuatro
+botones de descarga de logs, utilizan un ancho de 36 px y una altura de 40 px.
+Para fijar el ancho de un control mediante CSS, utilizo únicamente la
+propiedad `width` necesaria. No agrego declaraciones `min-width` ni
+`max-width`; las condiciones `max-width` de las media queries se conservan
+para mantener el comportamiento responsive.
+
+Dentro de cada bloque CSS, las propiedades se ordenan por nombre: primero las
+propiedades normales en orden alfabético, luego las propiedades con prefijo
+simple como `-webkit-` y finalmente las variables CSS con prefijo `--`. Las
+media queries y los selectores mantienen su organización por responsabilidad.
