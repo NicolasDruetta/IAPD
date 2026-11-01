@@ -36,6 +36,8 @@ CALENDAR_API_URLS = (
     "https://paper-api.alpaca.markets/v2/calendar",
 )
 DATA_DIRECTORY = Path(__file__).resolve().parent.parent / "data"
+KAFKA_MODULE: Any = None
+SPARK_MODULE: Any = None
 HISTORICAL_QUOTES_API_URL = "https://data.alpaca.markets/v2/stocks/quotes"
 HISTORICAL_TRADES_API_URL = "https://data.alpaca.markets/v2/stocks/trades"
 HISTORICAL_DIRECTORY = DATA_DIRECTORY / "historical"
@@ -64,6 +66,127 @@ SP500_INDEX_URL = (
 )
 STOCK_SNAPSHOTS_URL = "https://data.alpaca.markets/v2/stocks/snapshots"
 TEMPORARY_DIRECTORY = Path("/tmp")
+_CONSOLE_BUFFER_LOCK = threading.RLock()
+_CONSOLE_BUFFERS: dict[tuple[str, str], deque[str]] = {}
+_CONSOLE_BUFFER_SEEDED: set[tuple[str, str]] = set()
+_CONSOLE_BUFFER_TOTALS: dict[tuple[str, str], int] = {}
+CONSOLE_BUFFER_SIZE = 200
+
+def configure_kafka_module(kafka_module: Any) -> None:
+    """Registro el módulo Kafka que publica los eventos del RUN."""
+
+    global KAFKA_MODULE
+    KAFKA_MODULE = kafka_module
+
+def configure_spark_module(spark_module: Any) -> None:
+    """Registro el módulo Spark que confirma el primer lote publicado."""
+
+    global SPARK_MODULE
+    SPARK_MODULE = spark_module
+
+def append_console_buffer(
+    run_id: str,
+    console_name: str,
+    line: str,
+) -> None:
+    """Agrego un registro al buffer visual acotado del RUN."""
+
+    sequence = console_line_number(line)
+    key = (run_id, console_name)
+    with _CONSOLE_BUFFER_LOCK:
+        buffer = _CONSOLE_BUFFERS.setdefault(
+            key,
+            deque(maxlen=CONSOLE_BUFFER_SIZE),
+        )
+        if sequence and any(
+            console_line_number(existing) == sequence
+            for existing in buffer
+        ):
+            return
+        buffer.append(line)
+        if sequence:
+            _CONSOLE_BUFFER_TOTALS[key] = max(
+                sequence,
+                _CONSOLE_BUFFER_TOTALS.get(key, 0),
+            )
+        _CONSOLE_BUFFER_SEEDED.add(key)
+
+def discard_console_buffers_except(run_id: str) -> None:
+    """Libero buffers visuales de RUN anteriores para acotar la memoria."""
+
+    with _CONSOLE_BUFFER_LOCK:
+        previous_keys = [
+            key
+            for key in _CONSOLE_BUFFERS
+            if key[0] != run_id
+        ]
+        for key in previous_keys:
+            _CONSOLE_BUFFERS.pop(key, None)
+            _CONSOLE_BUFFER_SEEDED.discard(key)
+            _CONSOLE_BUFFER_TOTALS.pop(key, None)
+
+def read_console_buffer(
+    run_id: str,
+    console_name: str,
+    path: Path,
+    cursor: int,
+    initial_load: bool,
+) -> tuple[list[str], int, int, bool]:
+    """Devuelvo registros nuevos desde el buffer sin releer el TXT."""
+
+    key = (run_id, console_name)
+    with _CONSOLE_BUFFER_LOCK:
+        seeded = key in _CONSOLE_BUFFER_SEEDED
+    if not seeded or initial_load:
+        tail_lines, _, _ = read_console_tail(path, CONSOLE_BUFFER_SIZE)
+        with _CONSOLE_BUFFER_LOCK:
+            buffer = _CONSOLE_BUFFERS.setdefault(
+                key,
+                deque(maxlen=CONSOLE_BUFFER_SIZE),
+            )
+            merged = {
+                console_line_number(line): line
+                for line in buffer
+                if console_line_number(line)
+            }
+            merged.update(
+                {
+                    console_line_number(line): line
+                    for line in tail_lines
+                    if console_line_number(line)
+                }
+            )
+            buffer.clear()
+            buffer.extend(
+                line
+                for _, line in sorted(merged.items())[-CONSOLE_BUFFER_SIZE:]
+            )
+            _CONSOLE_BUFFER_TOTALS[key] = max(
+                _CONSOLE_BUFFER_TOTALS.get(key, 0),
+                *(merged or {0}),
+            )
+            _CONSOLE_BUFFER_SEEDED.add(key)
+    with _CONSOLE_BUFFER_LOCK:
+        buffer = _CONSOLE_BUFFERS.get(key, deque())
+        lines = list(buffer)
+        total = _CONSOLE_BUFFER_TOTALS.get(key, 0)
+    if not lines:
+        return [], cursor, total, False
+    numbered_lines = [
+        (console_line_number(line), line)
+        for line in lines
+        if console_line_number(line)
+    ]
+    numbered_lines.sort(key=lambda item: item[0])
+    last_sequence = numbered_lines[-1][0]
+    first_sequence = numbered_lines[0][0]
+    resync = bool(cursor and cursor < first_sequence - 1)
+    selected = (
+        numbered_lines
+        if initial_load or resync
+        else [item for item in numbered_lines if item[0] > cursor]
+    )
+    return [line for _, line in selected], last_sequence, total, resync
 
 class SP500TableParser(HTMLParser):
     """Extraigo filas de tablas HTML para localizar la columna Symbol."""
@@ -233,6 +356,7 @@ class AlpacaStreamingService:
         self._api_key = api_key
         self._api_secret = api_secret
         self._run_id = run_id
+        discard_console_buffers_except(run_id)
         self._run_stem = run_stem
         self._symbols = symbols
         self._universe_metadata = universe_metadata
@@ -242,6 +366,7 @@ class AlpacaStreamingService:
         self._release_callback = release_callback
         self._events: deque[AlpacaEvent] = deque()
         self._stop_event = threading.Event()
+        self._pipeline_ready = threading.Event()
         self._lock = threading.RLock()
         self._stream_thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -255,6 +380,7 @@ class AlpacaStreamingService:
         self._last_heartbeat_at: str | None = None
         self._last_heartbeat_monotonic = 0.0
         self._event_count = 0
+        self._kafka_published_count = 0
         self._replay_batch_number = 0
         self._replay_position = 0
         self._historical_date: str | None = None
@@ -280,7 +406,12 @@ class AlpacaStreamingService:
             DATA_DIRECTORY / f"{run_stem}_log_02_alpaca_stream.txt"
         )
         self._log_spark_path = (
-            DATA_DIRECTORY / f"{run_stem}_log_03_apache_spark.txt"
+            DATA_DIRECTORY / f"{run_stem}_log_04_apache_spark.txt"
+        )
+        self._kafka_log_path = (
+            KAFKA_MODULE.initialize_run(run_stem)
+            if KAFKA_MODULE is not None
+            else None
         )
         self._streaming_path = self._run_info_path
         ensure_data_directory()
@@ -327,6 +458,11 @@ class AlpacaStreamingService:
                     "log_controller_file": self._log_handler_path.name,
                     "log_alpaca_file": self._log_alpaca_path.name,
                     "log_spark_file": self._log_spark_path.name,
+                    "kafka_log_file": (
+                        self._kafka_log_path.name
+                        if self._kafka_log_path is not None
+                        else None
+                    ),
                     "universe": self._universe_metadata,
                     "console_schema_version": 3,
                 },
@@ -391,6 +527,7 @@ class AlpacaStreamingService:
             self._status = "Finalizando"
             self._end_reason = end_reason
             self._stop_event.set()
+            self._pipeline_ready.set()
             self._add_log(f"{self._mode} | detención solicitada: {end_reason}")
             loop = self._loop
             task = self._task
@@ -410,6 +547,16 @@ class AlpacaStreamingService:
         self._join_threads()
         if not self.is_running():
             self._finish("Detenido", end_reason)
+
+    def fail(self, error: str) -> None:
+        """Finalizo el RUN con error y libero sus recursos."""
+
+        self._finish("Error", "startup_error", error)
+
+    def release_pipeline(self) -> None:
+        """Habilito la publicación cuando Kafka y Spark están preparados."""
+
+        self._pipeline_ready.set()
 
     def is_active(self) -> bool:
         """Indico si el RUN sigue aceptando heartbeats."""
@@ -455,6 +602,11 @@ class AlpacaStreamingService:
                 "log_controller_file": self._log_handler_path.name,
                 "log_alpaca_file": self._log_alpaca_path.name,
                 "log_spark_file": self._log_spark_path.name,
+                "kafka_log_file": (
+                    self._kafka_log_path.name
+                    if self._kafka_log_path is not None
+                    else None
+                ),
                 "is_active": self.is_active(),
             }
 
@@ -626,13 +778,15 @@ class AlpacaStreamingService:
 
         if not events:
             return
+        while not self._pipeline_ready.wait(0.1):
+            if self._stop_event.is_set():
+                return
         with self._lock:
             ensure_data_directory()
             stream_records = []
             for event in events:
-                stream_records.append(
-                    ("event", event.to_record(self._run_id))
-                )
+                record = event.to_record(self._run_id)
+                stream_records.append(("event", record))
             self._events.extend(events)
             self._event_count += len(events)
             self._market_timestamp = events[-1].timestamp
@@ -652,6 +806,14 @@ class AlpacaStreamingService:
                 f"REPLAY | lote emitido={self._replay_batch_number} | operaciones={trade_count} | cotizaciones={quote_count} | total_emitidos={self._event_count}"
             )
             self._append_state_locked()
+            if KAFKA_MODULE is not None:
+                KAFKA_MODULE.publish_events(
+                    self._run_id,
+                    [record for _, record in stream_records],
+                )
+                self._kafka_published_count += len(stream_records)
+                if SPARK_MODULE is not None:
+                    SPARK_MODULE.confirm_kafka_publication(self._run_id)
 
     def _replay_cached_file(self, historical_path: Path) -> None:
         """Reproduzco una caché completa usando lotes acotados."""
@@ -771,6 +933,9 @@ class AlpacaStreamingService:
     ) -> None:
         """Agrego un evento al JSONL sin sobrescribir el historial."""
 
+        while not self._pipeline_ready.wait(0.1):
+            if self._stop_event.is_set():
+                return
         with self._lock:
             record = event.to_record(self._run_id)
             with self._historical_path.open("a", encoding="utf-8") as event_file:
@@ -787,6 +952,19 @@ class AlpacaStreamingService:
             if replay_position is not None:
                 self._replay_position = replay_position
             self._append_state_locked()
+            if KAFKA_MODULE is not None:
+                try:
+                    KAFKA_MODULE.publish_event(self._run_id, record)
+                    self._kafka_published_count += 1
+                    if SPARK_MODULE is not None:
+                        SPARK_MODULE.confirm_kafka_publication(self._run_id)
+                except Exception as error:
+                    self._finish(
+                        "Error",
+                        "kafka_error",
+                        f"No se pudo publicar el evento en Kafka: {error}",
+                    )
+                    return
 
     def _set_status(self, status: str, error: str | None) -> None:
         """Actualizo y persisto el estado transitorio de la conexión."""
@@ -870,6 +1048,11 @@ class AlpacaStreamingService:
             console_file.write(persisted_line + "\n")
             console_file.flush()
             os.fsync(console_file.fileno())
+        append_console_buffer(
+            self._run_id,
+            "controller" if console_name == "log" else console_name,
+            persisted_line,
+        )
 
     def _append_run_info_locked(
         self,
@@ -1379,14 +1562,14 @@ def get_run_file(run_id: str, file_kind: str) -> Path:
         "data": "data_alpaca.jsonl",
         "handler": "log_01_controller.txt",
         "info": "run_info.jsonl",
-        "spark": "log_03_apache_spark.txt",
+        "spark": "log_04_apache_spark.txt",
         "trades": "data_alpaca.jsonl",
     }
     path = DATA_DIRECTORY / f"{run_id}_{suffixes[file_kind]}"
     legacy_suffixes = {
         "alpaca": "log_alpaca.txt",
         "handler": "log_handler.txt",
-        "spark": "log_04_apache_spark.txt",
+        "spark": "log_03_apache_spark.txt",
     }
     if file_kind in legacy_suffixes and not path.exists():
         legacy_path = DATA_DIRECTORY / (
@@ -1408,9 +1591,12 @@ def read_console_delta(
     if (
         record_limit is not None and record_limit <= 0
     ) or not path.exists():
-        return lines, next_offset, False
+        return lines, 0, False
     try:
         with path.open("rb") as console_file:
+            file_size = console_file.seek(0, os.SEEK_END)
+            if next_offset > file_size:
+                next_offset = 0
             console_file.seek(next_offset)
             while record_limit is None or len(lines) < record_limit:
                 raw_line = console_file.readline()
@@ -1418,9 +1604,8 @@ def read_console_delta(
                     break
                 next_offset = console_file.tell()
                 lines.append(raw_line.decode("utf-8").rstrip("\r\n"))
-            file_size = console_file.seek(0, os.SEEK_END)
     except (OSError, UnicodeDecodeError):
-        return [], byte_offset, False
+        return [], 0, False
     return lines, next_offset, next_offset < file_size
 
 def read_console_tail(

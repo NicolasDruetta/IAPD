@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 _ACTIVE_SERVICE: Any = None
-HEARTBEAT_TIMEOUT_SECONDS = 30
+HEARTBEAT_TIMEOUT_SECONDS = 300
 _MANAGER_LOCK = threading.RLock()
 _STREAMING_MODULE: Any = None
 _SUPERVISOR_THREAD: threading.Thread | None = None
@@ -51,7 +51,13 @@ def append_spark_checkpoint(
                 1,
             )[2]
             with spark_path.open("a", encoding="utf-8") as spark_file:
-                spark_file.write(f"[#{previous_number + 1}] {line}\n")
+                persisted_line = f"[#{previous_number + 1}] {line}"
+                spark_file.write(persisted_line + "\n")
+            streaming_module.append_console_buffer(
+                run_id,
+                "spark",
+                persisted_line,
+            )
 
 def ensure_spark_console_records(
     run_id: str | None,
@@ -64,6 +70,13 @@ def ensure_spark_console_records(
     service = get_active_service()
     if service is not None and service.get_snapshot()["run_id"] == run_id:
         service.ensure_spark_console_records(console_lines)
+
+def fail_active_run(error: str) -> None:
+    """Finalizo con error el RUN activo cuando falla su inicialización."""
+
+    service = get_active_service()
+    if service is not None:
+        service.fail(error)
 
 def get_active_service() -> Any:
     """Devuelvo el servicio Alpaca administrado por el controlador."""
@@ -187,6 +200,15 @@ def register_heartbeat(run_id: str) -> bool:
 
     service = get_active_service()
     return service.heartbeat(run_id) if service is not None else False
+
+def release_active_pipeline(run_id: str) -> bool:
+    """Habilito el primer lote cuando las consultas del RUN están preparadas."""
+
+    service = get_active_service()
+    if service is None or service.get_snapshot()["run_id"] != run_id:
+        return False
+    service.release_pipeline()
+    return True
 
 def release_active_service(service: Any) -> None:
     """Libero el RUN terminado para permitir una nueva ejecución."""

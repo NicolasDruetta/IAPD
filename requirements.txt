@@ -1,5 +1,6 @@
 # Requiere Python 3.15
 certifi==2026.10.23
+kafka-python-ng==2.2.3
 pyspark==4.2.0
 streamlit==1.66.1
 websockets==17.3

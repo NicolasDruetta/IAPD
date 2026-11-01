@@ -184,13 +184,12 @@ número disponible y no se crean archivos anticipadamente para etapas futuras.
 
 ## 12. Organización de archivos generados
 
-Dentro de `/app/data/` se mantienen únicamente `historical/` y `streaming/`.
-Cada RUN nuevo genera exactamente un JSONL en `historical/` y otro JSONL en
-`streaming/`, con el mismo nombre base identificable por fecha, hora,
-milisegundos y UUID. No se generan metadata, logs ni archivos auxiliares
-separados dentro de `/app/data/`. Los archivos temporales de procesamiento se
-ubican directamente en el almacenamiento temporal del contenedor y se limpian
-por ejecución.
+Dentro de `/app/data/` se mantienen `historical/`, `streaming/`, los archivos
+JSONL y TXT de cada RUN, los Parquet procesados y los checkpoints de
+Structured Streaming. Cada RUN nuevo conserva los JSONL y TXT existentes con
+el mismo nombre base identificable por fecha, hora, milisegundos y UUID. Los
+archivos temporales de procesamiento se ubican directamente en el
+almacenamiento temporal del contenedor y se limpian por ejecución.
 
 ## 13. Logging operativo
 

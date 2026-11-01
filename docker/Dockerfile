@@ -27,6 +27,12 @@ COPY requirements.txt ./requirements.txt
 RUN python -m pip install --no-cache-dir --upgrade pip \
     && python -m pip install --no-cache-dir -r requirements.txt
 
+RUN mkdir -p /opt/spark-ivy /opt/spark-jars \
+    && PYSPARK_SUBMIT_ARGS="--conf spark.jars.ivy=/opt/spark-ivy --packages org.apache.spark:spark-sql-kafka-0-10_2.13:4.2.0 pyspark-shell" \
+        python -c "from pyspark.sql import SparkSession; SparkSession.builder.master('local[1]').getOrCreate().stop()" \
+    && find /opt/spark-ivy -type f -name '*.jar' \
+        -exec cp {} /opt/spark-jars/ \;
+
 COPY main.py ./main.py
 COPY pages ./pages
 COPY assets ./assets

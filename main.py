@@ -12,8 +12,8 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 ALL_SYMBOLS_OPTION = "Todos los símbolos del S&P 500"
-BIG_7SEVEN_SYMBOLS = ("AAPL", "AMZN", "GOOGL", "META", "MSFT", "NVDA", "TSLA")
-BIG_SEVEN_OPTION = "Big Seven del S&P 500: " + ", ".join(BIG_7SEVEN_SYMBOLS)
+MAGNIFICENT_7_SYMBOLS = ("AAPL", "AMZN", "GOOGL", "META", "MSFT", "NVDA", "TSLA")
+MAGNIFICENT_7_OPTION = "Las 7 magníficas: " + ", ".join(MAGNIFICENT_7_SYMBOLS)
 
 CONSOLE_TRANSFER_BATCH_SIZE = 256
 LOG_CONSOLE_COMPONENT = st.components.v2.component(
@@ -56,8 +56,8 @@ LOG_CONSOLE_COMPONENT = st.components.v2.component(
                 consoleElement.value += suffix;
             }
             const visibleLines = consoleElement.value.split("\\n");
-            if (visibleLines.length > 1000) {
-                consoleElement.value = visibleLines.slice(-1000).join("\\n");
+            if (visibleLines.length > 200) {
+                consoleElement.value = visibleLines.slice(-200).join("\\n");
             }
             state.appliedCursor = cursorEnd;
             state.lastBatchId = data.batch_id;
@@ -81,13 +81,13 @@ TOP_LIQUID_OPTION = "Top 20 más líquidas del S&P 500"
 TOP_VOLUME_OPTION = "Top 20 con más volumen del S&P 500"
 SYMBOL_GROUPS = {
     ALL_SYMBOLS_OPTION: ("*",),
-    BIG_SEVEN_OPTION: BIG_7SEVEN_SYMBOLS,
+    MAGNIFICENT_7_OPTION: MAGNIFICENT_7_SYMBOLS,
     TOP_LIQUID_OPTION: (),
     TOP_VOLUME_OPTION: (),
 }
 SYMBOL_OPTIONS = (
     ALL_SYMBOLS_OPTION,
-    BIG_SEVEN_OPTION,
+    MAGNIFICENT_7_OPTION,
     TOP_LIQUID_OPTION,
     TOP_VOLUME_OPTION,
 )
@@ -202,6 +202,8 @@ def initialize_state() -> None:
         st.session_state.start_pending = False
     if "start_operation" not in st.session_state:
         st.session_state.start_operation = None
+    if "start_error" not in st.session_state:
+        st.session_state.start_error = None
     if "stop_pending" not in st.session_state:
         st.session_state.stop_pending = False
     if "console_states" not in st.session_state:
@@ -246,6 +248,10 @@ def load_page_module(module_name: str) -> ModuleType:
                 active_service is not None
                 and active_service.is_active()
             )
+            or (
+                module_name == "04_apache_spark"
+                and _has_active_spark_query(cached_module)
+            )
         ):
             return cached_module
         sys.modules.pop(module_name, None)
@@ -266,11 +272,38 @@ def load_page_module(module_name: str) -> ModuleType:
         raise
     return module
 
+def _has_active_spark_query(module: ModuleType) -> bool:
+    """Consulto Spark sin propagar errores de conexión a la interfaz."""
+
+    try:
+        return bool(
+            getattr(module, "has_active_query", lambda: False)()
+        )
+    except Exception:
+        return False
+
 def mark_start_pending() -> None:
     """Marco que el usuario acaba de solicitar el inicio."""
 
     st.session_state.start_requested = True
     st.session_state.start_pending = True
+    st.session_state.start_error = None
+
+def handle_start_error(
+    error: Exception,
+    controller_module: ModuleType,
+    spark_module: ModuleType,
+    run_id: str | None,
+) -> None:
+    """Finalizo el RUN y conservo el error visible tras un fallo de inicio."""
+
+    if run_id is not None:
+        spark_module.stop_streaming(run_id)
+    controller_module.fail_active_run(str(error))
+    st.session_state.start_pending = False
+    st.session_state.start_operation = None
+    st.session_state.alpaca_run_id = None
+    st.session_state.start_error = str(error)
 
 def start_run_in_background(
     operation: dict[str, Any],
@@ -308,6 +341,7 @@ def render_log_console(
     has_more: bool = False,
     initial_load: bool = False,
     placeholder: bool = False,
+    resync: bool = False,
 ) -> None:
     """Muestro y actualizo incrementalmente una consola de registros."""
 
@@ -321,46 +355,47 @@ def render_log_console(
         "initial_load": initial_load,
         "lines": lines,
         "placeholder": placeholder,
-        "reset": initial_load and cursor_start == 0,
+        "reset": (initial_load and cursor_start == 0) or resync,
         "run_key": run_key,
     }
     LOG_CONSOLE_COMPONENT(
         data=payload,
         default={"need_more": None},
-        height=420,
+        height=250,
         key=console_id,
         on_need_more_change=lambda: None,
     )
 
-def render_console_download_button(
+def get_console_buffer_view(
+    streaming_module: ModuleType,
+    run_id: str | None,
+    console_name: str,
     console_path: Path | None,
-    console_id: str,
-    run_id: str,
-) -> None:
-    """Muestro el botón pequeño para descargar el TXT completo."""
+    console_state: dict[str, Any],
+    clear_consoles: bool,
+) -> tuple[list[str], int, int, bool, bool]:
+    """Obtengo la vista incremental desde el buffer visual acotado."""
 
-    default_names = {
-        "alpaca-log-console": "log_02_alpaca_stream.txt",
-        "execution-log-console": "log_01_controller.txt",
-        "spark-log-console": "log_03_apache_spark.txt",
-    }
-    file_exists = console_path is not None and console_path.exists()
-    file_name = (
-        console_path.name
-        if console_path is not None
-        else default_names[console_id]
+    cursor_start = int(console_state["cursor"])
+    initial_load = not console_state["initialized"]
+    if clear_consoles or run_id is None or console_path is None:
+        console_state["initialized"] = True
+        if clear_consoles:
+            console_state["cursor"] = 0
+            console_state["line_number"] = 0
+        return [], 0 if clear_consoles else cursor_start, 0 if clear_consoles else cursor_start, initial_load, False
+    lines, cursor_end, total, resync = streaming_module.read_console_buffer(
+        run_id,
+        console_name,
+        console_path,
+        cursor_start,
+        initial_load,
     )
-    st.download_button(
-        "↓",
-        data=console_path.read_bytes() if file_exists else b"",
-        file_name=file_name,
-        mime="text/plain",
-        key=f"download-{console_id}-{run_id}",
-        help="Descargar log completo",
-        disabled=not file_exists,
-        type="secondary",
-        width="content",
-    )
+    console_state["initialized"] = True
+    console_state["cursor"] = cursor_end
+    console_state["line_number"] = total
+    display_cursor_start = 0 if initial_load or resync else cursor_start
+    return lines, display_cursor_start, cursor_end, initial_load, resync
 
 def render_volume_chart(rows: list[dict[str, Any]]) -> None:
     """Muestro el gráfico con el acumulado confirmado por Spark."""
@@ -499,8 +534,17 @@ def render_streaming() -> None:
 
     controller_module = load_page_module("01_controller")
     streaming_module = load_page_module("02_alpaca_stream")
-    spark_module = load_page_module("03_apache_spark")
+    kafka_module = load_page_module("03_apache_kafka")
+    spark_module = load_page_module("04_apache_spark")
     controller_module.configure_streaming_module(streaming_module)
+    streaming_module.configure_kafka_module(kafka_module)
+    streaming_module.configure_spark_module(spark_module)
+    kafka_module.configure_console_buffer(
+        streaming_module.append_console_buffer,
+    )
+    spark_module.configure_console_buffer(
+        streaming_module.append_console_buffer,
+    )
     snapshot = controller_module.get_run_snapshot()
     previous_run_active = st.session_state.rendered_run_active
     active_run_id = snapshot["run_id"] if snapshot["is_active"] else None
@@ -518,9 +562,9 @@ def render_streaming() -> None:
         manual_symbols = [
             symbol
             for symbol in snapshot["symbols"]
-            if symbol in BIG_7SEVEN_SYMBOLS
+            if symbol in MAGNIFICENT_7_SYMBOLS
         ]
-        if tuple(manual_symbols) == BIG_7SEVEN_SYMBOLS:
+        if tuple(manual_symbols) == MAGNIFICENT_7_SYMBOLS:
             default_option = SYMBOL_OPTIONS[1]
     st.subheader("Símbolos")
     symbols_col, actions_col = st.columns(
@@ -591,7 +635,7 @@ def render_streaming() -> None:
             or not streaming_module.ALPACA_SECRET_KEY
         ):
             st.session_state.start_pending = False
-            st.error(
+            st.session_state.start_error = (
                 "Completá ALPACA_API_KEY y ALPACA_SECRET_KEY en pages/02_alpaca_stream.py."
             )
         else:
@@ -622,23 +666,39 @@ def render_streaming() -> None:
                 if operation["error"] is not None:
                     st.session_state.start_pending = False
                     st.session_state.start_operation = None
-                    st.error(str(operation["error"]))
+                    st.session_state.start_error = str(operation["error"])
                 else:
                     service = operation["service"]
-                    st.session_state.alpaca_run_id = service.get_snapshot()[
-                        "run_id"
-                    ]
-                    controller_module.register_heartbeat(
-                        st.session_state.alpaca_run_id
-                    )
-                    st.session_state.start_pending = False
-                    st.session_state.start_operation = None
-                    snapshot = controller_module.get_run_snapshot()
+                    run_id = service.get_snapshot()["run_id"]
+                    try:
+                        st.session_state.alpaca_run_id = run_id
+                        controller_module.register_heartbeat(run_id)
+                        kafka_module.ensure_topic()
+                        spark_module.start_streaming(
+                            run_id,
+                            service.get_snapshot()["mode"],
+                        )
+                        service.release_pipeline()
+                        st.session_state.start_pending = False
+                        st.session_state.start_operation = None
+                        snapshot = controller_module.get_run_snapshot()
+                    except Exception as error:
+                        handle_start_error(
+                            error,
+                            controller_module,
+                            spark_module,
+                            run_id,
+                        )
+                        snapshot = controller_module.get_run_snapshot()
 
     if stop_clicked or st.session_state.stop_pending:
         st.session_state.stop_pending = False
+        spark_module.stop_streaming(snapshot.get("run_id"))
         controller_module.stop_active_run("manual_stop")
         snapshot = controller_module.get_run_snapshot()
+
+    if st.session_state.start_error:
+        st.error(st.session_state.start_error)
 
     if (
         previous_run_active
@@ -713,70 +773,49 @@ def render_streaming() -> None:
             "Error": "Error.",
         }.get(snapshot["status"], f"{snapshot['status']}.")
         last_execution_notice = f"Datos de la **última ejecución:** {last_execution_text}. **Duración:** {elapsed_text}. **{completion_text}** | **Modo:** {history_mode}. | **RUN:** {history_run_id}."
-        st.info(last_execution_notice)
         if snapshot["error"]:
             st.error(snapshot["error"])
+        automatic_stop_messages = {
+            "heartbeat_timeout": "La ejecución se detuvo automáticamente porque la interfaz dejó de enviar señales de actividad durante 5 minutos.",
+            "process_restart": "La ejecución se detuvo automáticamente porque se reinició el proceso de la aplicación.",
+            "process_shutdown": "La ejecución se detuvo automáticamente porque se cerró el proceso de la aplicación.",
+        }
+        automatic_stop_reason = snapshot.get("end_reason")
+        automatic_stop_message = automatic_stop_messages.get(
+            automatic_stop_reason,
+        )
+        if automatic_stop_message and automatic_stop_reason != "manual_stop":
+            st.error(automatic_stop_message)
+        st.info(last_execution_notice)
 
     run_id = snapshot["run_id"]
     if clear_consoles and not snapshot["is_active"]:
         run_id = None
-    spark_checkpoint = controller_module.get_spark_checkpoint(run_id)
-    processed_events = int(
-        (spark_checkpoint or {}).get("processed_events", 0)
-    )
-    spark_events = controller_module.get_events_after(
-        run_id,
-        processed_events,
-    )
-    spark_result = spark_module.process_events(
-        spark_events,
-        run_id=run_id,
-        checkpoint=spark_checkpoint,
-    )
-    spark_console_lines = list(spark_result["logs"])
-    if spark_result["rows"]:
-        spark_console_lines.append("")
-        spark_console_lines.append("Resultados por símbolo:")
-        spark_console_lines.extend(
-            "{symbol} | operaciones={operations} | cotizaciones={quotes} | volumen={volume}".format(
-                symbol=row["symbol"],
-                operations=row["operations"],
-                quotes=row.get("quotes", 0),
-                volume=row["total_volume"] or 0,
+    if run_id is not None and snapshot["is_active"]:
+        try:
+            kafka_module.ensure_topic()
+            spark_module.start_streaming(run_id, snapshot["mode"])
+            controller_module.release_active_pipeline(run_id)
+        except Exception as error:
+            handle_start_error(
+                error,
+                controller_module,
+                spark_module,
+                run_id,
             )
-            for row in spark_result["rows"]
-        )
-    if spark_result.get("checkpoint") is not None:
-        controller_module.append_spark_checkpoint(
-            run_id,
-            spark_result["checkpoint"],
-            spark_console_lines,
-        )
-    else:
-        controller_module.ensure_spark_console_records(
-            run_id,
-            spark_console_lines,
-        )
-    console_header_columns = st.columns(
-        3,
-        gap="small",
-        vertical_alignment="top",
-        wrap=True,
-    )
-    with console_header_columns[0]:
-        st.subheader("1. Log del controlador")
-    with console_header_columns[1]:
-        st.subheader("2. Log de descarga de datos (Alpaca)")
-    with console_header_columns[2]:
-        st.subheader("3. Log de procesamiento (Spark)")
-        st.write("[Spark Master ↗](http://localhost:8080/)")
-    execution_column, alpaca_column, spark_column = st.columns(
-        3,
+            snapshot = controller_module.get_run_snapshot()
+            run_id = None
+    elif run_id is not None:
+        spark_module.stop_streaming(run_id)
+    spark_result = spark_module.get_snapshot(run_id)
+    execution_column, alpaca_column = st.columns(
+        2,
         gap="small",
         vertical_alignment="top",
         wrap=True,
     )
     with execution_column:
+        st.subheader("1. Log del controlador (Python clásico)")
         execution_state = get_console_state(
             "execution-log-console",
             run_id,
@@ -803,42 +842,23 @@ def render_streaming() -> None:
             and run_id
             else streaming_path
         )
+        kafka_path = kafka_module.get_log_path(run_id) if run_id else None
         spark_path = (
             streaming_module.get_run_file(run_id, "spark")
             if snapshot.get("console_schema_version", 0) >= 3
             and run_id
             else streaming_path
         )
-        if execution_path is not None:
-            if clear_consoles:
-                cursor_start, next_cursor, has_more = 0, 0, False
-                initial_load, log_lines = True, []
-            else:
-                cursor_start = int(execution_state["cursor"])
-                initial_load = not execution_state["initialized"]
-                log_lines, next_cursor, has_more = (
-                    streaming_module.read_console_delta(
-                        execution_path,
-                        0 if initial_load else cursor_start,
-                        None
-                        if initial_load
-                        else CONSOLE_TRANSFER_BATCH_SIZE,
-                    )
-                )
-        else:
-            cursor_start = 0 if clear_consoles else int(
-                execution_state["cursor"]
+        log_lines, cursor_start, next_cursor, initial_load, resync = (
+            get_console_buffer_view(
+                streaming_module,
+                run_id,
+                "controller",
+                execution_path,
+                execution_state,
+                clear_consoles,
             )
-            initial_load = True if clear_consoles else not execution_state[
-                "initialized"
-            ]
-            log_lines, next_cursor, has_more = [], cursor_start, False
-        execution_state["initialized"] = True
-        execution_state["cursor"] = next_cursor
-        if clear_consoles:
-            execution_state["line_number"] = 0
-        else:
-            execution_state["line_number"] += len(log_lines)
+        )
         log_display_lines = [
             format_presentation_log_line(line)
             for line in log_lines
@@ -851,64 +871,61 @@ def render_streaming() -> None:
             log_display_lines = [
                 "Log del controlador | esperando actividad."
             ]
-        counter_col, download_col = st.columns([10, 1], gap="small")
-        with counter_col:
+        with st.container(
+            horizontal=True,
+            horizontal_alignment="distribute",
+            vertical_alignment="center",
+        ):
             st.caption(
                 f"Eventos recibidos: {execution_state['line_number']}"
             )
-        with download_col:
-            with st.container(horizontal=True, horizontal_alignment="right"):
-                render_console_download_button(
-                    streaming_module.get_run_file(run_id, "handler")
-                    if run_id is not None else None,
-                    "execution-log-console",
-                    run_id or "no-run",
-                )
+            st.download_button(
+                "↓",
+                data=execution_path.read_bytes()
+                if execution_path is not None and execution_path.exists()
+                else b"",
+                file_name=(
+                    execution_path.name
+                    if execution_path is not None
+                    else "log_01_controller.txt"
+                ),
+                mime="text/plain",
+                key=f"download-execution-log-console-{run_id or 'no-run'}",
+                help="Descargar log completo",
+                disabled=execution_path is None or not execution_path.exists(),
+                type="secondary",
+                width="content",
+            )
         render_log_console(
             log_display_lines,
             "execution-log-console",
             cursor_end=next_cursor,
             cursor_start=cursor_start,
-            has_more=has_more,
+            has_more=False,
             initial_load=initial_load,
             placeholder=is_placeholder,
+            resync=resync,
         )
     with alpaca_column:
+        st.subheader("2. Log de descarga de datos (Alpaca)")
         alpaca_state = get_console_state(
             "alpaca-log-console",
             run_id,
         )
-        initial_load = not alpaca_state["initialized"]
-        if alpaca_path is not None:
-            if clear_consoles:
-                events, next_cursor, has_more = [], 0, False
-                initial_load = True
-            else:
-                events, next_cursor, has_more = (
-                    streaming_module.read_console_delta(
-                        alpaca_path,
-                        0 if initial_load else int(alpaca_state["cursor"]),
-                        None
-                        if initial_load
-                        else CONSOLE_TRANSFER_BATCH_SIZE,
-                    )
-                )
-        else:
-            next_cursor = 0 if clear_consoles else alpaca_state["cursor"]
-            events, has_more = [], False
-            initial_load = True if clear_consoles else initial_load
-        alpaca_state["initialized"] = True
+        events, cursor_start, next_cursor, initial_load, resync = (
+            get_console_buffer_view(
+                streaming_module,
+                run_id,
+                "alpaca",
+                alpaca_path,
+                alpaca_state,
+                clear_consoles,
+            )
+        )
         event_lines = [
             format_presentation_log_line(line)
             for line in events
         ]
-        cursor_start = int(alpaca_state["cursor"])
-        alpaca_state["cursor"] = next_cursor
-        if clear_consoles:
-            alpaca_state["line_number"] = 0
-            cursor_start = 0
-        else:
-            alpaca_state["line_number"] += len(event_lines)
         has_event_lines = bool(event_lines)
         is_placeholder = (
             not event_lines
@@ -918,83 +935,155 @@ def render_streaming() -> None:
             event_lines = [
                 "Alpaca | esperando cotizaciones u operaciones."
             ]
-        counter_col, download_col = st.columns([10, 1], gap="small")
-        with counter_col:
+        with st.container(
+            horizontal=True,
+            horizontal_alignment="distribute",
+            vertical_alignment="center",
+        ):
             st.caption(f"Eventos recibidos: {alpaca_state['line_number']}")
-        with download_col:
-            with st.container(horizontal=True, horizontal_alignment="right"):
-                render_console_download_button(
-                    streaming_module.get_run_file(run_id, "alpaca")
-                    if run_id is not None else None,
-                    "alpaca-log-console",
-                    run_id or "no-run",
-                )
+            st.download_button(
+                "↓",
+                data=alpaca_path.read_bytes()
+                if alpaca_path is not None and alpaca_path.exists()
+                else b"",
+                file_name=(
+                    alpaca_path.name
+                    if alpaca_path is not None
+                    else "log_02_alpaca_stream.txt"
+                ),
+                mime="text/plain",
+                key=f"download-alpaca-log-console-{run_id or 'no-run'}",
+                help="Descargar log completo",
+                disabled=alpaca_path is None or not alpaca_path.exists(),
+                type="secondary",
+                width="content",
+            )
         render_log_console(
             event_lines,
             "alpaca-log-console",
             cursor_end=next_cursor,
             cursor_start=cursor_start,
-            has_more=has_more,
+            has_more=False,
             initial_load=initial_load,
             placeholder=is_placeholder,
+            resync=resync,
         )
         if not has_event_lines and status == "Conectado":
             st.info(
                 "Conexión activa; todavía no se recibieron cotizaciones u operaciones. El mercado puede estar cerrado."
             )
 
-    with spark_column:
-        spark_state = get_console_state("spark-log-console", run_id)
-        initial_load = not spark_state["initialized"]
-        cursor_start = int(spark_state["cursor"])
-        if clear_consoles:
-            spark_records, next_cursor, has_more = [], 0, False
-            cursor_start, initial_load = 0, True
-        else:
-            spark_records, next_cursor, has_more = (
-                streaming_module.read_console_delta(
-                    spark_path,
-                    0 if initial_load else cursor_start,
-                    None
-                    if initial_load
-                    else CONSOLE_TRANSFER_BATCH_SIZE,
-                )
-                if spark_path is not None
-                else ([], cursor_start, False)
+    kafka_column, spark_column = st.columns(
+        2,
+        gap="small",
+        vertical_alignment="top",
+        wrap=True,
+    )
+    with kafka_column:
+        st.subheader("3. Log de publicación (Kafka)")
+        kafka_state = get_console_state("kafka-log-console", run_id)
+        kafka_records, cursor_start, next_cursor, initial_load, resync = (
+            get_console_buffer_view(
+                streaming_module,
+                run_id,
+                "kafka",
+                kafka_path,
+                kafka_state,
+                clear_consoles,
             )
-        spark_state["cursor"] = next_cursor
-        if clear_consoles:
-            spark_state["line_number"] = 0
-        else:
-            spark_state["line_number"] += len(spark_records)
-        spark_lines = [
+        )
+        kafka_lines = [
             format_presentation_log_line(line)
-            for line in spark_records
+            for line in kafka_records
         ]
-        spark_cursor_end = next_cursor
+        kafka_cursor_end = next_cursor
+        kafka_state["initialized"] = True
+        is_placeholder = not kafka_lines and kafka_state["line_number"] == 0
+        if is_placeholder:
+            kafka_lines = ["Kafka | esperando eventos para publicar."]
+        with st.container(
+            horizontal=True,
+            horizontal_alignment="distribute",
+            vertical_alignment="center",
+        ):
+            st.caption(f"Registros publicados: {kafka_state['line_number']}")
+            st.download_button(
+                "↓",
+                data=kafka_path.read_bytes()
+                if kafka_path is not None and kafka_path.exists()
+                else b"",
+                file_name=(
+                    kafka_path.name
+                    if kafka_path is not None
+                    else "log_03_apache_kafka.txt"
+                ),
+                mime="text/plain",
+                key=f"download-kafka-log-console-{run_id or 'no-run'}",
+                help="Descargar log completo",
+                disabled=kafka_path is None or not kafka_path.exists(),
+                type="secondary",
+                width="content",
+            )
+        render_log_console(
+            kafka_lines,
+            "kafka-log-console",
+            cursor_end=kafka_cursor_end,
+            cursor_start=cursor_start,
+            has_more=False,
+            initial_load=initial_load,
+            placeholder=is_placeholder,
+            resync=resync,
+        )
+    with spark_column:
+        st.subheader("4. Log de procesamiento (Spark) - [Spark Master ↗](http://localhost:8080/)")
+        spark_state = get_console_state("spark-log-console", run_id)
+        spark_records, cursor_start, next_cursor, initial_load, resync = (
+            get_console_buffer_view(
+                streaming_module,
+                run_id,
+                "spark",
+                spark_path,
+                spark_state,
+                clear_consoles,
+            )
+        )
+        spark_lines = [format_presentation_log_line(line) for line in spark_records]
         spark_state["initialized"] = True
         is_placeholder = not spark_lines and spark_state["line_number"] == 0
         if is_placeholder:
             spark_lines = ["Spark | esperando eventos bursátiles."]
-        counter_col, download_col = st.columns([10, 1], gap="small")
-        with counter_col:
-            st.caption(f"Eventos recibidos: {spark_state['line_number']}")
-        with download_col:
-            with st.container(horizontal=True, horizontal_alignment="right"):
-                render_console_download_button(
-                    streaming_module.get_run_file(run_id, "spark")
-                    if run_id is not None else None,
-                    "spark-log-console",
-                    run_id or "no-run",
-                )
+        with st.container(
+            horizontal=True,
+            horizontal_alignment="distribute",
+            vertical_alignment="center",
+        ):
+            st.caption(f"Registros procesados: {spark_state['line_number']}")
+            st.download_button(
+                "↓",
+                data=spark_path.read_bytes()
+                if spark_path is not None and spark_path.exists()
+                else b"",
+                file_name=(
+                    spark_path.name
+                    if spark_path is not None
+                    else "log_04_apache_spark.txt"
+                ),
+                mime="text/plain",
+                key=f"download-spark-log-console-{run_id or 'no-run'}",
+                help="Descargar log completo",
+                disabled=spark_path is None or not spark_path.exists(),
+                type="secondary",
+                width="content",
+            )
         render_log_console(
             spark_lines,
             "spark-log-console",
-            cursor_end=spark_cursor_end,
+            cursor_end=next_cursor,
             cursor_start=cursor_start,
-            has_more=has_more,
+            has_more=False,
             initial_load=initial_load,
             placeholder=is_placeholder,
+            resync=resync,
         )
     if clear_consoles:
         st.session_state.start_requested = False

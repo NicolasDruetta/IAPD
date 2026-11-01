@@ -11,4 +11,4 @@ services:
       - --server.runOnSave=true
     volumes:
       - .:/app
-      - lab-data:/app/data
+      - ./data:/app/data
