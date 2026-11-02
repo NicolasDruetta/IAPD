@@ -35,14 +35,11 @@ CALENDAR_API_URLS = (
     "https://api.alpaca.markets/v2/calendar",
     "https://paper-api.alpaca.markets/v2/calendar",
 )
-DATA_DIRECTORY = Path(__file__).resolve().parent.parent / "data"
 KAFKA_MODULE: Any = None
 SPARK_MODULE: Any = None
 HISTORICAL_QUOTES_API_URL = "https://data.alpaca.markets/v2/stocks/quotes"
 HISTORICAL_TRADES_API_URL = "https://data.alpaca.markets/v2/stocks/trades"
-HISTORICAL_DIRECTORY = DATA_DIRECTORY / "historical"
 HTTP_MAX_RETRIES = 5
-LEGACY_STREAMING_DIRECTORY = DATA_DIRECTORY / "streaming"
 MARKET_CLOCK_URLS = (
     "https://api.alpaca.markets/v2/clock",
     "https://paper-api.alpaca.markets/v2/clock",
@@ -65,7 +62,6 @@ SP500_INDEX_URL = (
     "https://www.spglobal.com/spdji/en/indices/equity/sp-500/"
 )
 STOCK_SNAPSHOTS_URL = "https://data.alpaca.markets/v2/stocks/snapshots"
-TEMPORARY_DIRECTORY = Path("/tmp")
 _CONSOLE_BUFFER_LOCK = threading.RLock()
 _CONSOLE_BUFFERS: dict[tuple[str, str], deque[str]] = {}
 _CONSOLE_BUFFER_SEEDED: set[tuple[str, str]] = set()
@@ -397,16 +393,16 @@ class AlpacaStreamingService:
             "log": 0,
             "spark": 0,
         }
-        self._historical_path = DATA_DIRECTORY / f"{run_stem}_02_alpaca_data.jsonl"
-        self._run_info_path = DATA_DIRECTORY / f"{run_stem}_00_run_info.jsonl"
+        self._historical_path = DATA_DIRECTORY / "runs" / f"{run_stem}_02_alpaca_data.jsonl"
+        self._run_info_path = DATA_DIRECTORY / "runs" / f"{run_stem}_00_run_info.jsonl"
         self._log_handler_path = (
-            DATA_DIRECTORY / f"{run_stem}_01_controller_log.txt"
+            DATA_DIRECTORY / "runs" / f"{run_stem}_01_controller_log.txt"
         )
         self._log_alpaca_path = (
-            DATA_DIRECTORY / f"{run_stem}_02_alpaca_log.txt"
+            DATA_DIRECTORY / "runs" / f"{run_stem}_02_alpaca_log.txt"
         )
         self._log_spark_path = (
-            DATA_DIRECTORY / f"{run_stem}_04_spark_log.txt"
+            DATA_DIRECTORY / "runs" / f"{run_stem}_04_spark_log.txt"
         )
         self._kafka_log_path = (
             KAFKA_MODULE.initialize_run(run_stem)
@@ -1190,9 +1186,9 @@ def download_historical_dataset(
     def cleanup_run_temporary_files() -> None:
         """Elimino solo los temporales pertenecientes al RUN actual."""
 
-        if not TEMPORARY_DIRECTORY.exists():
+        if not Path("/tmp").exists():
             return
-        for path in TEMPORARY_DIRECTORY.glob(f"{temporary_prefix}*"):
+        for path in Path("/tmp").glob(f"{temporary_prefix}*"):
             if path.is_file():
                 path.unlink(missing_ok=True)
 
@@ -1316,7 +1312,7 @@ def download_historical_dataset(
                     for symbol, source_events in page_events.items():
                         handle_key = (symbol, event_type)
                         if handle_key not in handles:
-                            group_path = TEMPORARY_DIRECTORY / (
+                            group_path = Path("/tmp") / (
                                 f"{temporary_prefix}"
                                 f"{date_text}_{feed}_"
                                 f"{window_start.strftime('%Y%m%dT%H%M%SZ')}_"
@@ -1521,6 +1517,7 @@ def ensure_data_directory() -> None:
     """Creo el directorio de registros cuando todavía no existe."""
 
     DATA_DIRECTORY.mkdir(parents=True, exist_ok=True)
+    (DATA_DIRECTORY / "runs").mkdir(parents=True, exist_ok=True)
 
 def event_from_record(
     record: dict[str, Any],
@@ -1563,7 +1560,7 @@ def get_run_file(run_id: str, file_kind: str) -> Path:
         "spark": "04_spark_log.txt",
         "trades": "02_alpaca_data.jsonl",
     }
-    path = DATA_DIRECTORY / f"{run_id}_{suffixes[file_kind]}"
+    path = DATA_DIRECTORY / "runs" / f"{run_id}_{suffixes[file_kind]}"
     legacy_suffixes = {
         "alpaca": ("log_02_alpaca_stream.txt", "log_alpaca.txt"),
         "data": ("data_alpaca.jsonl",),
@@ -1668,33 +1665,6 @@ def get_historical_dataset(
         progress_callback(
             f"REPLAY | sesión bursátil seleccionada={date_text} | apertura={format_presentation_timestamp(session_start)} | cierre={format_presentation_timestamp(session_end)}"
         )
-    cache_path = historical_file_path(date_text, symbols, feed)
-    metadata = read_json(cache_path.with_suffix(".json"))
-    if (
-        metadata is not None
-        and metadata.get("complete") is True
-        and metadata.get("ordered_by_timestamp") is True
-        and int(metadata.get("event_count", 0)) > 0
-        and set(metadata.get("event_types", [])) >= {"TRADE", "QUOTE"}
-        and metadata.get("regular_session") is True
-        and metadata.get("session_start") == session_start.isoformat()
-        and metadata.get("session_end") == session_end.isoformat()
-        and cache_path.exists()
-    ):
-        historical_path.unlink(missing_ok=True)
-        try:
-            os.link(cache_path, historical_path)
-        except OSError:
-            if progress_callback is not None:
-                progress_callback(
-                    "REPLAY | caché válida no reutilizada sin duplicar; se descargará el RUN"
-                )
-        else:
-            if progress_callback is not None:
-                progress_callback(
-                    f"REPLAY | caché local reutilizada sin duplicar: {date_text} | eventos={metadata['event_count']}"
-                )
-            return historical_path, date_text, False
     event_count, streamed = download_historical_dataset(
         api_key,
         api_secret,
@@ -1720,13 +1690,11 @@ def get_latest_metadata() -> dict[str, Any] | None:
 
     if not DATA_DIRECTORY.exists():
         return None
-    new_paths = list(DATA_DIRECTORY.glob("*_run_info.jsonl"))
-    legacy_paths = list(LEGACY_STREAMING_DIRECTORY.glob("*.jsonl"))
-    candidates = new_paths + legacy_paths
+    new_paths = list((DATA_DIRECTORY / "runs").glob("*_00_run_info.jsonl"))
+    root_paths = list(DATA_DIRECTORY.glob("*_00_run_info.jsonl"))
+    candidates = new_paths + root_paths
     if candidates:
         latest_path = max(candidates, key=lambda path: path.stat().st_mtime_ns)
-        if latest_path.parent == LEGACY_STREAMING_DIRECTORY:
-            return read_streaming_state(latest_path)
         latest_stat = latest_path.stat()
         cache_key = str(latest_path)
         cached = _LATEST_METADATA_CACHE.get(cache_key)
@@ -2109,15 +2077,11 @@ def resolve_automatic_symbols(
     }
 
 def get_recent_events(run_id: str | None) -> list[AlpacaEvent]:
-    """Mantengo compatibilidad con llamadas externas sin cargar el historial."""
+    """Leo un lote reciente del RUN sin cargar todo el historial."""
 
     if run_id is None:
         return []
-    return read_event_delta(
-        LEGACY_STREAMING_DIRECTORY / f"{run_id}.jsonl",
-        0,
-        256,
-    )[0]
+    return read_events_after(run_id, 0)[:256]
 
 def read_event_delta(
     path: Path,
@@ -2255,18 +2219,6 @@ def build_run_stem(started_at: str) -> str:
     ).astimezone(PRESENTATION_TIMEZONE)
     return timestamp.strftime("%Y%m%d_%H%M%S")
 
-def historical_file_path(
-    date_text: str,
-    symbols: list[str],
-    feed: str,
-) -> Path:
-    """Genero una ruta estable para un histórico de símbolos y fecha."""
-
-    symbol_text = "-".join(sorted(symbols))
-    return HISTORICAL_DIRECTORY / (
-        f"trades_{date_text}_{feed}_{symbol_text}.jsonl"
-    )
-
 def mark_interrupted_run() -> dict[str, Any] | None:
     """Reconozco un RUN activo que pertenecía a otro proceso Python."""
 
@@ -2284,11 +2236,7 @@ def mark_interrupted_run() -> dict[str, Any] | None:
         else metadata.get("streaming_file")
     )
     if isinstance(run_id, str) and isinstance(streaming_file, str):
-        streaming_path = (
-            DATA_DIRECTORY / streaming_file
-            if int(metadata.get("console_schema_version", 0)) >= 3
-            else LEGACY_STREAMING_DIRECTORY / streaming_file
-        )
+        streaming_path = DATA_DIRECTORY / "runs" / streaming_file
         sequence = int(metadata.get("sequence", 0))
         append_stream_record(
             streaming_path,
@@ -2565,11 +2513,7 @@ def read_recent_events(run_id: str) -> list[AlpacaEvent]:
     legacy_data_path = DATA_DIRECTORY / f"{run_id}_alpaca_trades.jsonl"
     if data_path.exists() or legacy_data_path.exists():
         return read_events_after(run_id, 0)[:256]
-    return read_event_delta(
-        LEGACY_STREAMING_DIRECTORY / f"{run_id}.jsonl",
-        0,
-        256,
-    )[0]
+    return []
 
 def read_events_after(
     run_id: str,
@@ -2601,29 +2545,7 @@ def read_events_after(
         except OSError:
             return []
         return events
-    events_path = LEGACY_STREAMING_DIRECTORY / f"{run_id}.jsonl"
-    if not events_path.exists():
-        return []
-    events: list[AlpacaEvent] = []
-    event_index = 0
-    try:
-        with events_path.open(encoding="utf-8") as stream_file:
-            for line in stream_file:
-                try:
-                    record = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if (
-                    not isinstance(record, dict)
-                    or record.get("record_type") != "event"
-                ):
-                    continue
-                if event_index >= processed_count:
-                    events.append(event_from_record(record))
-                event_index += 1
-    except OSError:
-        return []
-    return events
+    return []
 
 def read_spark_checkpoint(path: Path) -> dict[str, Any] | None:
     """Leo el último acumulado confirmado por Spark."""

@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import threading
+import time
 import urllib.request
 
 from pathlib import Path
@@ -14,8 +15,6 @@ from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.functions import col, count, from_json, sum as sum_rows, when
 from pyspark.sql.types import DoubleType, StringType, StructField, StructType
 
-DATA_DIRECTORY = Path(__file__).resolve().parent.parent / "data"
-SPARK_DIRECTORY = DATA_DIRECTORY / "spark"
 KAFKA_BOOTSTRAP_SERVERS = os.getenv(
     "KAFKA_BOOTSTRAP_SERVERS",
     "kafka:9092",
@@ -23,18 +22,21 @@ KAFKA_BOOTSTRAP_SERVERS = os.getenv(
 KAFKA_TOPIC = os.getenv("KAFKA_TOPIC", "iapd-market-events")
 SPARK_APP_NAME = "Apache Big Data Lab"
 SPARK_BLOCK_MANAGER_PORT = os.getenv("SPARK_BLOCK_MANAGER_PORT", "4042")
+SPARK_DRAIN_POLL_SECONDS = 0.5
+SPARK_DRAIN_TIMEOUT_SECONDS = 30
 SPARK_DRIVER_HOST = os.getenv("SPARK_DRIVER_HOST", "spark-driver")
 SPARK_DRIVER_PORT = os.getenv("SPARK_DRIVER_PORT", "4041")
 SPARK_MASTER = os.getenv("SPARK_MASTER_URL", "spark://spark-master:7077")
 SPARK_MASTER_UI_URL = os.getenv("SPARK_MASTER_UI_URL", "http://spark-master:8080")
 SPARK_UI_URL = os.getenv("SPARK_UI_URL", "http://localhost:4040")
-_RUN_STATES: dict[str, dict[str, Any]] = {}
-_STARTING_RUNS: set[str] = set()
+_CONSOLE_BUFFER_SINK: Any = None
+_FINALIZATION_LOGGED_RUNS: set[str] = set()
 _KAFKA_CONFIRMED_RUNS: set[str] = set()
+_RUN_STATES: dict[str, dict[str, Any]] = {}
 _SPARK_ERROR: str | None = None
 _SPARK_LOCK = threading.RLock()
 _SPARK_SESSION: SparkSession | None = None
-_CONSOLE_BUFFER_SINK: Any = None
+_STARTING_RUNS: set[str] = set()
 
 EVENT_SCHEMA = StructType(
     [
@@ -55,7 +57,7 @@ EVENT_SCHEMA = StructType(
 def append_spark_log(run_id: str, message: str) -> None:
     """Agrego un mensaje agrupado al TXT persistente de Spark."""
 
-    path = DATA_DIRECTORY / f"{run_id}_04_spark_log.txt"
+    path = DATA_DIRECTORY / "runs" / f"{run_id}_04_spark_log.txt"
     with _SPARK_LOCK:
         path.parent.mkdir(parents=True, exist_ok=True)
         sequence = 0
@@ -100,7 +102,9 @@ def get_checkpoint(run_id: str | None) -> dict[str, Any] | None:
         return None
     path = DATA_DIRECTORY / f"{run_id}_spark_checkpoint.json"
     if not path.exists():
-        legacy_path = DATA_DIRECTORY / f"{run_id}_00_run_info.jsonl"
+        legacy_path = DATA_DIRECTORY / "runs" / f"{run_id}_00_run_info.jsonl"
+        if not legacy_path.exists():
+            legacy_path = DATA_DIRECTORY / f"{run_id}_00_run_info.jsonl"
         if not legacy_path.exists():
             legacy_path = DATA_DIRECTORY / f"{run_id}_run_info.jsonl"
         if not legacy_path.exists():
@@ -434,6 +438,7 @@ def process_batch(run_id: str, data_frame: DataFrame, batch_id: int) -> None:
         return
     with _SPARK_LOCK:
         state = _RUN_STATES[run_id]
+        state["input_events"] += input_count
         kafka_confirmed = state["kafka_confirmed"]
     if not kafka_confirmed.wait(timeout=30):
         raise RuntimeError(
@@ -476,7 +481,7 @@ def process_batch(run_id: str, data_frame: DataFrame, batch_id: int) -> None:
         )
         return
     parquet_path = str(
-        SPARK_DIRECTORY / f"{run_id}_04_spark_data.parquet.parts"
+        DATA_DIRECTORY / "spark" / f"{run_id}_04_spark_data.parquet.parts"
     )
     processed_frame.write.mode("append").parquet(parquet_path)
     grouped = (
@@ -515,6 +520,7 @@ def process_batch(run_id: str, data_frame: DataFrame, batch_id: int) -> None:
             f"EDA | batch_id={batch_id} | volumen_trade_por_accion={top_rows}",
         ]
         state["checkpoint"] = {
+            "input_events": state["input_events"],
             "run_id": run_id,
             "processed_events": state["processed_events"],
             "batch_number": state["batch_number"],
@@ -529,13 +535,13 @@ def process_batch(run_id: str, data_frame: DataFrame, batch_id: int) -> None:
 def consolidate_parquet(run_id: str) -> bool:
     """Consolido los archivos Parquet temporales en un único archivo final."""
 
-    parts_path = SPARK_DIRECTORY / f"{run_id}_04_spark_data.parquet.parts"
+    parts_path = DATA_DIRECTORY / "spark" / f"{run_id}_04_spark_data.parquet.parts"
     legacy_parts_path = (
         DATA_DIRECTORY / f"{run_id}_04_spark_data.parquet.parts"
     )
-    final_path = DATA_DIRECTORY / f"{run_id}_04_spark_data.parquet"
-    temporary_path = SPARK_DIRECTORY / f"{run_id}_04_spark_data.parquet.tmp"
-    checkpoint_path = SPARK_DIRECTORY / f"{run_id}_04_spark_checkpoint"
+    final_path = DATA_DIRECTORY / "runs" / f"{run_id}_04_spark_data.parquet"
+    temporary_path = DATA_DIRECTORY / "spark" / f"{run_id}_04_spark_data.parquet.tmp"
+    checkpoint_path = DATA_DIRECTORY / "spark" / f"{run_id}_04_spark_checkpoint"
     legacy_checkpoint_path = (
         DATA_DIRECTORY / f"{run_id}_04_spark_checkpoint"
     )
@@ -555,7 +561,8 @@ def consolidate_parquet(run_id: str) -> bool:
     if spark is None:
         raise RuntimeError("Spark no está disponible para consolidar Parquet.")
     processed_frame = spark.read.parquet(str(parts_path))
-    if processed_frame.limit(1).count() == 0:
+    processed_count = processed_frame.count()
+    if processed_count == 0:
         return False
     processed_frame.coalesce(1).write.mode("overwrite").parquet(
         str(temporary_path)
@@ -565,7 +572,16 @@ def consolidate_parquet(run_id: str) -> bool:
         raise RuntimeError(
             f"La consolidación de {run_id} generó {len(part_files)} archivos."
         )
-    os.replace(part_files[0], final_path)
+    (DATA_DIRECTORY / "runs").mkdir(parents=True, exist_ok=True)
+    temporary_file = DATA_DIRECTORY / "runs" / f".{final_path.name}.tmp"
+    shutil.copy2(part_files[0], temporary_file)
+    os.replace(temporary_file, final_path)
+    verified_count = spark.read.parquet(str(final_path)).count()
+    if verified_count != processed_count:
+        raise RuntimeError(
+            f"La verificación de {run_id} esperaba {processed_count} "
+            f"registros y obtuvo {verified_count}."
+        )
     shutil.rmtree(temporary_path)
     shutil.rmtree(parts_path)
     shutil.rmtree(checkpoint_path, ignore_errors=True)
@@ -598,6 +614,12 @@ def start_streaming(run_id: str, mode: str = "LIVE") -> None:
             "logs": [],
             "monitor_signature": "",
             "kafka_confirmed": threading.Event(),
+            "input_events": int(
+                checkpoint.get(
+                    "input_events",
+                    checkpoint.get("processed_events", 0),
+                )
+            ),
             "processed_events": int(checkpoint.get("processed_events", 0)),
             "processed_events_by_type": dict(checkpoint.get("processed_events_by_type", {})),
             "query": None,
@@ -616,8 +638,8 @@ def start_streaming(run_id: str, mode: str = "LIVE") -> None:
             _RUN_STATES[run_id]["logs"] = [error_message]
         append_spark_log(run_id, error_message)
         raise RuntimeError(error_message)
-    SPARK_DIRECTORY.mkdir(parents=True, exist_ok=True)
-    checkpoint_path = str(SPARK_DIRECTORY / f"{run_id}_04_spark_checkpoint")
+    (DATA_DIRECTORY / "spark").mkdir(parents=True, exist_ok=True)
+    checkpoint_path = str(DATA_DIRECTORY / "spark" / f"{run_id}_04_spark_checkpoint")
     try:
         events = (
             spark.readStream.format("kafka")
@@ -646,28 +668,123 @@ def start_streaming(run_id: str, mode: str = "LIVE") -> None:
         _STARTING_RUNS.discard(run_id)
         _RUN_STATES[run_id]["query"] = query
 
-def stop_streaming(run_id: str | None, finalize: bool = False) -> None:
-    """Detengo la consulta Structured Streaming del RUN indicado."""
+def stop_streaming(
+    run_id: str | None,
+    finalize: bool = False,
+    expected_events: int | None = None,
+) -> bool:
+    """Detengo, dreno y consolido la consulta Structured Streaming."""
 
     if run_id is None:
-        return
+        return False
     with _SPARK_LOCK:
         state = _RUN_STATES.get(run_id)
         query = state.get("query") if state else None
+    if finalize and expected_events is not None and query is not None:
+        deadline = time.monotonic() + SPARK_DRAIN_TIMEOUT_SECONDS
+        while time.monotonic() < deadline:
+            with _SPARK_LOCK:
+                processed_events = int(
+                    (_RUN_STATES.get(run_id) or {}).get(
+                        "input_events",
+                        0,
+                    )
+                )
+            if processed_events >= expected_events:
+                break
+            if not query.isActive:
+                break
+            time.sleep(SPARK_DRAIN_POLL_SECONDS)
+        with _SPARK_LOCK:
+            processed_events = int(
+                (_RUN_STATES.get(run_id) or {}).get(
+                    "input_events",
+                    0,
+                )
+            )
+        difference = expected_events - processed_events
+        with _SPARK_LOCK:
+            processed_output = int(
+                (_RUN_STATES.get(run_id) or {}).get(
+                    "processed_events",
+                    0,
+                )
+            )
+        append_spark_log(
+            run_id,
+            "STOP | drenaje | "
+            f"esperados={expected_events} | recibidos={processed_events} | "
+            f"procesados={processed_output} | "
+            f"duplicados={processed_events - processed_output} | "
+            f"diferencia_recepcion={difference}",
+        )
+        if difference != 0:
+            append_spark_log(
+                run_id,
+                "ERROR | STOP | drenaje incompleto; conservo temporales "
+                "y checkpoint.",
+            )
+            return False
+    elif finalize and expected_events is not None and query is None:
+        error_message = (
+            "ERROR | STOP | no hay consulta Spark activa para drenar "
+            "eventos pendientes; conservo temporales y checkpoint."
+        )
+        with _SPARK_LOCK:
+            path = DATA_DIRECTORY / "runs" / f"{run_id}_04_spark_log.txt"
+            already_logged = False
+            if path.exists():
+                try:
+                    already_logged = any(
+                        error_message in line
+                        for line in path.read_text(encoding="utf-8").splitlines()
+                    )
+                except OSError:
+                    already_logged = False
+            should_log = (
+                run_id not in _FINALIZATION_LOGGED_RUNS
+                and not already_logged
+            )
+            _FINALIZATION_LOGGED_RUNS.add(run_id)
+        if should_log:
+            append_spark_log(run_id, error_message)
+        return False
     if query is not None:
         try:
             if query.isActive:
                 query.stop()
-        except Exception:
-            if not finalize:
-                return
+        except Exception as error:
+            append_spark_log(run_id, f"ERROR | STOP | cierre Spark: {error}")
+            if finalize:
+                return False
+            return True
         try:
             query.awaitTermination(10)
-        except Exception:
-            if not finalize:
-                return
+        except Exception as error:
+            append_spark_log(
+                run_id,
+                f"ERROR | STOP | espera de cierre Spark: {error}",
+            )
+            if finalize:
+                return False
+            return True
     if finalize:
-        consolidate_parquet(run_id)
+        try:
+            consolidated = consolidate_parquet(run_id)
+        except Exception as error:
+            append_spark_log(
+                run_id,
+                f"ERROR | consolidación Parquet: {error}",
+            )
+            return False
+        if not consolidated:
+            append_spark_log(
+                run_id,
+                "ERROR | consolidación Parquet no completada; "
+                "conservo temporales y checkpoint.",
+            )
+        return consolidated
+    return True
 
 def top_volume_rows(totals: dict[str, float]) -> list[dict[str, Any]]:
     """Ordeno el ranking acumulado por volumen exclusivamente TRADE."""

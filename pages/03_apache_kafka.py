@@ -10,7 +10,6 @@ from kafka.admin import NewTopic
 from pathlib import Path
 from typing import Any
 
-DATA_DIRECTORY = Path(__file__).resolve().parent.parent / "data"
 KAFKA_BOOTSTRAP_SERVERS = os.getenv(
     "KAFKA_BOOTSTRAP_SERVERS",
     "kafka:9092",
@@ -70,7 +69,7 @@ def close_producer() -> None:
 def get_log_path(run_id: str) -> Path:
     """Obtengo la ruta del log Kafka correspondiente al RUN."""
 
-    return DATA_DIRECTORY / f"{run_id}_03_kafka_log.txt"
+    return DATA_DIRECTORY / "runs" / f"{run_id}_03_kafka_log.txt"
 
 def get_producer() -> KafkaProducer:
     """Obtengo el productor Kafka único del proceso Streamlit."""
@@ -164,7 +163,9 @@ def publish_events(run_id: str, events: list[dict[str, Any]]) -> None:
         event.get("event_type") == "QUOTE" for event in events
     )
     with _KAFKA_LOCK:
-        stats = _RUN_STATS.setdefault(run_id, {"total": 0})
+        stats = _RUN_STATS.setdefault(run_id, {"batch": 0, "total": 0})
+        stats["batch"] += 1
+        batch = int(stats["batch"])
         stats["total"] += len(events)
         total = int(stats["total"])
         should_log = (
@@ -186,7 +187,7 @@ def publish_events(run_id: str, events: list[dict[str, Any]]) -> None:
         )
         append_log(
             run_id,
-            f"KAFKA | lote={len(events)} | TRADE={trade_count} | QUOTE={quote_count} | total={total} | particiones={distribution} | confirmados={len(metadata)}",
+            f"KAFKA | lote={batch} | eventos={len(events)} | TRADE={trade_count} | QUOTE={quote_count} | total={total} | particiones={distribution} | confirmados={len(metadata)}",
         )
 
 atexit.register(close_producer)

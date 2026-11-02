@@ -12,10 +12,62 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 ALL_SYMBOLS_OPTION = "Todos los símbolos del S&P 500"
+DATA_DIRECTORY = Path(__file__).parent / "data"
 MAGNIFICENT_7_SYMBOLS = ("AAPL", "AMZN", "GOOGL", "META", "MSFT", "NVDA", "TSLA")
 MAGNIFICENT_7_OPTION = "Las 7 magníficas: " + ", ".join(MAGNIFICENT_7_SYMBOLS)
 
 CONSOLE_TRANSFER_BATCH_SIZE = 256
+EXECUTION_TIMER_COMPONENT = st.components.v2.component(
+    name="apache_big_data_lab.execution_timer",
+    html='<span class="execution-timer"></span>',
+    isolate_styles=False,
+    js="""
+    export default function ({ parentElement, data }) {
+        const timerElement = parentElement.querySelector(".execution-timer");
+        const state = parentElement.__executionTimerState || {
+            interval: null,
+            timerKey: null,
+        };
+        const formatElapsed = (startedAt, endedAt, active) => {
+            const started = Date.parse(startedAt || "");
+            if (Number.isNaN(started)) {
+                return "00:00:00";
+            }
+            const end = active ? Date.now() : Date.parse(endedAt || "");
+            const elapsed = Math.max(
+                0,
+                Math.floor(((Number.isNaN(end) ? Date.now() : end) - started) / 1000),
+            );
+            const hours = String(Math.floor(elapsed / 3600)).padStart(2, "0");
+            const minutes = String(Math.floor((elapsed % 3600) / 60)).padStart(2, "0");
+            const seconds = String(elapsed % 60).padStart(2, "0");
+            return `${hours}:${minutes}:${seconds}`;
+        };
+        const render = () => {
+            const elapsed = formatElapsed(
+                data.started_at,
+                data.ended_at,
+                data.active,
+            );
+            timerElement.textContent = data.active
+                ? data.prefix
+                    ? `${data.prefix} ${elapsed}.`
+                    : elapsed
+                : data.text;
+        };
+        if (state.timerKey !== data.timer_key) {
+            if (state.interval !== null) {
+                clearInterval(state.interval);
+            }
+            state.timerKey = data.timer_key;
+            state.interval = data.active ? setInterval(render, 1000) : null;
+        }
+        render();
+        parentElement.__executionTimerState = state;
+        return () => {};
+    }
+    """,
+)
 LOG_CONSOLE_COMPONENT = st.components.v2.component(
     name="apache_big_data_lab.log_console",
     html=(
@@ -261,6 +313,7 @@ def load_page_module(module_name: str) -> ModuleType:
     if spec is None or spec.loader is None:
         raise ImportError("No se pudo cargar el módulo de Alpaca")
     module = importlib.util.module_from_spec(spec)
+    module.DATA_DIRECTORY = DATA_DIRECTORY
     module.PRESENTATION_TIMEZONE = PRESENTATION_TIMEZONE
     module.format_presentation_timestamp = format_presentation_timestamp
     sys.modules[module_name] = module
@@ -551,7 +604,6 @@ def render_streaming() -> None:
         streaming_module.append_console_buffer,
     )
     snapshot = controller_module.get_run_snapshot()
-    previous_run_active = st.session_state.rendered_run_active
     active_run_id = snapshot["run_id"] if snapshot["is_active"] else None
     session_run_id = st.session_state.alpaca_run_id
     if session_run_id is None and active_run_id is not None:
@@ -698,16 +750,14 @@ def render_streaming() -> None:
 
     if stop_clicked or st.session_state.stop_pending:
         st.session_state.stop_pending = False
-        spark_module.stop_streaming(snapshot.get("run_id"))
+        run_id = snapshot.get("run_id")
         controller_module.stop_active_run("manual_stop")
         snapshot = controller_module.get_run_snapshot()
-
-    if (
-        previous_run_active
-        and not snapshot["is_active"]
-        and snapshot["run_id"] is not None
-    ):
-        st.session_state.console_states = {}
+        spark_module.stop_streaming(
+            run_id,
+            finalize=True,
+            expected_events=snapshot.get("event_count"),
+        )
 
     elapsed_text = format_elapsed_time(
         snapshot["started_at"],
@@ -746,12 +796,26 @@ def render_streaming() -> None:
     with status_col:
         with st.container(border=True):
             st.caption("Estado")
-            st.text(status_text)
+            if snapshot["is_active"]:
+                EXECUTION_TIMER_COMPONENT(
+                    data={
+                        "active": True,
+                        "ended_at": snapshot["ended_at"],
+                        "started_at": snapshot["started_at"],
+                        "text": status_text,
+                        "timer_key": snapshot["run_id"],
+                        "prefix": "Ejecutando...",
+                    },
+                    key="execution-timer",
+                )
+            else:
+                st.text(status_text)
 
     if snapshot["error"] and not st.session_state.start_pending:
         st.error("**Error:** " + (" ".join(str(snapshot["error"]).split())))
 
     st.divider()
+    st.write("")
 
     last_execution_notice = None
     if (
@@ -791,8 +855,6 @@ def render_streaming() -> None:
         st.info(last_execution_notice)
 
     run_id = snapshot["run_id"]
-    if clear_consoles and not snapshot["is_active"]:
-        run_id = None
     if run_id is not None and snapshot["is_active"]:
         try:
             kafka_module.ensure_topic()
@@ -810,7 +872,8 @@ def render_streaming() -> None:
     elif run_id is not None:
         spark_module.stop_streaming(
             run_id,
-            finalize=snapshot.get("status") == "Completado",
+            finalize=snapshot.get("status") in {"Completado", "Detenido"},
+            expected_events=snapshot.get("event_count"),
         )
     spark_result = spark_module.get_snapshot(run_id)
     execution_column, alpaca_column = st.columns(
@@ -827,11 +890,7 @@ def render_streaming() -> None:
         )
         streaming_file = snapshot.get("streaming_file")
         streaming_path = (
-            (
-                streaming_module.DATA_DIRECTORY
-                if snapshot.get("console_schema_version", 0) >= 3
-                else streaming_module.LEGACY_STREAMING_DIRECTORY
-            ) / streaming_file
+            DATA_DIRECTORY / "runs" / streaming_file
             if streaming_file
             else None
         )
@@ -1104,6 +1163,8 @@ def render_streaming() -> None:
         st.session_state.start_requested = False
 
     st.divider()
+    st.write("")
+    
     if last_execution_notice:
         st.info(last_execution_notice)
     with st.container(border=True):
@@ -1123,7 +1184,20 @@ def render_streaming() -> None:
             st.text(market_time)
         with elapsed_col:
             st.caption("Tiempo transcurrido de ejecución")
-            st.text(elapsed_text)
+            if snapshot["is_active"]:
+                EXECUTION_TIMER_COMPONENT(
+                    data={
+                        "active": True,
+                        "ended_at": snapshot["ended_at"],
+                        "prefix": "",
+                        "started_at": snapshot["started_at"],
+                        "text": elapsed_text,
+                        "timer_key": snapshot["run_id"],
+                    },
+                    key="execution-timer-elapsed",
+                )
+            else:
+                st.text(elapsed_text)
     st.subheader("Top 10 de acciones por volumen negociado")
 
     render_volume_chart(spark_result.get("top_volume", []))

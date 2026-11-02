@@ -153,9 +153,7 @@ def get_spark_checkpoint(run_id: str | None) -> dict[str, Any] | None:
     new_path = streaming_module.get_run_file(run_id, "info")
     if new_path.exists():
         return streaming_module.read_spark_checkpoint(new_path)
-    return streaming_module.read_spark_checkpoint(
-        streaming_module.LEGACY_STREAMING_DIRECTORY / f"{run_id}.jsonl"
-    )
+    return None
 
 def mark_interrupted_run() -> dict[str, Any] | None:
     """Reconozco un RUN activo que pertenecía a otro proceso Python."""
@@ -175,11 +173,7 @@ def mark_interrupted_run() -> dict[str, Any] | None:
         else metadata.get("streaming_file")
     )
     if isinstance(run_id, str) and isinstance(streaming_file, str):
-        streaming_path = (
-            streaming_module.DATA_DIRECTORY / streaming_file
-            if int(metadata.get("console_schema_version", 0)) >= 3
-            else streaming_module.LEGACY_STREAMING_DIRECTORY / streaming_file
-        )
+        streaming_path = streaming_module.DATA_DIRECTORY / "runs" / streaming_file
         sequence = int(metadata.get("sequence", 0))
         streaming_module.append_stream_record(
             streaming_path,
