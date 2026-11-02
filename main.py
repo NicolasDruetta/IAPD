@@ -6,7 +6,7 @@ import streamlit as st
 import sys
 import threading
 
-from datetime import datetime, timezone, tzinfo
+from datetime import datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -215,11 +215,11 @@ def format_elapsed_time(
 def get_activity_chart_rows(
     streaming_module: ModuleType,
     run_id: str | None,
-) -> list[dict[str, Any]]:
-    """Leo eventos nuevos del JSONL y acumulo la actividad por segundo."""
+) -> tuple[list[dict[str, Any]], int]:
+    """Leo eventos nuevos y transformo los acumulados a la escala visual."""
 
     if run_id is None:
-        return []
+        return [], 1
     states = st.session_state.activity_chart_states
     state = states.setdefault(
         run_id,
@@ -231,7 +231,7 @@ def get_activity_chart_rows(
     )
     data_path = streaming_module.get_run_file(run_id, "data")
     if not data_path.exists():
-        return []
+        return [], 1
     try:
         if data_path.stat().st_size < state["offset"]:
             state.update({"counts": {}, "offset": 0, "pending": ""})
@@ -240,7 +240,7 @@ def get_activity_chart_rows(
             content = state["pending"] + data_file.read()
             state["offset"] = data_file.tell()
     except OSError:
-        return []
+        return [], 1
     lines = content.splitlines(keepends=True)
     if lines and not lines[-1].endswith(("\n", "\r")):
         state["pending"] = lines.pop()
@@ -264,15 +264,47 @@ def get_activity_chart_rows(
         ).isoformat()
         second_counts = state["counts"].setdefault(second, {})
         second_counts[event_type] = second_counts.get(event_type, 0) + 1
+    if not state["counts"]:
+        return [], 1
+    first_second = datetime.fromisoformat(min(state["counts"]))
+    last_second = datetime.fromisoformat(max(state["counts"]))
+    elapsed_seconds = (last_second - first_second).total_seconds()
+    if elapsed_seconds <= 30:
+        interval_seconds = 1
+    elif elapsed_seconds <= 120:
+        interval_seconds = 5
+    elif elapsed_seconds <= 900:
+        interval_seconds = 30
+    elif elapsed_seconds <= 3600:
+        interval_seconds = 60
+    else:
+        interval_seconds = 300
+    grouped_counts: dict[str, dict[str, int]] = {}
+    for second, event_counts in state["counts"].items():
+        timestamp = datetime.fromisoformat(second)
+        seconds_from_midnight = (
+            timestamp.hour * 3600
+            + timestamp.minute * 60
+            + timestamp.second
+        )
+        bucket_timestamp = timestamp - timedelta(
+            seconds=seconds_from_midnight % interval_seconds,
+        )
+        bucket = bucket_timestamp.isoformat()
+        bucket_counts = grouped_counts.setdefault(bucket, {})
+        for event_type, count in event_counts.items():
+            bucket_counts[event_type] = (
+                bucket_counts.get(event_type, 0) + count
+            )
     return [
         {
             "event_type": event_type,
             "events": count,
             "second": second,
         }
-        for second in sorted(state["counts"])
-        for event_type, count in sorted(state["counts"][second].items())
-    ]
+        for second in sorted(grouped_counts)
+        for event_type, count in sorted(grouped_counts[second].items())
+    ], interval_seconds
 
 def get_console_state(console_id: str, run_id: str | None) -> dict[str, Any]:
     """Obtengo el cursor visual independiente de cada consola y RUN."""
@@ -514,8 +546,11 @@ def get_console_buffer_view(
     display_cursor_start = 0 if initial_load or resync else cursor_start
     return lines, display_cursor_start, cursor_end, initial_load, resync
 
-def render_activity_chart(rows: list[dict[str, Any]]) -> None:
-    """Muestro la cantidad de operaciones y cotizaciones por minuto."""
+def render_activity_chart(
+    rows: list[dict[str, Any]],
+    interval_seconds: int,
+) -> None:
+    """Muestro la actividad bursátil con escala temporal adaptativa."""
 
     dark_mode = bool(st.session_state.get("dark_mode", False))
     chart_border_color = "#3b404d" if dark_mode else "#dfe3eb"
@@ -555,7 +590,11 @@ def render_activity_chart(rows: list[dict[str, Any]]) -> None:
             },
             "x": {
                 "axis": {
-                    "format": "%H:%M:%S",
+                    "format": (
+                        "%H:%M:%S"
+                        if interval_seconds < 60
+                        else "%H:%M"
+                    ),
                     "labelAngle": -45,
                     "labelOverlap": "greedy",
                 },
@@ -1330,7 +1369,10 @@ def render_streaming() -> None:
                 )
             else:
                 st.text(elapsed_text)
-    activity_rows = get_activity_chart_rows(streaming_module, run_id)
+    activity_rows, activity_interval = get_activity_chart_rows(
+        streaming_module,
+        run_id,
+    )
     volume_column, activity_column = st.columns(
         2,
         gap="small",
@@ -1340,8 +1382,8 @@ def render_streaming() -> None:
         st.subheader("Top 10 de acciones por volumen negociado")
         render_volume_chart(spark_result.get("top_volume", []))
     with activity_column:
-        st.subheader("Operaciones y cotizaciones por segundo")
-        render_activity_chart(activity_rows)
+        st.subheader("Actividad bursátil en el tiempo")
+        render_activity_chart(activity_rows, activity_interval)
 
 render_streaming_fragment = st.fragment(render_streaming, run_every="5s")
 render_streaming_fragment()
