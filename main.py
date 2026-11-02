@@ -1,6 +1,7 @@
 """Interfaz principal de Apache Big Data Lab."""
 
 import importlib.util
+import json
 import streamlit as st
 import sys
 import threading
@@ -211,6 +212,68 @@ def format_elapsed_time(
     minutes, seconds = divmod(remainder, 60)
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
+def get_activity_chart_rows(
+    streaming_module: ModuleType,
+    run_id: str | None,
+) -> list[dict[str, Any]]:
+    """Leo eventos nuevos del JSONL y acumulo la actividad por segundo."""
+
+    if run_id is None:
+        return []
+    states = st.session_state.activity_chart_states
+    state = states.setdefault(
+        run_id,
+        {
+            "counts": {},
+            "offset": 0,
+            "pending": "",
+        },
+    )
+    data_path = streaming_module.get_run_file(run_id, "data")
+    if not data_path.exists():
+        return []
+    try:
+        if data_path.stat().st_size < state["offset"]:
+            state.update({"counts": {}, "offset": 0, "pending": ""})
+        with data_path.open(encoding="utf-8") as data_file:
+            data_file.seek(state["offset"])
+            content = state["pending"] + data_file.read()
+            state["offset"] = data_file.tell()
+    except OSError:
+        return []
+    lines = content.splitlines(keepends=True)
+    if lines and not lines[-1].endswith(("\n", "\r")):
+        state["pending"] = lines.pop()
+    else:
+        state["pending"] = ""
+    for line in lines:
+        try:
+            record = json.loads(line)
+            timestamp = datetime.fromisoformat(
+                str(record["timestamp"]).replace("Z", "+00:00")
+            )
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            continue
+        event_type = record.get("event_type")
+        if event_type not in {"QUOTE", "TRADE"}:
+            continue
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+        second = timestamp.astimezone(PRESENTATION_TIMEZONE).replace(
+            microsecond=0,
+        ).isoformat()
+        second_counts = state["counts"].setdefault(second, {})
+        second_counts[event_type] = second_counts.get(event_type, 0) + 1
+    return [
+        {
+            "event_type": event_type,
+            "events": count,
+            "second": second,
+        }
+        for second in sorted(state["counts"])
+        for event_type, count in sorted(state["counts"][second].items())
+    ]
+
 def get_console_state(console_id: str, run_id: str | None) -> dict[str, Any]:
     """Obtengo el cursor visual independiente de cada consola y RUN."""
 
@@ -258,6 +321,8 @@ def initialize_state() -> None:
         st.session_state.stop_pending = False
     if "console_states" not in st.session_state:
         st.session_state.console_states = {}
+    if "activity_chart_states" not in st.session_state:
+        st.session_state.activity_chart_states = {}
 
 def load_custom_css() -> None:
     """Cargo los estilos visuales administrados en el archivo del proyecto."""
@@ -334,6 +399,7 @@ def _has_active_spark_query(module: ModuleType) -> bool:
 def mark_start_pending() -> None:
     """Marco que el usuario acaba de solicitar el inicio."""
 
+    st.session_state.activity_chart_states.clear()
     st.session_state.start_requested = True
     st.session_state.start_pending = True
 
@@ -444,6 +510,63 @@ def get_console_buffer_view(
     console_state["line_number"] = total
     display_cursor_start = 0 if initial_load or resync else cursor_start
     return lines, display_cursor_start, cursor_end, initial_load, resync
+
+def render_activity_chart(rows: list[dict[str, Any]]) -> None:
+    """Muestro la cantidad de operaciones y cotizaciones por minuto."""
+
+    dark_mode = bool(st.session_state.get("dark_mode", False))
+    chart_border_color = "#3b404d" if dark_mode else "#dfe3eb"
+    chart_text_color = "#ffffff" if dark_mode else "#2f3342"
+    events_encoding = {
+        "field": "events",
+        "title": "Cantidad de eventos",
+        "type": "quantitative",
+    }
+    if not rows:
+        events_encoding["axis"] = {"values": [0, 1]}
+        events_encoding["scale"] = {"domain": [0, 1]}
+    chart_spec = {
+        "background": "transparent",
+        "data": {"values": rows},
+        "height": 360,
+        "config": {
+            "axis": {
+                "domainColor": chart_border_color,
+                "gridColor": chart_border_color,
+                "labelColor": chart_text_color,
+                "titleColor": chart_text_color,
+                "tickColor": chart_border_color,
+            },
+            "legend": {
+                "labelColor": chart_text_color,
+                "titleColor": chart_text_color,
+            },
+            "view": {"stroke": chart_border_color},
+        },
+        "mark": {"point": True, "type": "line"},
+        "encoding": {
+            "color": {
+                "field": "event_type",
+                "title": "Tipo",
+                "type": "nominal",
+            },
+            "x": {
+                "axis": {
+                    "format": "%H:%M:%S",
+                    "labelAngle": -45,
+                    "labelOverlap": "greedy",
+                },
+                "field": "second",
+                "title": "Fecha y hora bursátil",
+                "type": "temporal",
+            },
+            "y": events_encoding,
+        },
+    }
+    st.vega_lite_chart(
+        spec=chart_spec,
+        use_container_width=True,
+    )
 
 def render_volume_chart(rows: list[dict[str, Any]]) -> None:
     """Muestro el gráfico con el acumulado confirmado por Spark."""
@@ -740,14 +863,14 @@ def render_streaming() -> None:
 
     if stop_clicked or st.session_state.stop_pending:
         st.session_state.stop_pending = False
+        st.session_state.start_requested = False
+        clear_consoles = False
+        for console_state in st.session_state.console_states.values():
+            console_state["initialized"] = False
         run_id = snapshot.get("run_id")
         controller_module.stop_active_run("manual_stop")
         snapshot = controller_module.get_run_snapshot()
-        spark_module.stop_streaming(
-            run_id,
-            finalize=True,
-            expected_events=snapshot.get("event_count"),
-        )
+        spark_module.stop_streaming(run_id)
 
     elapsed_text = format_elapsed_time(
         snapshot["started_at"],
@@ -848,7 +971,7 @@ def render_streaming() -> None:
             st.error(automatic_stop_message)
         st.info(last_execution_notice)
 
-    run_id = snapshot["run_id"]
+    run_id = None if st.session_state.start_pending else snapshot["run_id"]
     if run_id is not None and snapshot["is_active"]:
         try:
             kafka_module.ensure_topic()
@@ -866,8 +989,7 @@ def render_streaming() -> None:
     elif run_id is not None:
         spark_module.stop_streaming(
             run_id,
-            finalize=snapshot.get("status") in {"Completado", "Detenido"},
-            expected_events=snapshot.get("event_count"),
+            finalize=snapshot.get("status") == "Completado",
         )
     spark_result = spark_module.get_snapshot(run_id)
     execution_column, alpaca_column = st.columns(
@@ -1192,9 +1314,18 @@ def render_streaming() -> None:
                 )
             else:
                 st.text(elapsed_text)
-    st.subheader("Top 10 de acciones por volumen negociado")
-
-    render_volume_chart(spark_result.get("top_volume", []))
+    activity_rows = get_activity_chart_rows(streaming_module, run_id)
+    volume_column, activity_column = st.columns(
+        2,
+        gap="small",
+        vertical_alignment="top",
+    )
+    with volume_column:
+        st.subheader("Top 10 de acciones por volumen negociado")
+        render_volume_chart(spark_result.get("top_volume", []))
+    with activity_column:
+        st.subheader("Actividad bursátil en el tiempo")
+        render_activity_chart(activity_rows)
 
 render_streaming_fragment = st.fragment(render_streaming, run_every="5s")
 render_streaming_fragment()

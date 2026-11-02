@@ -714,7 +714,13 @@ class AlpacaStreamingService:
             except BaseException as error:
                 result_queue.put(error)
             finally:
-                batch_queue.put(None)
+                if self._stop_event.is_set():
+                    try:
+                        batch_queue.put_nowait(None)
+                    except queue.Full:
+                        pass
+                else:
+                    batch_queue.put(None)
 
         download_thread = threading.Thread(
             target=download,
@@ -725,7 +731,7 @@ class AlpacaStreamingService:
         streamed = False
         while True:
             batch = batch_queue.get()
-            if batch is None:
+            if batch is None or self._stop_event.is_set():
                 break
             streamed = True
             self._emit_replay_batch(batch)
@@ -774,6 +780,8 @@ class AlpacaStreamingService:
             if self._stop_event.is_set():
                 return
         with self._lock:
+            if self._stop_event.is_set():
+                return
             ensure_data_directory()
             stream_records = []
             for event in events:
@@ -929,6 +937,8 @@ class AlpacaStreamingService:
             if self._stop_event.is_set():
                 return
         with self._lock:
+            if self._stop_event.is_set():
+                return
             record = event.to_record(self._run_id)
             with self._historical_path.open("a", encoding="utf-8") as event_file:
                 event_file.write(json.dumps(record, ensure_ascii=False) + "\n")
