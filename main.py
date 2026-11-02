@@ -928,11 +928,12 @@ def render_streaming() -> None:
         presentation_market_timestamp = format_presentation_timestamp(
             market_timestamp,
         )
-        if presentation_market_timestamp == "-":
-            market_date = snapshot.get("historical_date") or "-"
-            market_time = "-"
-        else:
-            market_date, market_time = presentation_market_timestamp.split(" ", 1)
+        market_date = snapshot.get("historical_date") or "-"
+        market_time = (
+            presentation_market_timestamp.split(" ", 1)[1]
+            if presentation_market_timestamp != "-"
+            else "-"
+        )
     status = snapshot["status"]
     status_text = "Listo para ejecutar."
     if st.session_state.manual_stop_status:
@@ -949,12 +950,12 @@ def render_streaming() -> None:
     )
     with mode_col:
         with st.container(border=True):
-            st.caption("Modo")
-            st.text(snapshot["mode"] if snapshot["is_active"] else "-")
+            st.caption("Fecha de mercado")
+            st.text(market_date)
     with run_col:
         run_id = snapshot["run_id"] if snapshot["is_active"] else None
         with st.container(border=True):
-            st.caption("RUN")
+            st.caption("RUN ID")
             st.text(run_id if run_id else "-")
     with status_col:
         with st.container(border=True):
@@ -1207,11 +1208,6 @@ def render_streaming() -> None:
             placeholder=is_placeholder,
             resync=resync,
         )
-        if not has_event_lines and status == "Conectado":
-            st.info(
-                "Conexión activa; todavía no se recibieron cotizaciones u operaciones. El mercado puede estar cerrado."
-            )
-
     kafka_column, spark_column = st.columns(
         2,
         gap="small",
@@ -1348,7 +1344,7 @@ def render_streaming() -> None:
             time_col = st.container(width="stretch")
             elapsed_col = st.container(width="stretch")
         with date_col:
-            st.caption("Fecha analizada")
+            st.caption("Fecha de mercado analizada")
             st.text(market_date)
         with time_col:
             st.caption("Última hora procesada")

@@ -7,7 +7,7 @@ import time
 from typing import Any
 
 _ACTIVE_SERVICE: Any = None
-HEARTBEAT_TIMEOUT_SECONDS = 300
+HEARTBEAT_TIMEOUT_SECONDS = 900
 _MANAGER_LOCK = threading.RLock()
 _STREAMING_MODULE: Any = None
 _SUPERVISOR_THREAD: threading.Thread | None = None
@@ -106,7 +106,7 @@ def get_run_snapshot() -> dict[str, Any]:
         return service.get_snapshot()
     metadata = streaming_module.get_latest_metadata()
     if metadata is not None:
-        metadata.setdefault("mode", "LIVE")
+        metadata.setdefault("mode", "REPLAY")
         metadata.setdefault("universe", {"selection": "manual"})
         metadata.setdefault("replay_speed", 1.0)
         metadata.setdefault("replay_position", 0)
@@ -121,7 +121,7 @@ def get_run_snapshot() -> dict[str, Any]:
         "run_id": None,
         "symbols": [],
         "universe": {"selection": "manual", "symbols": []},
-        "mode": "LIVE",
+        "mode": "REPLAY",
         "replay_speed": 1.0,
         "status": "Listo para ejecutar",
         "error": None,
@@ -240,10 +240,6 @@ def start_run(
     with _MANAGER_LOCK:
         if _ACTIVE_SERVICE is not None and _ACTIVE_SERVICE.is_active():
             return _ACTIVE_SERVICE
-        selected_mode = streaming_module.get_market_mode(
-            api_key,
-            api_secret,
-        )
         if ranking is not None:
             resolved_symbols, universe_metadata = (
                 streaming_module.get_sp500_ranked_symbols(
@@ -277,7 +273,6 @@ def start_run(
                 run_id,
                 universe_metadata,
                 feed,
-                selected_mode,
                 replay_speed,
                 release_callback=release_active_service,
             )

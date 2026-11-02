@@ -1,6 +1,5 @@
 """Obtención de cotizaciones y operaciones bursátiles mediante Alpaca."""
 
-import asyncio
 import certifi
 import heapq
 import itertools
@@ -21,7 +20,6 @@ from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Callable
-from websockets.asyncio.client import ClientConnection, connect
 from zoneinfo import ZoneInfo
 
 ALPACA_API_KEY = "PKJQMFWVYH6PEXUKK34QAABOUW"
@@ -40,10 +38,6 @@ SPARK_MODULE: Any = None
 HISTORICAL_QUOTES_API_URL = "https://data.alpaca.markets/v2/stocks/quotes"
 HISTORICAL_TRADES_API_URL = "https://data.alpaca.markets/v2/stocks/trades"
 HTTP_MAX_RETRIES = 5
-MARKET_CLOCK_URLS = (
-    "https://api.alpaca.markets/v2/clock",
-    "https://paper-api.alpaca.markets/v2/clock",
-)
 MAX_HTTP_CONCURRENCY = 6
 NEW_YORK_TIMEZONE = ZoneInfo("America/New_York")
 RANKED_SYMBOL_COUNT = 20
@@ -263,7 +257,7 @@ class AlpacaEvent:
         event_type: str,
         price: float | None,
         size: float | None,
-        mode: str = "LIVE",
+        mode: str = "REPLAY",
         console_sequence: int | None = None,
         bid_price: float | None = None,
         bid_size: float | None = None,
@@ -344,7 +338,6 @@ class AlpacaStreamingService:
         run_stem: str,
         universe_metadata: dict[str, Any],
         feed: str = "iex",
-        mode: str = "LIVE",
         replay_speed: float = 1.0,
         release_callback: Callable[["AlpacaStreamingService"], None]
         | None = None,
@@ -357,7 +350,6 @@ class AlpacaStreamingService:
         self._symbols = symbols
         self._universe_metadata = universe_metadata
         self._feed = feed
-        self._mode = mode
         self._replay_speed = replay_speed
         self._release_callback = release_callback
         self._events: deque[AlpacaEvent] = deque()
@@ -365,9 +357,6 @@ class AlpacaStreamingService:
         self._pipeline_ready = threading.Event()
         self._lock = threading.RLock()
         self._stream_thread: threading.Thread | None = None
-        self._loop: asyncio.AbstractEventLoop | None = None
-        self._task: asyncio.Task[None] | None = None
-        self._websocket: ClientConnection | None = None
         self._status = "Listo para ejecutar"
         self._error: str | None = None
         self._end_reason: str | None = None
@@ -430,18 +419,14 @@ class AlpacaStreamingService:
         with self._lock:
             if self.is_active():
                 return False
-            self._status = (
-                "Descargando histórico"
-                if self._mode == "REPLAY"
-                else "Conectando"
-            )
+            self._status = "Descargando histórico"
             self._last_heartbeat_at = self._started_at
             self._last_heartbeat_monotonic = time.monotonic()
             self._append_run_info_locked(
                 "run_started",
                 {
                     "symbols": list(self._symbols),
-                    "mode": self._mode,
+                    "mode": "REPLAY",
                     "feed": self._feed,
                     "replay_speed": self._replay_speed,
                     "started_at": self._started_at,
@@ -459,12 +444,12 @@ class AlpacaStreamingService:
                     "console_schema_version": 4,
                 },
             )
-            self._add_log(f"{self._mode} | RUN iniciado")
+            self._add_log("REPLAY | RUN iniciado")
             if self._universe_metadata.get("selection") == "sp500":
                 self._add_log(
                     "{mode} | S&P 500 | componentes={components} | disponibles={available} | no_disponibles={missing}"
                     .format(
-                        mode=self._mode,
+                        mode="REPLAY",
                         components=self._universe_metadata["component_count"],
                         available=self._universe_metadata["available_count"],
                         missing=self._universe_metadata["unavailable_count"],
@@ -472,7 +457,7 @@ class AlpacaStreamingService:
                 )
                 self._add_log(
                     "{mode} | S&P 500 | fuente={source} | actualizada={updated} | consultada={fetched}".format(
-                        mode=self._mode,
+                        mode="REPLAY",
                         source=self._universe_metadata["source"],
                         updated=self._universe_metadata["source_updated_at"],
                         fetched=self._universe_metadata["fetched_at"],
@@ -489,7 +474,7 @@ class AlpacaStreamingService:
                 name=f"alpaca-stream-{self._run_id}",
             )
             self._stream_thread.start()
-            self._add_log(f"{self._mode} | worker de supervisión iniciado")
+            self._add_log("REPLAY | worker de supervisión iniciado")
             self._append_state_locked()
         return True
 
@@ -511,7 +496,7 @@ class AlpacaStreamingService:
             return time.monotonic() - self._last_heartbeat_monotonic
 
     def stop(self, end_reason: str) -> None:
-        """Detengo el RUN y solicito el cierre real del WebSocket."""
+        """Detengo el RUN y solicito el cierre de sus hilos."""
 
         with self._lock:
             if self._finished:
@@ -520,22 +505,8 @@ class AlpacaStreamingService:
             self._end_reason = end_reason
             self._stop_event.set()
             self._pipeline_ready.set()
-            self._add_log(f"{self._mode} | detención solicitada: {end_reason}")
-            loop = self._loop
-            task = self._task
-            websocket = self._websocket
+            self._add_log(f"REPLAY | detención solicitada: {end_reason}")
             self._append_state_locked()
-        if loop is not None and task is not None:
-            loop.call_soon_threadsafe(task.cancel)
-        if loop is not None and websocket is not None:
-            close_future = asyncio.run_coroutine_threadsafe(
-                websocket.close(),
-                loop,
-            )
-            try:
-                close_future.result(timeout=2)
-            except Exception:
-                pass
         self._join_threads()
         if not self.is_running():
             self._finish("Detenido", end_reason)
@@ -554,15 +525,13 @@ class AlpacaStreamingService:
         """Indico si el RUN sigue aceptando heartbeats."""
 
         return not self._finished and self._status in {
-            "Conectando",
-            "Conectado",
             "Descargando histórico",
             "Reproduciendo",
             "Finalizando",
         }
 
     def is_running(self) -> bool:
-        """Indico si el hilo del WebSocket todavía está activo."""
+        """Indico si el hilo de REPLAY todavía está activo."""
 
         return bool(self._stream_thread and self._stream_thread.is_alive())
 
@@ -574,7 +543,7 @@ class AlpacaStreamingService:
                 "run_id": self._run_id,
                 "symbols": list(self._symbols),
                 "universe": self._universe_metadata,
-                "mode": self._mode,
+                "mode": "REPLAY",
                 "replay_speed": self._replay_speed,
                 "status": self._status,
                 "error": self._error,
@@ -652,25 +621,19 @@ class AlpacaStreamingService:
             )
 
     def _run_stream(self) -> None:
-        """Ejecuto el ciclo asincrónico del WebSocket en un hilo propio."""
+        """Ejecuto la descarga y reproducción histórica en un hilo propio."""
 
         try:
-            self._add_log(f"{self._mode} | worker de datos iniciado")
-            if self._mode == "REPLAY":
-                self._run_replay()
-            else:
-                asyncio.run(self._receive_events())
-        except asyncio.CancelledError:
-            pass
+            self._add_log("REPLAY | worker de datos iniciado")
+            self._run_replay()
         except Exception as error:
             if not self._stop_event.is_set():
                 self._finish(
                     "Error",
-                    "connection_error",
+                    "replay_error",
                     self._safe_error(error),
                 )
         finally:
-            self._clear_async_resources()
             if self._stop_event.is_set():
                 self._finish("Detenido", self._end_reason or "manual_stop")
 
@@ -708,6 +671,7 @@ class AlpacaStreamingService:
                         self._historical_path,
                         progress_callback=self._add_log,
                         event_callback=enqueue_batch,
+                        historical_date_callback=self._set_historical_date,
                         stop_event=self._stop_event,
                     )
                 )
@@ -757,6 +721,15 @@ class AlpacaStreamingService:
         if not streamed:
             self._replay_cached_file(historical_path)
         self._finish("Completado", "replay_completed")
+
+    def _set_historical_date(self, historical_date: str) -> None:
+        """Conservo la fecha bursátil seleccionada antes de descargar."""
+
+        with self._lock:
+            if self._finished:
+                return
+            self._historical_date = historical_date
+            self._append_state_locked()
 
     def _emit_replay_batch(self, events: list[AlpacaEvent]) -> None:
         """Persisto y publico un lote cronológico con ritmo controlado."""
@@ -810,6 +783,7 @@ class AlpacaStreamingService:
                 KAFKA_MODULE.publish_events(
                     self._run_id,
                     [record for _, record in stream_records],
+                    self._stop_event,
                 )
                 self._kafka_published_count += len(stream_records)
                 if SPARK_MODULE is not None:
@@ -832,152 +806,6 @@ class AlpacaStreamingService:
             if batch:
                 self._emit_replay_batch(batch)
 
-    async def _receive_events(self) -> None:
-        """Autentico, suscribo y recibo los eventos de Alpaca."""
-
-        loop = asyncio.get_running_loop()
-        task = asyncio.current_task()
-        self._set_async_resources(loop, task, None)
-        uri = f"wss://stream.data.alpaca.markets/v2/{self._feed}"
-        ssl_context = ssl.create_default_context(cafile=certifi.where())
-        async with connect(
-            uri,
-            open_timeout=20,
-            ping_interval=20,
-            ping_timeout=20,
-            ssl=ssl_context,
-        ) as websocket:
-            self._set_async_resources(loop, task, websocket)
-            await self._authenticate(websocket)
-            self._add_log("LIVE | autenticación aceptada")
-            await websocket.send(
-                json.dumps(
-                    {
-                        "action": "subscribe",
-                        "trades": self._symbols,
-                        "quotes": self._symbols,
-                    }
-                )
-            )
-            self._set_status("Conectado", None)
-            self._add_log(
-                f"LIVE | suscripción activa: {', '.join(self._symbols)}"
-            )
-            while not self._stop_event.is_set():
-                message = await websocket.recv()
-                self._handle_message(message)
-
-    async def _authenticate(self, websocket: ClientConnection) -> None:
-        """Autentico el WebSocket antes de solicitar operaciones."""
-
-        await websocket.send(
-            json.dumps(
-                {
-                    "action": "auth",
-                    "key": self._api_key,
-                    "secret": self._api_secret,
-                }
-            )
-        )
-        while True:
-            message = await websocket.recv()
-            payload = self._decode_message(message)
-            if any(
-                item.get("T") == "success"
-                and item.get("msg") == "authenticated"
-                for item in payload
-            ):
-                return
-            for item in payload:
-                if item.get("T") == "error":
-                    raise RuntimeError(self._format_server_error(item))
-
-    def _handle_message(self, message: str | bytes) -> None:
-        """Transformo y persisto cada operación recibida de Alpaca."""
-
-        for payload in self._decode_message(message):
-            event_type = payload.get("T")
-            if event_type == "error":
-                self._finish(
-                    "Error",
-                    "alpaca_error",
-                    self._format_server_error(payload),
-                )
-                return
-            if event_type not in {"t", "q"}:
-                continue
-            event = AlpacaEvent(
-                timestamp=self._format_timestamp(payload.get("t")),
-                symbol=str(payload.get("S", "-")),
-                event_type="TRADE" if event_type == "t" else "QUOTE",
-                price=self._number(payload.get("p"))
-                if event_type == "t" else None,
-                size=self._number(payload.get("s"))
-                if event_type == "t" else None,
-                bid_price=self._number(payload.get("bp"))
-                if event_type == "q" else None,
-                bid_size=self._number(payload.get("bs"))
-                if event_type == "q" else None,
-                ask_price=self._number(payload.get("ap"))
-                if event_type == "q" else None,
-                ask_size=self._number(payload.get("as"))
-                if event_type == "q" else None,
-                raw=payload,
-            )
-            self._persist_event(event)
-
-    def _persist_event(
-        self,
-        event: AlpacaEvent,
-        replay_position: int | None = None,
-    ) -> None:
-        """Agrego un evento al JSONL sin sobrescribir el historial."""
-
-        while not self._pipeline_ready.wait(0.1):
-            if self._stop_event.is_set():
-                return
-        with self._lock:
-            if self._stop_event.is_set():
-                return
-            record = event.to_record(self._run_id)
-            with self._historical_path.open("a", encoding="utf-8") as event_file:
-                event_file.write(json.dumps(record, ensure_ascii=False) + "\n")
-                event_file.flush()
-                os.fsync(event_file.fileno())
-            self._append_console_line_locked(
-                "alpaca",
-                event.to_display_line(),
-            )
-            self._events.append(event)
-            self._event_count += 1
-            self._market_timestamp = event.timestamp
-            if replay_position is not None:
-                self._replay_position = replay_position
-            self._append_state_locked()
-            if KAFKA_MODULE is not None:
-                try:
-                    KAFKA_MODULE.publish_event(self._run_id, record)
-                    self._kafka_published_count += 1
-                    if SPARK_MODULE is not None:
-                        SPARK_MODULE.confirm_kafka_publication(self._run_id)
-                except Exception as error:
-                    self._finish(
-                        "Error",
-                        "kafka_error",
-                        f"No se pudo publicar el evento en Kafka: {error}",
-                    )
-                    return
-
-    def _set_status(self, status: str, error: str | None) -> None:
-        """Actualizo y persisto el estado transitorio de la conexión."""
-
-        with self._lock:
-            if self._finished:
-                return
-            self._status = status
-            self._error = error
-            self._append_state_locked()
-
     def _finish(
         self,
         status: str,
@@ -996,7 +824,7 @@ class AlpacaStreamingService:
             self._ended_at = get_utc_timestamp()
             self._stop_event.set()
             self._add_log(
-                f"{self._mode} | finalizado: {status} | causa={end_reason}"
+                f"REPLAY | finalizado: {status} | causa={end_reason}"
             )
             self._append_run_info_locked(
                 "run_finished",
@@ -1092,27 +920,6 @@ class AlpacaStreamingService:
             self._log_count += 1
             self._append_state_locked()
 
-    def _set_async_resources(
-        self,
-        loop: asyncio.AbstractEventLoop,
-        task: asyncio.Task[None] | None,
-        websocket: ClientConnection | None,
-    ) -> None:
-        """Conservo recursos asincrónicos para poder cancelarlos."""
-
-        with self._lock:
-            self._loop = loop
-            self._task = task
-            self._websocket = websocket
-
-    def _clear_async_resources(self) -> None:
-        """Libero las referencias a recursos asincrónicos finalizados."""
-
-        with self._lock:
-            self._loop = None
-            self._task = None
-            self._websocket = None
-
     def _join_threads(self) -> None:
         """Espero el cierre de los hilos sin bloquearse a sí mismos."""
 
@@ -1121,56 +928,10 @@ class AlpacaStreamingService:
             if thread is not None and thread is not current_thread:
                 thread.join(timeout=5)
 
-    def _decode_message(self, message: str | bytes) -> list[dict[str, Any]]:
-        """Decodifico los mensajes JSON recibidos desde Alpaca."""
-
-        decoded = json.loads(message)
-        return decoded if isinstance(decoded, list) else [decoded]
-
-    def _format_server_error(self, payload: dict[str, Any]) -> str:
-        """Interpreto el tipo de error informado por Alpaca."""
-
-        message = str(payload.get("msg", "Error no especificado"))
-        normalized_message = message.lower()
-        code = payload.get("code")
-        if code in {401, 402} or any(
-            term in normalized_message
-            for term in {"auth", "credential", "api key", "secret"}
-        ):
-            return "Autenticación Alpaca rechazada: credenciales inválidas."
-        if any(
-            term in normalized_message
-            for term in {"connection limit", "too many", "already connected"}
-        ):
-            return (
-                "Conexión Alpaca rechazada: límite de conexiones alcanzado."
-            )
-        if any(
-            term in normalized_message
-            for term in {"subscription", "symbol", "not authorized"}
-        ):
-            return f"Suscripción Alpaca rechazada: {message}"
-        return f"Error de Alpaca: {message}"
-
-    def _format_timestamp(self, value: Any) -> str:
-        """Conservo el horario original del evento recibido."""
-
-        return str(value) if value is not None else "-"
-
-    def _number(self, value: Any) -> float | None:
-        """Convierto un valor numérico recibido desde el WebSocket."""
-
-        try:
-            return float(value) if value is not None else None
-        except (TypeError, ValueError):
-            return None
-
     def _safe_error(self, error: Exception) -> str:
         """Devuelvo un error útil sin incluir secretos de autenticación."""
 
         message = str(error)
-        if "opening handshake" in message.lower():
-            return "No se pudo abrir el WebSocket de Alpaca a tiempo."
         return message.replace("key=", "key=[oculta]").replace(
             "secret=", "secret=[oculta]"
         )
@@ -1541,7 +1302,7 @@ def event_from_record(
         event_type=str(record.get("event_type", "-")),
         price=to_number(record.get("price")),
         size=to_number(record.get("size")),
-        mode=mode or str(record.get("mode", "LIVE")),
+        mode=mode or str(record.get("mode", "REPLAY")),
         console_sequence=(
             int(record["console_sequence"])
             if record.get("console_sequence") is not None
@@ -1634,6 +1395,7 @@ def get_historical_dataset(
     historical_path: Path,
     progress_callback: Callable[[str], None] | None = None,
     event_callback: Callable[[list[AlpacaEvent]], None] | None = None,
+    historical_date_callback: Callable[[str], None] | None = None,
     stop_event: threading.Event | None = None,
 ) -> tuple[Path, str, bool]:
     """Obtengo un histórico validado sin crear metadata adicional."""
@@ -1642,6 +1404,8 @@ def get_historical_dataset(
         api_key,
         api_secret,
     )
+    if historical_date_callback is not None:
+        historical_date_callback(date_text)
     if progress_callback is not None:
         progress_callback(
             f"REPLAY | sesión bursátil seleccionada={date_text} | apertura={format_presentation_timestamp(session_start)} | cierre={format_presentation_timestamp(session_end)}"
@@ -1784,50 +1548,6 @@ def get_latest_market_session(
             "Alpaca no devolvió una sesión bursátil completa disponible."
         )
     return max(sessions, key=lambda session: session[0])
-
-def get_market_mode(api_key: str, api_secret: str) -> str:
-    """Consulto en Alpaca si corresponde iniciar LIVE o REPLAY."""
-
-    ssl_context = ssl.create_default_context(cafile=certifi.where())
-    authentication_error = False
-    for market_clock_url in MARKET_CLOCK_URLS:
-        request = urllib.request.Request(
-            market_clock_url,
-            headers={
-                "APCA-API-KEY-ID": api_key,
-                "APCA-API-SECRET-KEY": api_secret,
-            },
-        )
-        try:
-            with urllib.request.urlopen(
-                request,
-                timeout=15,
-                context=ssl_context,
-            ) as response:
-                payload = json.load(response)
-        except urllib.error.HTTPError as error:
-            if error.code in {401, 403}:
-                authentication_error = True
-                continue
-            raise RuntimeError(
-                f"Alpaca devolvió HTTP {error.code} al consultar el mercado."
-            ) from error
-        except (OSError, json.JSONDecodeError) as error:
-            raise RuntimeError(
-                "No se pudo consultar el estado del mercado en Alpaca."
-            ) from error
-        if not isinstance(payload, dict) or not isinstance(
-            payload.get("is_open"), bool
-        ):
-            raise RuntimeError(
-                "Alpaca devolvió una respuesta inválida para el estado del mercado."
-            )
-        return "LIVE" if payload["is_open"] else "REPLAY"
-    if authentication_error:
-        raise RuntimeError(
-            "Alpaca rechazó la consulta del estado del mercado."
-        )
-    raise RuntimeError("No se pudo consultar el estado del mercado en Alpaca.")
 
 def get_available_asset_symbols(
     api_key: str,
@@ -2233,7 +1953,7 @@ def read_streaming_state(path: Path) -> dict[str, Any] | None:
         "run_id": path.stem,
         "symbols": [],
         "universe": {"selection": "manual", "symbols": []},
-        "mode": "LIVE",
+        "mode": "REPLAY",
         "replay_speed": 1.0,
         "status": "Incompleto",
         "error": None,

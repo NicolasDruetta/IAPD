@@ -583,7 +583,7 @@ def consolidate_parquet(run_id: str) -> bool:
     shutil.rmtree(checkpoint_path, ignore_errors=True)
     return True
 
-def start_streaming(run_id: str, mode: str = "LIVE") -> None:
+def start_streaming(run_id: str, mode: str = "REPLAY") -> None:
     """Inicio Structured Streaming Kafka para un RUN sin duplicar queries."""
 
     with _SPARK_LOCK:
