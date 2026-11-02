@@ -319,6 +319,8 @@ def initialize_state() -> None:
         st.session_state.start_operation = None
     if "stop_pending" not in st.session_state:
         st.session_state.stop_pending = False
+    if "manual_stop_status" not in st.session_state:
+        st.session_state.manual_stop_status = False
     if "console_states" not in st.session_state:
         st.session_state.console_states = {}
     if "activity_chart_states" not in st.session_state:
@@ -400,6 +402,7 @@ def mark_start_pending() -> None:
     """Marco que el usuario acaba de solicitar el inicio."""
 
     st.session_state.activity_chart_states.clear()
+    st.session_state.manual_stop_status = False
     st.session_state.start_requested = True
     st.session_state.start_pending = True
 
@@ -863,6 +866,7 @@ def render_streaming() -> None:
 
     if stop_clicked or st.session_state.stop_pending:
         st.session_state.stop_pending = False
+        st.session_state.manual_stop_status = True
         st.session_state.start_requested = False
         clear_consoles = False
         for console_state in st.session_state.console_states.values():
@@ -872,22 +876,29 @@ def render_streaming() -> None:
         snapshot = controller_module.get_run_snapshot()
         spark_module.stop_streaming(run_id)
 
-    elapsed_text = format_elapsed_time(
-        snapshot["started_at"],
-        snapshot["ended_at"],
-    )
-    market_timestamp = snapshot.get("market_timestamp")
-    presentation_market_timestamp = format_presentation_timestamp(
-        market_timestamp,
-    )
-    if presentation_market_timestamp == "-":
-        market_date = snapshot.get("historical_date") or "-"
+    if st.session_state.start_pending:
+        elapsed_text = "-"
+        market_date = "-"
         market_time = "-"
     else:
-        market_date, market_time = presentation_market_timestamp.split(" ", 1)
+        elapsed_text = format_elapsed_time(
+            snapshot["started_at"],
+            snapshot["ended_at"],
+        )
+        market_timestamp = snapshot.get("market_timestamp")
+        presentation_market_timestamp = format_presentation_timestamp(
+            market_timestamp,
+        )
+        if presentation_market_timestamp == "-":
+            market_date = snapshot.get("historical_date") or "-"
+            market_time = "-"
+        else:
+            market_date, market_time = presentation_market_timestamp.split(" ", 1)
     status = snapshot["status"]
     status_text = "Listo para ejecutar."
-    if st.session_state.start_pending:
+    if st.session_state.manual_stop_status:
+        status_text = "Detenido manualmente."
+    elif st.session_state.start_pending:
         status_text = "Iniciando..."
     elif snapshot["is_active"]:
         status_text = f"Ejecutando... {elapsed_text}."
@@ -909,7 +920,7 @@ def render_streaming() -> None:
     with status_col:
         with st.container(border=True):
             st.caption("Estado")
-            if snapshot["is_active"]:
+            if snapshot["is_active"] and not st.session_state.start_pending:
                 EXECUTION_TIMER_COMPONENT(
                     data={
                         "active": True,
@@ -1305,7 +1316,7 @@ def render_streaming() -> None:
             st.text(market_time)
         with elapsed_col:
             st.caption("Tiempo transcurrido de ejecución")
-            if snapshot["is_active"]:
+            if snapshot["is_active"] and not st.session_state.start_pending:
                 EXECUTION_TIMER_COMPONENT(
                     data={
                         "active": True,
