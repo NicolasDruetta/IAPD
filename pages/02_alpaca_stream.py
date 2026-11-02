@@ -1576,35 +1576,6 @@ def get_run_file(run_id: str, file_kind: str) -> Path:
                 return legacy_path
     return path
 
-def read_console_delta(
-    path: Path,
-    byte_offset: int,
-    record_limit: int | None,
-) -> tuple[list[str], int, bool]:
-    """Leo texto persistido desde un cursor de bytes sin reinterpretarlo."""
-
-    lines: list[str] = []
-    next_offset = max(0, byte_offset)
-    if (
-        record_limit is not None and record_limit <= 0
-    ) or not path.exists():
-        return lines, 0, False
-    try:
-        with path.open("rb") as console_file:
-            file_size = console_file.seek(0, os.SEEK_END)
-            if next_offset > file_size:
-                next_offset = 0
-            console_file.seek(next_offset)
-            while record_limit is None or len(lines) < record_limit:
-                raw_line = console_file.readline()
-                if not raw_line:
-                    break
-                next_offset = console_file.tell()
-                lines.append(raw_line.decode("utf-8").rstrip("\r\n"))
-    except (OSError, UnicodeDecodeError):
-        return [], 0, False
-    return lines, next_offset, next_offset < file_size
-
 def read_console_tail(
     path: Path,
     line_limit: int = 1000,
@@ -2076,136 +2047,6 @@ def resolve_automatic_symbols(
         "unavailable_symbols": unavailable,
     }
 
-def get_recent_events(run_id: str | None) -> list[AlpacaEvent]:
-    """Leo un lote reciente del RUN sin cargar todo el historial."""
-
-    if run_id is None:
-        return []
-    return read_events_after(run_id, 0)[:256]
-
-def read_event_delta(
-    path: Path,
-    byte_offset: int,
-    record_limit: int | None,
-) -> tuple[list[AlpacaEvent], int, bool]:
-    """Leo eventos nuevos desde un cursor de bytes del JSONL."""
-
-    events: list[AlpacaEvent] = []
-    next_offset = max(0, byte_offset)
-    if (
-        record_limit is not None and record_limit <= 0
-    ) or not path.exists():
-        return events, next_offset, False
-    try:
-        with path.open("rb") as stream_file:
-            stream_file.seek(next_offset)
-            while record_limit is None or len(events) < record_limit:
-                raw_line = stream_file.readline()
-                if not raw_line:
-                    break
-                next_offset = stream_file.tell()
-                try:
-                    record = json.loads(raw_line.decode("utf-8"))
-                except (UnicodeDecodeError, json.JSONDecodeError):
-                    continue
-                if (
-                    isinstance(record, dict)
-                    and record.get("record_type") == "event"
-                ):
-                    events.append(event_from_record(record))
-            file_size = stream_file.seek(0, os.SEEK_END)
-    except OSError:
-        return [], byte_offset, False
-    return events, next_offset, next_offset < file_size
-
-def read_log_delta(
-    path: Path,
-    byte_offset: int,
-    record_limit: int | None,
-) -> tuple[list[tuple[int | None, str]], int, bool]:
-    """Leo logs nuevos desde un cursor de bytes del JSONL."""
-
-    lines: list[tuple[int | None, str]] = []
-    next_offset = max(0, byte_offset)
-    if (
-        record_limit is not None and record_limit <= 0
-    ) or not path.exists():
-        return lines, next_offset, False
-    try:
-        with path.open("rb") as stream_file:
-            stream_file.seek(next_offset)
-            while record_limit is None or len(lines) < record_limit:
-                raw_line = stream_file.readline()
-                if not raw_line:
-                    break
-                next_offset = stream_file.tell()
-                try:
-                    record = json.loads(raw_line.decode("utf-8"))
-                except (UnicodeDecodeError, json.JSONDecodeError):
-                    continue
-                if (
-                    isinstance(record, dict)
-                    and record.get("record_type") == "log"
-                ):
-                    lines.append(
-                        (
-                            int(record["console_sequence"])
-                            if record.get("console_sequence") is not None
-                            else None,
-                            f"{record.get('recorded_at', '-')} | {record.get('message', '')}",
-                        )
-                    )
-            file_size = stream_file.seek(0, os.SEEK_END)
-    except OSError:
-        return [], byte_offset, False
-    return lines, next_offset, next_offset < file_size
-
-def read_spark_delta(
-    path: Path,
-    byte_offset: int,
-    record_limit: int | None,
-) -> tuple[list[tuple[int, str]], int, bool, bool]:
-    """Leo líneas Spark persistidas con su numeración original."""
-
-    lines: list[tuple[int, str]] = []
-    next_offset = max(0, byte_offset)
-    schema_found = False
-    if (
-        record_limit is not None and record_limit <= 0
-    ) or not path.exists():
-        return lines, next_offset, False, schema_found
-    try:
-        with path.open("rb") as stream_file:
-            stream_file.seek(next_offset)
-            while record_limit is None or len(lines) < record_limit:
-                raw_line = stream_file.readline()
-                if not raw_line:
-                    break
-                next_offset = stream_file.tell()
-                try:
-                    record = json.loads(raw_line.decode("utf-8"))
-                except (UnicodeDecodeError, json.JSONDecodeError):
-                    continue
-                if (
-                    not isinstance(record, dict)
-                    or record.get("record_type") != "spark_log"
-                ):
-                    continue
-                schema_found = True
-                console_sequence = record.get("console_sequence")
-                if console_sequence is None:
-                    continue
-                lines.append(
-                    (
-                        int(console_sequence),
-                        str(record.get("message", "")),
-                    )
-                )
-            file_size = stream_file.seek(0, os.SEEK_END)
-    except OSError:
-        return [], byte_offset, False, schema_found
-    return lines, next_offset, next_offset < file_size, schema_found
-
 def get_utc_timestamp() -> str:
     """Genero una marca temporal UTC reproducible para cada registro."""
 
@@ -2282,18 +2123,6 @@ def append_stream_record(
         stream_file.write(json.dumps(record, ensure_ascii=False) + "\n")
         stream_file.flush()
         os.fsync(stream_file.fileno())
-
-def read_log_page(
-    path: Path,
-    cursor: int | str = "tail",
-    page_size: int = 200,
-) -> list[str]:
-    """Leo una página de logs sin cargar el historial completo en memoria."""
-
-    return [
-        line
-        for _, line in read_log_page_with_cursor(path, cursor, page_size)[0]
-    ]
 
 def read_log_page_with_cursor(
     path: Path,
@@ -2505,15 +2334,6 @@ def read_streaming_state(path: Path) -> dict[str, Any] | None:
         except OSError:
             pass
     return state if started else None
-
-def read_recent_events(run_id: str) -> list[AlpacaEvent]:
-    """Leo un lote inicial sin materializar el historial completo."""
-
-    data_path = get_run_file(run_id, "data")
-    legacy_data_path = DATA_DIRECTORY / f"{run_id}_alpaca_trades.jsonl"
-    if data_path.exists() or legacy_data_path.exists():
-        return read_events_after(run_id, 0)[:256]
-    return []
 
 def read_events_after(
     run_id: str,

@@ -254,14 +254,10 @@ def initialize_state() -> None:
         st.session_state.start_pending = False
     if "start_operation" not in st.session_state:
         st.session_state.start_operation = None
-    if "start_error" not in st.session_state:
-        st.session_state.start_error = None
     if "stop_pending" not in st.session_state:
         st.session_state.stop_pending = False
     if "console_states" not in st.session_state:
         st.session_state.console_states = {}
-    if "rendered_run_active" not in st.session_state:
-        st.session_state.rendered_run_active = False
 
 def load_custom_css() -> None:
     """Cargo los estilos visuales administrados en el archivo del proyecto."""
@@ -340,7 +336,6 @@ def mark_start_pending() -> None:
 
     st.session_state.start_requested = True
     st.session_state.start_pending = True
-    st.session_state.start_error = None
 
 def handle_start_error(
     error: Exception,
@@ -357,7 +352,6 @@ def handle_start_error(
     st.session_state.start_pending = False
     st.session_state.start_operation = None
     st.session_state.alpaca_run_id = None
-    st.session_state.start_error = error_message
 
 def start_run_in_background(
     operation: dict[str, Any],
@@ -692,9 +686,6 @@ def render_streaming() -> None:
             or not streaming_module.ALPACA_SECRET_KEY
         ):
             st.session_state.start_pending = False
-            st.session_state.start_error = (
-                "Completá ALPACA_API_KEY y ALPACA_SECRET_KEY en pages/02_alpaca_stream.py."
-            )
         else:
             operation = st.session_state.start_operation
             if operation is None:
@@ -723,7 +714,6 @@ def render_streaming() -> None:
                 if operation["error"] is not None:
                     st.session_state.start_pending = False
                     st.session_state.start_operation = None
-                    st.session_state.start_error = str(operation["error"])
                 else:
                     service = operation["service"]
                     run_id = service.get_snapshot()["run_id"]
@@ -837,9 +827,13 @@ def render_streaming() -> None:
         history_run_id = snapshot["run_id"] or "-"
         completion_text = {
             "Completado": "Finalizado correctamente.",
-            "Detenido": "Detenido.",
-            "Error": "Error.",
+            "Error": "Finalizado con error.",
         }.get(snapshot["status"], f"{snapshot['status']}.")
+        if (
+            snapshot["status"] == "Detenido"
+            and snapshot.get("end_reason") == "manual_stop"
+        ):
+            completion_text = "Detenido manualmente."
         last_execution_notice = f"Datos de la **última ejecución:** {last_execution_text}. **Duración:** {elapsed_text}. **{completion_text}** | **Modo:** {history_mode}. | **RUN:** {history_run_id}."
         automatic_stop_messages = {
             "heartbeat_timeout": "La ejecución se detuvo automáticamente porque la interfaz dejó de enviar señales de actividad durante 5 minutos.",
@@ -1201,7 +1195,6 @@ def render_streaming() -> None:
     st.subheader("Top 10 de acciones por volumen negociado")
 
     render_volume_chart(spark_result.get("top_volume", []))
-    st.session_state.rendered_run_active = snapshot["is_active"]
 
 render_streaming_fragment = st.fragment(render_streaming, run_every="5s")
 render_streaming_fragment()

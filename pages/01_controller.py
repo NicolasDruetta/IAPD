@@ -4,7 +4,6 @@ import atexit
 import threading
 import time
 
-from pathlib import Path
 from typing import Any
 
 _ACTIVE_SERVICE: Any = None
