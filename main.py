@@ -1274,7 +1274,12 @@ def render_streaming() -> None:
             placeholder=is_placeholder,
             resync=resync,
         )
-        st.caption("**[Spark Master ↗](http://localhost:8080/)** - **[Worker 1 ↗](http://localhost:8081/)** - **[Worker 2 ↗](http://localhost:8082/)**")
+        st.caption(
+            "**[Spark Master ↗](http://localhost:8080/)** &nbsp;-&nbsp; "
+            "**[Worker 1 ↗](http://localhost:8081/)** &nbsp;-&nbsp; "
+            "**[Worker 2 ↗](http://localhost:8082/)** &nbsp;-&nbsp; "
+            "**[Spark Jobs ↗](http://localhost:4040/)** "
+        )
     if clear_consoles:
         st.session_state.start_requested = False
 
@@ -1324,7 +1329,7 @@ def render_streaming() -> None:
         st.subheader("Top 10 de acciones por volumen negociado")
         render_volume_chart(spark_result.get("top_volume", []))
     with activity_column:
-        st.subheader("Actividad bursátil en el tiempo")
+        st.subheader("Operaciones y cotizaciones por segundo")
         render_activity_chart(activity_rows)
 
 render_streaming_fragment = st.fragment(render_streaming, run_every="5s")
