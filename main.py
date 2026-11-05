@@ -254,14 +254,23 @@ def get_activity_chart_rows(
             "counts": {},
             "offset": 0,
             "pending": "",
+            "volume_totals": {},
         },
     )
+    state.setdefault("volume_totals", {})
     data_path = DATA_DIRECTORY / "runs" / f"{run_id}_02_alpaca_data.jsonl"
     if not data_path.exists():
         return [], 1
     try:
         if data_path.stat().st_size < state["offset"]:
-            state.update({"counts": {}, "offset": 0, "pending": ""})
+            state.update(
+                {
+                    "counts": {},
+                    "offset": 0,
+                    "pending": "",
+                    "volume_totals": {},
+                }
+            )
         with data_path.open(encoding="utf-8") as data_file:
             data_file.seek(state["offset"])
             content = state["pending"] + data_file.read()
@@ -284,6 +293,13 @@ def get_activity_chart_rows(
         event_type = record.get("event_type")
         if event_type not in {"QUOTE", "TRADE"}:
             continue
+        if event_type == "TRADE":
+            symbol = str(record.get("symbol") or "")
+            if symbol:
+                volume_totals = state["volume_totals"]
+                volume_totals[symbol] = volume_totals.get(symbol, 0.0) + float(
+                    record.get("size") or 0
+                )
         if timestamp.tzinfo is None:
             timestamp = timestamp.replace(tzinfo=timezone.utc)
         second = timestamp.astimezone(PRESENTATION_TIMEZONE).replace(
@@ -1414,6 +1430,18 @@ def render_streaming() -> None:
         controller_module,
         run_id,
     )
+    top_volume = spark_result.get("top_volume", [])
+    if not top_volume and run_id:
+        volume_totals = st.session_state.activity_chart_states[run_id][
+            "volume_totals"
+        ]
+        top_volume = [
+            {"symbol": symbol, "total_volume": volume}
+            for symbol, volume in sorted(
+                volume_totals.items(),
+                key=lambda item: (-item[1], item[0]),
+            )[:10]
+        ]
     volume_column, activity_column = st.columns(
         2,
         gap="small",
@@ -1421,7 +1449,7 @@ def render_streaming() -> None:
     )
     with volume_column:
         st.subheader("Top 10 de acciones por volumen negociado")
-        render_volume_chart(spark_result.get("top_volume", []))
+        render_volume_chart(top_volume)
     with activity_column:
         st.subheader("Actividad bursátil en el tiempo")
         render_activity_chart(activity_rows, activity_interval)

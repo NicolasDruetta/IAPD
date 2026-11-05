@@ -5,16 +5,39 @@ import os
 import threading
 import time
 
+from datetime import timezone
 from typing import Any
 
 _ACTIVE_SERVICE: Any = None
 HEARTBEAT_TIMEOUT_SECONDS = 900
 _KAFKA_MODULE: Any = None
 _MANAGER_LOCK = threading.RLock()
+_RUN_LOG_COUNTS: dict[str, int] = {}
 _RUN_SEQUENCES: dict[str, int] = {}
 _SPARK_MODULE: Any = None
 _STREAMING_MODULE: Any = None
 _SUPERVISOR_THREAD: threading.Thread | None = None
+
+def append_controller_log(
+    run_id: str,
+    message: str,
+    service: Any,
+) -> None:
+    """Registro un mensaje y persisto el estado administrado del RUN."""
+
+    streaming_module = _require_streaming_module()
+    timestamp = streaming_module.format_presentation_timestamp(
+        streaming_module.get_utc_timestamp(),
+        source_timezone=timezone.utc,
+    )
+    functions.append_console_log(
+        run_id,
+        "controller",
+        f"{timestamp} | {message}",
+    )
+    with _MANAGER_LOCK:
+        _RUN_LOG_COUNTS[run_id] = _RUN_LOG_COUNTS.get(run_id, 0) + 1
+    append_run_state(service)
 
 def append_run_record(
     run_id: str,
@@ -61,6 +84,7 @@ def append_run_state(service: Any) -> None:
     """Persisto el estado actual del RUN administrado por el Controller."""
 
     snapshot = service.get_snapshot()
+    log_count = _RUN_LOG_COUNTS.get(snapshot["run_id"], 0)
     append_run_record(
         snapshot["run_id"],
         "state",
@@ -68,7 +92,7 @@ def append_run_state(service: Any) -> None:
             "status": snapshot["status"],
             "error": snapshot["error"],
             "event_count": snapshot["event_count"],
-            "log_count": snapshot["log_count"],
+            "log_count": log_count,
             "market_timestamp": snapshot["market_timestamp"],
             "replay_position": snapshot["replay_position"],
             "historical_date": snapshot["historical_date"],
@@ -101,6 +125,7 @@ def get_run_snapshot() -> dict[str, Any]:
     if service is not None:
         snapshot = service.get_snapshot()
         run_id = snapshot["run_id"]
+        snapshot["log_count"] = _RUN_LOG_COUNTS.get(run_id, 0)
         snapshot.update(
             {
                 "run_info_file": f"{run_id}_00_run_info.jsonl",
@@ -290,7 +315,7 @@ def start_run(
                 confirm_kafka_publication_callback=(
                     _SPARK_MODULE.confirm_kafka_publication
                 ),
-                append_controller_log_callback=functions.append_console_log,
+                append_controller_log_callback=append_controller_log,
                 append_run_record_callback=append_run_record,
                 append_run_state_callback=append_run_state,
             )

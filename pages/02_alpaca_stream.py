@@ -205,7 +205,7 @@ class AlpacaStreamingService:
         ] | None = None,
         confirm_kafka_publication_callback: Callable[[str], None]
         | None = None,
-        append_controller_log_callback: Callable[[str, str, str], None]
+        append_controller_log_callback: Callable[[str, str, Any], None]
         | None = None,
         append_run_record_callback: Callable[
             [str, str, dict[str, Any]],
@@ -248,7 +248,6 @@ class AlpacaStreamingService:
         self._replay_position = 0
         self._historical_date: str | None = None
         self._finished = False
-        self._log_count = 0
         self._market_timestamp: str | None = None
         self._started_at = started_at
         self._historical_path = DATA_DIRECTORY / "runs" / f"{run_stem}_02_alpaca_data.jsonl"
@@ -391,7 +390,6 @@ class AlpacaStreamingService:
                 "status": self._status,
                 "error": self._error,
                 "event_count": self._event_count,
-                "log_count": self._log_count,
                 "market_timestamp": self._market_timestamp,
                 "replay_position": self._replay_position,
                 "historical_date": self._historical_date,
@@ -626,21 +624,15 @@ class AlpacaStreamingService:
             self._release_callback(self)
 
     def _add_log(self, message: str) -> None:
-        """Agrego un mensaje operativo al TXT del RUN."""
+        """Informo al Controller un mensaje operativo de Alpaca."""
 
         with self._lock:
-            timestamp = format_presentation_timestamp(
-                get_utc_timestamp(),
-                source_timezone=timezone.utc,
-            )
             if self._append_controller_log_callback is not None:
                 self._append_controller_log_callback(
                     self._run_id,
-                    "controller",
-                    f"{timestamp} | {message}",
+                    message,
+                    self,
                 )
-            self._log_count += 1
-            self._append_run_state_callback(self)
 
     def _join_threads(self) -> None:
         """Espero el cierre de los hilos sin bloquearse a sí mismos."""
