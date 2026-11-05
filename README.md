@@ -253,7 +253,7 @@ componentes actuales del S&P 500 validados contra Alpaca. El campo se
 deshabilita durante una ejecución activa, un inicio pendiente o una detención
 pendiente.
 
-El selector también ofrece `Top 20 más líquidas del S&P 500` y `Top 20 con más
+El selector también ofrece `Top 20 con más liquidez del S&P 500` y `Top 20 con más
 volumen del S&P 500`. Estas opciones no contienen símbolos fijos: al iniciar
 un RUN se resuelve la composición actual del S&P 500, se consultan en Alpaca
 los snapshots de esos componentes y se ordenan por cantidad de operaciones

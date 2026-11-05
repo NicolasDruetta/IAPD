@@ -1,5 +1,6 @@
 """Consumo Structured Streaming, transformación y persistencia Spark."""
 
+import ast
 import json
 import os
 import shutil
@@ -120,6 +121,38 @@ def get_checkpoint(run_id: str | None) -> dict[str, Any] | None:
     except (OSError, json.JSONDecodeError):
         return None
 
+def get_persisted_top_volume(run_id: str | None) -> list[dict[str, Any]]:
+    """Leo el último ranking de volumen persistido por Spark."""
+
+    if run_id is None:
+        return []
+    path = DATA_DIRECTORY / "runs" / f"{run_id}_04_spark_log.txt"
+    if not path.exists():
+        return []
+    marker = "volumen_trade_por_accion="
+    try:
+        with path.open(encoding="utf-8") as spark_log:
+            for line in reversed(spark_log.readlines()):
+                if marker not in line:
+                    continue
+                ranking_text = line.split(marker, 1)[1].strip()
+                ranking = ast.literal_eval(ranking_text)
+                if not isinstance(ranking, list):
+                    return []
+                return [
+                    {
+                        "symbol": str(row["symbol"]),
+                        "total_volume": float(row["total_volume"]),
+                    }
+                    for row in ranking
+                    if isinstance(row, dict)
+                    and row.get("symbol") is not None
+                    and row.get("total_volume") is not None
+                ]
+    except (OSError, SyntaxError, ValueError, KeyError, TypeError):
+        return []
+    return []
+
 def get_snapshot(run_id: str | None = None) -> dict[str, Any]:
     """Devuelvo el resultado acumulado de Spark para un RUN."""
 
@@ -131,28 +164,37 @@ def get_snapshot(run_id: str | None = None) -> dict[str, Any]:
                 "trade_totals",
                 (checkpoint or {}).get("totals", {}),
             )
+            top_volume = top_volume_rows(totals)
+            if not top_volume:
+                top_volume = get_persisted_top_volume(run_id)
             return {
                 "status": "sin_datos",
                 "logs": ["Spark | esperando eventos bursátiles."],
                 "rows": [],
-                "top_volume": top_volume_rows(totals),
+                "top_volume": top_volume,
                 "checkpoint": checkpoint,
             }
     if not state["kafka_confirmed"].is_set():
+        top_volume = top_volume_rows(state["trade_totals"])
+        if not top_volume:
+            top_volume = get_persisted_top_volume(run_id)
         return {
             "status": "esperando_kafka",
             "logs": [],
             "rows": [],
-            "top_volume": top_volume_rows(state["trade_totals"]),
+            "top_volume": top_volume,
             "checkpoint": dict(state["checkpoint"]),
         }
     monitor_workers(run_id, state)
     with _SPARK_LOCK:
+        top_volume = top_volume_rows(state["trade_totals"])
+        if not top_volume:
+            top_volume = get_persisted_top_volume(run_id)
         return {
             "status": state["status"],
             "logs": list(state["logs"]),
             "rows": list(state["rows"]),
-            "top_volume": top_volume_rows(state["trade_totals"]),
+            "top_volume": top_volume,
             "checkpoint": dict(state["checkpoint"]),
         }
 

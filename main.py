@@ -129,8 +129,36 @@ LOG_CONSOLE_COMPONENT = st.components.v2.component(
     }
     """,
 )
+SYSTEM_THEME_COMPONENT = st.components.v2.component(
+    name="apache_big_data_lab.system_theme",
+    html='<span class="system-theme-detector"></span>',
+    isolate_styles=False,
+    js="""
+    export default function ({ parentElement, setStateValue }) {
+        const state = parentElement.__systemThemeState || {
+            mediaQuery: null,
+            reportedTheme: null,
+        };
+        if (state.mediaQuery === null) {
+            state.mediaQuery = window.matchMedia(
+                "(prefers-color-scheme: dark)",
+            );
+            state.mediaQuery.addEventListener("change", (event) => {
+                state.reportedTheme = event.matches;
+                setStateValue("dark", event.matches);
+            });
+        }
+        if (state.reportedTheme !== state.mediaQuery.matches) {
+            state.reportedTheme = state.mediaQuery.matches;
+            setStateValue("dark", state.reportedTheme);
+        }
+        parentElement.__systemThemeState = state;
+        return () => {};
+    }
+    """,
+)
 PRESENTATION_TIMEZONE = ZoneInfo("America/Argentina/Cordoba")
-TOP_LIQUID_OPTION = "Top 20 más líquidas del S&P 500"
+TOP_LIQUID_OPTION = "Top 20 con más liquidez del S&P 500"
 TOP_VOLUME_OPTION = "Top 20 con más volumen del S&P 500"
 SYMBOL_GROUPS = {
     ALL_SYMBOLS_OPTION: ("*",),
@@ -336,11 +364,27 @@ def get_console_state(console_id: str, run_id: str | None) -> dict[str, Any]:
         )
     return state
 
-def initialize_state() -> None:
+def initialize_state(system_theme: dict[str, Any] | None = None) -> None:
     """Creo el estado para conservar referencias visuales del RUN."""
 
+    detected_dark_mode = (
+        system_theme.get("dark")
+        if isinstance(system_theme, dict)
+        else None
+    )
+    if "theme_user_set" not in st.session_state:
+        st.session_state.theme_user_set = False
     if "dark_mode" not in st.session_state:
-        st.session_state.dark_mode = False
+        st.session_state.dark_mode = (
+            bool(detected_dark_mode)
+            if detected_dark_mode is not None
+            else False
+        )
+    elif (
+        not st.session_state.theme_user_set
+        and detected_dark_mode is not None
+    ):
+        st.session_state.dark_mode = bool(detected_dark_mode)
     if "alpaca_run_id" not in st.session_state:
         st.session_state.alpaca_run_id = None
     if "start_requested" not in st.session_state:
@@ -704,7 +748,13 @@ st.set_page_config(
     layout="wide",
 )
 load_custom_css()
-initialize_state()
+system_theme = SYSTEM_THEME_COMPONENT(
+    data={},
+    default={"dark": None},
+    key="system-theme-detector",
+    on_dark_change=lambda: None,
+)
+initialize_state(system_theme)
 icon_path = Path(__file__).parent / "assets" / "icon.png"
 theme_key = "theme-dark" if st.session_state.dark_mode else "theme-light"
 with st.container(key=theme_key):
@@ -739,6 +789,7 @@ with theme_col:
         width=36,
     ):
         st.session_state.dark_mode = not st.session_state.dark_mode
+        st.session_state.theme_user_set = True
         st.rerun()
 st.subheader(
     "Streaming y análisis de operaciones bursátiles con procesamiento distribuido en tiempo real."
