@@ -241,7 +241,7 @@ def format_elapsed_time(
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 def get_activity_chart_rows(
-    streaming_module: ModuleType,
+    controller_module: ModuleType,
     run_id: str | None,
 ) -> tuple[list[dict[str, Any]], int]:
     """Leo eventos nuevos y transformo los acumulados a la escala visual."""
@@ -257,7 +257,7 @@ def get_activity_chart_rows(
             "pending": "",
         },
     )
-    data_path = streaming_module.get_run_file(run_id, "data")
+    data_path = DATA_DIRECTORY / "runs" / f"{run_id}_02_alpaca_data.jsonl"
     if not data_path.exists():
         return [], 1
     try:
@@ -769,7 +769,7 @@ with st.container(
     title_col = st.container(width="stretch")
     theme_col = st.container(width="content")
 with icon_col:
-    st.image(str(icon_path), width=48)
+    st.image(str(icon_path), width=52)
 with title_col:
     st.title("Apache Big Data Lab")
 with theme_col:
@@ -805,8 +805,10 @@ def render_streaming() -> None:
     kafka_module = load_page_module("03_apache_kafka")
     spark_module = load_page_module("04_apache_spark")
     controller_module.configure_streaming_module(streaming_module)
-    streaming_module.configure_kafka_module(kafka_module)
-    streaming_module.configure_spark_module(spark_module)
+    controller_module.configure_pipeline_modules(
+        kafka_module,
+        spark_module,
+    )
     kafka_module.configure_console_buffer(
         streaming_module.append_console_buffer,
     )
@@ -1061,7 +1063,7 @@ def render_streaming() -> None:
             completion_text = "Detenido manualmente."
         last_execution_notice = f"Datos de la **última ejecución:** {last_execution_text}. **Duración:** {elapsed_text}. **{completion_text}** | **Modo:** {history_mode}. | **RUN:** {history_run_id}."
         automatic_stop_messages = {
-            "heartbeat_timeout": "La ejecución se detuvo automáticamente porque la interfaz dejó de enviar señales de actividad durante 5 minutos.",
+            "heartbeat_timeout": "La ejecución se detuvo automáticamente porque la interfaz dejó de enviar señales de actividad durante 15 minutos.",
             "process_restart": "La ejecución se detuvo automáticamente porque se reinició el proceso de la aplicación.",
             "process_shutdown": "La ejecución se detuvo automáticamente porque se cerró el proceso de la aplicación.",
         }
@@ -1113,20 +1115,20 @@ def render_streaming() -> None:
             else None
         )
         execution_path = (
-            streaming_module.get_run_file(run_id, "handler")
+            DATA_DIRECTORY / "runs" / f"{run_id}_01_controller_log.txt"
             if snapshot.get("console_schema_version", 0) >= 3
             and run_id
             else streaming_path
         )
         alpaca_path = (
-            streaming_module.get_run_file(run_id, "alpaca")
+            DATA_DIRECTORY / "runs" / f"{run_id}_02_alpaca_log.txt"
             if snapshot.get("console_schema_version", 0) >= 3
             and run_id
             else streaming_path
         )
         kafka_path = kafka_module.get_log_path(run_id) if run_id else None
         spark_path = (
-            streaming_module.get_run_file(run_id, "spark")
+            DATA_DIRECTORY / "runs" / f"{run_id}_04_spark_log.txt"
             if snapshot.get("console_schema_version", 0) >= 3
             and run_id
             else streaming_path
@@ -1178,7 +1180,7 @@ def render_streaming() -> None:
                 file_name=(
                     execution_path.name
                     if execution_path is not None
-                    else "log_01_controller.txt"
+                    else "01_controller_log.txt"
                 ),
                 mime="text/plain",
                 key=f"download-execution-log-console-{run_id or 'no-run'}",
@@ -1352,7 +1354,7 @@ def render_streaming() -> None:
                 file_name=(
                     spark_path.name
                     if spark_path is not None
-                    else "log_04_apache_spark.txt"
+                    else "04_spark_log.txt"
                 ),
                 mime="text/plain",
                 key=f"download-spark-log-console-{run_id or 'no-run'}",
@@ -1417,7 +1419,7 @@ def render_streaming() -> None:
             else:
                 st.text(elapsed_text)
     activity_rows, activity_interval = get_activity_chart_rows(
-        streaming_module,
+        controller_module,
         run_id,
     )
     volume_column, activity_column = st.columns(

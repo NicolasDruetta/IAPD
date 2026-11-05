@@ -97,27 +97,17 @@ def get_checkpoint(run_id: str | None) -> dict[str, Any] | None:
 
     if run_id is None:
         return None
-    path = DATA_DIRECTORY / f"{run_id}_spark_checkpoint.json"
+    path = DATA_DIRECTORY / "runs" / f"{run_id}_00_run_info.jsonl"
     if not path.exists():
-        legacy_path = DATA_DIRECTORY / "runs" / f"{run_id}_00_run_info.jsonl"
-        if not legacy_path.exists():
-            legacy_path = DATA_DIRECTORY / f"{run_id}_00_run_info.jsonl"
-        if not legacy_path.exists():
-            legacy_path = DATA_DIRECTORY / f"{run_id}_run_info.jsonl"
-        if not legacy_path.exists():
-            return None
-        checkpoint = None
-        try:
-            with legacy_path.open(encoding="utf-8") as info_file:
-                for line in info_file:
-                    record = json.loads(line)
-                    if record.get("record_type") == "spark_checkpoint":
-                        checkpoint = record
-            return checkpoint
-        except (OSError, json.JSONDecodeError):
-            return None
+        return None
+    checkpoint = None
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        with path.open(encoding="utf-8") as info_file:
+            for line in info_file:
+                record = json.loads(line)
+                if record.get("record_type") == "spark_checkpoint":
+                    checkpoint = record
+        return checkpoint
     except (OSError, json.JSONDecodeError):
         return None
 
@@ -574,21 +564,11 @@ def consolidate_parquet(run_id: str) -> bool:
     """Consolido los archivos Parquet temporales en un único archivo final."""
 
     parts_path = DATA_DIRECTORY / "spark" / f"{run_id}_04_spark_data.parquet.parts"
-    legacy_parts_path = (
-        DATA_DIRECTORY / f"{run_id}_04_spark_data.parquet.parts"
-    )
     final_path = DATA_DIRECTORY / "runs" / f"{run_id}_04_spark_data.parquet"
     temporary_path = DATA_DIRECTORY / "spark" / f"{run_id}_04_spark_data.parquet.tmp"
     checkpoint_path = DATA_DIRECTORY / "spark" / f"{run_id}_04_spark_checkpoint"
-    legacy_checkpoint_path = (
-        DATA_DIRECTORY / f"{run_id}_04_spark_checkpoint"
-    )
     if final_path.exists():
         return True
-    if not parts_path.exists() and legacy_parts_path.exists():
-        parts_path = legacy_parts_path
-    if not checkpoint_path.exists() and legacy_checkpoint_path.exists():
-        checkpoint_path = legacy_checkpoint_path
     if not parts_path.exists():
         return False
     if temporary_path.exists():

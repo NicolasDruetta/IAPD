@@ -33,8 +33,6 @@ CALENDAR_API_URLS = (
     "https://api.alpaca.markets/v2/calendar",
     "https://paper-api.alpaca.markets/v2/calendar",
 )
-KAFKA_MODULE: Any = None
-SPARK_MODULE: Any = None
 HISTORICAL_QUOTES_API_URL = "https://data.alpaca.markets/v2/stocks/quotes"
 HISTORICAL_TRADES_API_URL = "https://data.alpaca.markets/v2/stocks/trades"
 HTTP_MAX_RETRIES = 5
@@ -61,18 +59,6 @@ _CONSOLE_BUFFERS: dict[tuple[str, str], deque[str]] = {}
 _CONSOLE_BUFFER_SEEDED: set[tuple[str, str]] = set()
 _CONSOLE_BUFFER_TOTALS: dict[tuple[str, str], int] = {}
 CONSOLE_BUFFER_SIZE = 200
-
-def configure_kafka_module(kafka_module: Any) -> None:
-    """Registro el módulo Kafka que publica los eventos del RUN."""
-
-    global KAFKA_MODULE
-    KAFKA_MODULE = kafka_module
-
-def configure_spark_module(spark_module: Any) -> None:
-    """Registro el módulo Spark que confirma el primer lote publicado."""
-
-    global SPARK_MODULE
-    SPARK_MODULE = spark_module
 
 def append_console_buffer(
     run_id: str,
@@ -341,6 +327,13 @@ class AlpacaStreamingService:
         replay_speed: float = 1.0,
         release_callback: Callable[["AlpacaStreamingService"], None]
         | None = None,
+        kafka_log_file_name: str | None = None,
+        publish_events_callback: Callable[
+            [str, list[dict[str, Any]], threading.Event | None],
+            None,
+        ] | None = None,
+        confirm_kafka_publication_callback: Callable[[str], None]
+        | None = None,
     ) -> None:
         self._api_key = api_key
         self._api_secret = api_secret
@@ -352,6 +345,11 @@ class AlpacaStreamingService:
         self._feed = feed
         self._replay_speed = replay_speed
         self._release_callback = release_callback
+        self._kafka_log_file_name = kafka_log_file_name
+        self._publish_events_callback = publish_events_callback
+        self._confirm_kafka_publication_callback = (
+            confirm_kafka_publication_callback
+        )
         self._events: deque[AlpacaEvent] = deque()
         self._stop_event = threading.Event()
         self._pipeline_ready = threading.Event()
@@ -393,11 +391,6 @@ class AlpacaStreamingService:
         self._log_spark_path = (
             DATA_DIRECTORY / "runs" / f"{run_stem}_04_spark_log.txt"
         )
-        self._kafka_log_path = (
-            KAFKA_MODULE.initialize_run(run_stem)
-            if KAFKA_MODULE is not None
-            else None
-        )
         self._streaming_path = self._run_info_path
         ensure_data_directory()
         if any(
@@ -435,11 +428,7 @@ class AlpacaStreamingService:
                     "log_controller_file": self._log_handler_path.name,
                     "log_alpaca_file": self._log_alpaca_path.name,
                     "log_spark_file": self._log_spark_path.name,
-                    "kafka_log_file": (
-                        self._kafka_log_path.name
-                        if self._kafka_log_path is not None
-                        else None
-                    ),
+                    "kafka_log_file": self._kafka_log_file_name,
                     "universe": self._universe_metadata,
                     "console_schema_version": 4,
                 },
@@ -563,11 +552,7 @@ class AlpacaStreamingService:
                 "log_controller_file": self._log_handler_path.name,
                 "log_alpaca_file": self._log_alpaca_path.name,
                 "log_spark_file": self._log_spark_path.name,
-                "kafka_log_file": (
-                    self._kafka_log_path.name
-                    if self._kafka_log_path is not None
-                    else None
-                ),
+                "kafka_log_file": self._kafka_log_file_name,
                 "is_active": self.is_active(),
             }
 
@@ -779,15 +764,15 @@ class AlpacaStreamingService:
                 f"REPLAY | lote emitido={self._replay_batch_number} | operaciones={trade_count} | cotizaciones={quote_count} | total_emitidos={self._event_count}"
             )
             self._append_state_locked()
-            if KAFKA_MODULE is not None:
-                KAFKA_MODULE.publish_events(
+            if self._publish_events_callback is not None:
+                self._publish_events_callback(
                     self._run_id,
                     [record for _, record in stream_records],
                     self._stop_event,
                 )
                 self._kafka_published_count += len(stream_records)
-                if SPARK_MODULE is not None:
-                    SPARK_MODULE.confirm_kafka_publication(self._run_id)
+                if self._confirm_kafka_publication_callback is not None:
+                    self._confirm_kafka_publication_callback(self._run_id)
 
     def _replay_cached_file(self, historical_path: Path) -> None:
         """Reproduzco una caché completa usando lotes acotados."""
@@ -1319,34 +1304,6 @@ def event_from_record(
         ),
     )
 
-def get_run_file(run_id: str, file_kind: str) -> Path:
-    """Obtengo la ruta de un archivo de un RUN nuevo."""
-
-    suffixes = {
-        "alpaca": "02_alpaca_log.txt",
-        "data": "02_alpaca_data.jsonl",
-        "handler": "01_controller_log.txt",
-        "info": "00_run_info.jsonl",
-        "parquet": "04_spark_data.parquet",
-        "spark": "04_spark_log.txt",
-        "trades": "02_alpaca_data.jsonl",
-    }
-    path = DATA_DIRECTORY / "runs" / f"{run_id}_{suffixes[file_kind]}"
-    legacy_suffixes = {
-        "alpaca": ("log_02_alpaca_stream.txt", "log_alpaca.txt"),
-        "data": ("data_alpaca.jsonl",),
-        "handler": ("log_01_controller.txt", "log_handler.txt"),
-        "info": ("run_info.jsonl",),
-        "spark": ("log_04_apache_spark.txt", "log_03_apache_spark.txt"),
-        "trades": ("data_alpaca.jsonl",),
-    }
-    if file_kind in legacy_suffixes and not path.exists():
-        for legacy_suffix in legacy_suffixes[file_kind]:
-            legacy_path = DATA_DIRECTORY / f"{run_id}_{legacy_suffix}"
-            if legacy_path.exists():
-                return legacy_path
-    return path
-
 def read_console_tail(
     path: Path,
     line_limit: int = 1000,
@@ -1435,9 +1392,7 @@ def get_latest_metadata() -> dict[str, Any] | None:
 
     if not DATA_DIRECTORY.exists():
         return None
-    new_paths = list((DATA_DIRECTORY / "runs").glob("*_00_run_info.jsonl"))
-    root_paths = list(DATA_DIRECTORY.glob("*_00_run_info.jsonl"))
-    candidates = new_paths + root_paths
+    candidates = list((DATA_DIRECTORY / "runs").glob("*_00_run_info.jsonl"))
     if candidates:
         latest_path = max(candidates, key=lambda path: path.stat().st_mtime_ns)
         latest_stat = latest_path.stat()
@@ -2041,7 +1996,11 @@ def read_streaming_state(path: Path) -> dict[str, Any] | None:
     except OSError:
         return None
     if state["market_timestamp"] is None and state["event_count"] > 0:
-        data_path = get_run_file(state["run_id"], "data")
+        data_path = (
+            DATA_DIRECTORY
+            / "runs"
+            / f"{state['run_id']}_02_alpaca_data.jsonl"
+        )
         try:
             with data_path.open("rb") as data_file:
                 position = data_file.seek(0, os.SEEK_END)
@@ -2072,8 +2031,7 @@ def read_events_after(
     """Leo únicamente los eventos posteriores al checkpoint persistido."""
 
     event_paths = [
-        get_run_file(run_id, "data"),
-        DATA_DIRECTORY / f"{run_id}_alpaca_trades.jsonl",
+        DATA_DIRECTORY / "runs" / f"{run_id}_02_alpaca_data.jsonl"
     ]
     new_events_path = next(
         (path for path in event_paths if path.exists()),

@@ -195,6 +195,18 @@ correctamente se consolida un único Parquet y se eliminan únicamente esos
 temporales. Si el RUN falla, los temporales se conservan para recuperación y
 diagnóstico. Los históricos existentes no se modifican automáticamente.
 
+Las rutas de archivos se construyen directamente con los nombres canónicos:
+`00_run_info`, `01_controller_log`, `02_alpaca_data`, `02_alpaca_log`,
+`04_spark_data` y `04_spark_log`. No se utilizan diccionarios de nombres,
+alias abreviados ni nombres de archivo alternativos.
+
+Los mapas de rutas utilizan nombres de archivo canónicos completos: cada
+valor debe coincidir exactamente con el nombre generado después del
+identificador del RUN. No se utilizan alias semánticos como nombres de
+archivo; las referencias a datos, logs, información y Parquet deben resolver
+directamente al nombre definido en esta sección. La compatibilidad histórica
+se conserva únicamente mediante sus nombres históricos explícitos.
+
 ## 13. Logging operativo
 
 Los logs operativos informan estados y contadores reales de las etapas de

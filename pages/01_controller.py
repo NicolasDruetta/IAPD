@@ -8,7 +8,9 @@ from typing import Any
 
 _ACTIVE_SERVICE: Any = None
 HEARTBEAT_TIMEOUT_SECONDS = 900
+_KAFKA_MODULE: Any = None
 _MANAGER_LOCK = threading.RLock()
+_SPARK_MODULE: Any = None
 _STREAMING_MODULE: Any = None
 _SUPERVISOR_THREAD: threading.Thread | None = None
 
@@ -26,7 +28,7 @@ def append_spark_checkpoint(
     if service is not None and service.get_snapshot()["run_id"] == run_id:
         service.append_spark_checkpoint(checkpoint, console_lines or [])
         return
-    streaming_path = streaming_module.get_run_file(run_id, "info")
+    streaming_path = DATA_DIRECTORY / "runs" / f"{run_id}_00_run_info.jsonl"
     if streaming_path.exists():
         previous = streaming_module.read_spark_checkpoint(streaming_path)
         processed_count = int(checkpoint.get("processed_events", 0))
@@ -44,7 +46,7 @@ def append_spark_checkpoint(
             checkpoint,
         )
         for line in console_lines or []:
-            spark_path = streaming_module.get_run_file(run_id, "spark")
+            spark_path = DATA_DIRECTORY / "runs" / f"{run_id}_04_spark_log.txt"
             previous_number = streaming_module.read_console_tail(
                 spark_path,
                 1,
@@ -149,7 +151,7 @@ def get_spark_checkpoint(run_id: str | None) -> dict[str, Any] | None:
     service = get_active_service()
     if service is not None and service.get_snapshot()["run_id"] == run_id:
         return service.get_spark_checkpoint()
-    new_path = streaming_module.get_run_file(run_id, "info")
+    new_path = DATA_DIRECTORY / "runs" / f"{run_id}_00_run_info.jsonl"
     if new_path.exists():
         return streaming_module.read_spark_checkpoint(new_path)
     return None
@@ -220,6 +222,16 @@ def configure_streaming_module(streaming_module: Any) -> None:
     _STREAMING_MODULE = streaming_module
     mark_interrupted_run()
 
+def configure_pipeline_modules(
+    kafka_module: Any,
+    spark_module: Any,
+) -> None:
+    """Registro Kafka y Spark para coordinar el flujo del RUN."""
+
+    global _KAFKA_MODULE, _SPARK_MODULE
+    _KAFKA_MODULE = kafka_module
+    _SPARK_MODULE = spark_module
+
 def shutdown_active_run() -> None:
     """Cierro el RUN administrado cuando finaliza el proceso Python."""
 
@@ -237,6 +249,8 @@ def start_run(
 
     global _ACTIVE_SERVICE, _SUPERVISOR_THREAD
     streaming_module = _require_streaming_module()
+    if _KAFKA_MODULE is None or _SPARK_MODULE is None:
+        raise RuntimeError("Kafka y Spark no fueron configurados.")
     with _MANAGER_LOCK:
         if _ACTIVE_SERVICE is not None and _ACTIVE_SERVICE.is_active():
             return _ACTIVE_SERVICE
@@ -263,6 +277,7 @@ def start_run(
             }
         started_at = streaming_module.get_utc_timestamp()
         run_id = streaming_module.build_run_stem(started_at)
+        kafka_log_path = _KAFKA_MODULE.initialize_run(run_id)
         try:
             _ACTIVE_SERVICE = streaming_module.AlpacaStreamingService(
                 api_key,
@@ -275,6 +290,11 @@ def start_run(
                 feed,
                 replay_speed,
                 release_callback=release_active_service,
+                kafka_log_file_name=kafka_log_path.name,
+                publish_events_callback=_KAFKA_MODULE.publish_events,
+                confirm_kafka_publication_callback=(
+                    _SPARK_MODULE.confirm_kafka_publication
+                ),
             )
         except FileExistsError as error:
             raise RuntimeError(
