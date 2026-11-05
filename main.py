@@ -837,7 +837,7 @@ def render_streaming() -> None:
             default_option = SYMBOL_OPTIONS[1]
     st.subheader("Símbolos bursátiles")
     symbols_col, actions_col = st.columns(
-        [4, 8],
+        [1, 1],
         gap="small",
         vertical_alignment="bottom",
     )
@@ -998,7 +998,7 @@ def render_streaming() -> None:
     elif status == "Error":
         status_text = "Finalizado con error."
     mode_col, run_col, status_col = st.columns(
-        [2, 2, 8],
+        [1, 1, 2],
         gap="small",
     )
     with mode_col:
@@ -1387,23 +1387,22 @@ def render_streaming() -> None:
     
     if last_execution_notice:
         st.info(last_execution_notice)
-    with st.container(border=True):
-        with st.container(
-            horizontal=True,
-            gap="small",
-            vertical_alignment="top",
-        ):
-            date_col = st.container(width="stretch")
-            time_col = st.container(width="stretch")
-            elapsed_col = st.container(width="stretch")
-        with date_col:
+    date_col, time_col, elapsed_col = st.columns(
+        [1, 1, 2],
+        gap="small",
+        vertical_alignment="top",
+    )
+    with date_col:
+        with st.container(border=True):
             st.caption("Fecha de mercado analizada")
             st.text(market_date)
-        with time_col:
+    with time_col:
+        with st.container(border=True):
             st.caption("Última hora procesada")
             st.text(market_time)
-        with elapsed_col:
-            st.caption("Tiempo transcurrido de ejecución")
+    with elapsed_col:
+        with st.container(border=True):
+            st.caption("Tiempo de ejecución transcurrido")
             if snapshot["is_active"] and not st.session_state.start_pending:
                 EXECUTION_TIMER_COMPONENT(
                     data={

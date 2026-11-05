@@ -25,14 +25,8 @@ from zoneinfo import ZoneInfo
 ALPACA_API_KEY = "PKJQMFWVYH6PEXUKK34QAABOUW"
 ALPACA_SECRET_KEY = "5xBskyt9ofjunrzuCa77RDwjP5n5fGCDDv6XrfxqzAyk"
 ALL_MARKET_SYMBOL = "*"
-ASSETS_API_URLS = (
-    "https://paper-api.alpaca.markets/v2/assets",
-    "https://api.alpaca.markets/v2/assets",
-)
-CALENDAR_API_URLS = (
-    "https://api.alpaca.markets/v2/calendar",
-    "https://paper-api.alpaca.markets/v2/calendar",
-)
+ASSETS_API_URL = "https://paper-api.alpaca.markets/v2/assets"
+CALENDAR_API_URL = "https://paper-api.alpaca.markets/v2/calendar"
 HISTORICAL_QUOTES_API_URL = "https://data.alpaca.markets/v2/stocks/quotes"
 HISTORICAL_TRADES_API_URL = "https://data.alpaca.markets/v2/stocks/trades"
 HTTP_MAX_RETRIES = 5
@@ -40,18 +34,9 @@ MAX_HTTP_CONCURRENCY = 6
 NEW_YORK_TIMEZONE = ZoneInfo("America/New_York")
 RANKED_SYMBOL_COUNT = 20
 REPLAY_BATCH_SIZE = 100
-REPLAY_SPEEDS = {
-    "1 evento por segundo": 1.0,
-    "10 eventos por segundo": 0.1,
-    "100 eventos por segundo": 0.01,
-    "Máxima velocidad controlada": 0.0,
-}
 REPLAY_WINDOW_MINUTES = 1
 SP500_COMPONENTS_URL = (
     "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-)
-SP500_INDEX_URL = (
-    "https://www.spglobal.com/spdji/en/indices/equity/sp-500/"
 )
 STOCK_SNAPSHOTS_URL = "https://data.alpaca.markets/v2/stocks/snapshots"
 _CONSOLE_BUFFER_LOCK = threading.RLock()
@@ -1430,40 +1415,32 @@ def get_latest_market_session(
         }
     )
     ssl_context = ssl.create_default_context(cafile=certifi.where())
-    authentication_error = False
-    for calendar_api_url in CALENDAR_API_URLS:
-        request = urllib.request.Request(
-            f"{calendar_api_url}?{query}",
-            headers={
-                "APCA-API-KEY-ID": api_key,
-                "APCA-API-SECRET-KEY": api_secret,
-            },
-        )
-        try:
-            with urllib.request.urlopen(
-                request,
-                timeout=30,
-                context=ssl_context,
-            ) as response:
-                calendar = json.load(response)
-            break
-        except urllib.error.HTTPError as error:
-            if error.code in {401, 403}:
-                authentication_error = True
-                continue
-            raise RuntimeError(
-                    f"Alpaca devolvió HTTP {error.code} al consultar el calendario."
-            ) from error
-        except (OSError, json.JSONDecodeError) as error:
-            raise RuntimeError(
-                "No se pudo consultar el calendario de Alpaca."
-            ) from error
-    else:
-        if authentication_error:
+    request = urllib.request.Request(
+        f"{CALENDAR_API_URL}?{query}",
+        headers={
+            "APCA-API-KEY-ID": api_key,
+            "APCA-API-SECRET-KEY": api_secret,
+        },
+    )
+    try:
+        with urllib.request.urlopen(
+            request,
+            timeout=30,
+            context=ssl_context,
+        ) as response:
+            calendar = json.load(response)
+    except urllib.error.HTTPError as error:
+        if error.code in {401, 403}:
             raise RuntimeError(
                 "Alpaca rechazó las credenciales para consultar el calendario."
-            )
-        raise RuntimeError("No se pudo consultar el calendario de Alpaca.")
+            ) from error
+        raise RuntimeError(
+            f"Alpaca devolvió HTTP {error.code} al consultar el calendario."
+        ) from error
+    except (OSError, json.JSONDecodeError) as error:
+        raise RuntimeError(
+            "No se pudo consultar el calendario de Alpaca."
+        ) from error
     if not isinstance(calendar, list):
         raise RuntimeError("Alpaca devolvió un calendario inválido.")
     sessions: list[tuple[str, datetime, datetime]] = []
@@ -1514,36 +1491,32 @@ def get_available_asset_symbols(
         {"status": "active", "asset_class": "us_equity"}
     )
     ssl_context = ssl.create_default_context(cafile=certifi.where())
-    authentication_error = False
-    for assets_api_url in ASSETS_API_URLS:
-        request = urllib.request.Request(
-            f"{assets_api_url}?{query}",
-            headers={
-                "APCA-API-KEY-ID": api_key,
-                "APCA-API-SECRET-KEY": api_secret,
-            },
-        )
-        try:
-            with urllib.request.urlopen(
-                request,
-                timeout=30,
-                context=ssl_context,
-            ) as response:
-                assets = json.load(response)
-            break
-        except urllib.error.HTTPError as error:
-            if error.code in {401, 403}:
-                authentication_error = True
-                continue
-            raise RuntimeError(
-                f"Alpaca no pudo devolver el mercado: HTTP {error.code}."
-            ) from error
-    else:
-        if authentication_error:
+    request = urllib.request.Request(
+        f"{ASSETS_API_URL}?{query}",
+        headers={
+            "APCA-API-KEY-ID": api_key,
+            "APCA-API-SECRET-KEY": api_secret,
+        },
+    )
+    try:
+        with urllib.request.urlopen(
+            request,
+            timeout=30,
+            context=ssl_context,
+        ) as response:
+            assets = json.load(response)
+    except urllib.error.HTTPError as error:
+        if error.code in {401, 403}:
             raise RuntimeError(
                 "Alpaca rechazó las credenciales para consultar el mercado."
-            )
-        raise RuntimeError("No se pudo consultar el mercado en Alpaca.")
+            ) from error
+        raise RuntimeError(
+            f"Alpaca no pudo devolver el mercado: HTTP {error.code}."
+        ) from error
+    except (OSError, json.JSONDecodeError) as error:
+        raise RuntimeError(
+            "No se pudo consultar el mercado en Alpaca."
+        ) from error
     symbols = {
         asset.get("symbol")
         for asset in assets
@@ -1721,7 +1694,6 @@ def resolve_automatic_symbols(
     return available, {
         "selection": "sp500",
         "source": SP500_COMPONENTS_URL,
-        "index_source": SP500_INDEX_URL,
         "source_updated_at": source_updated_at,
         "fetched_at": get_utc_timestamp(),
         "component_count": len(components),
@@ -1744,39 +1716,6 @@ def build_run_stem(started_at: str) -> str:
         started_at.replace("Z", "+00:00")
     ).astimezone(PRESENTATION_TIMEZONE)
     return timestamp.strftime("%Y%m%d_%H%M%S")
-
-def mark_interrupted_run() -> dict[str, Any] | None:
-    """Reconozco un RUN activo que pertenecía a otro proceso Python."""
-
-    metadata = get_latest_metadata()
-    if metadata is None or not metadata.get("is_active"):
-        return metadata
-    metadata["status"] = "Incompleto"
-    metadata["is_active"] = False
-    metadata["end_reason"] = "process_restart"
-    metadata["ended_at"] = get_utc_timestamp()
-    run_id = metadata.get("run_id")
-    streaming_file = (
-        metadata.get("run_info_file")
-        if int(metadata.get("console_schema_version", 0)) >= 3
-        else metadata.get("streaming_file")
-    )
-    if isinstance(run_id, str) and isinstance(streaming_file, str):
-        streaming_path = DATA_DIRECTORY / "runs" / streaming_file
-        sequence = int(metadata.get("sequence", 0))
-        append_stream_record(
-            streaming_path,
-            run_id,
-            sequence + 1,
-            "state",
-            {
-                "status": "Incompleto",
-                "is_active": False,
-                "end_reason": "process_restart",
-                "ended_at": metadata["ended_at"],
-            },
-        )
-    return metadata
 
 def read_json(path: Path) -> dict[str, Any] | None:
     """Leo la metadata de un RUN cuando el archivo es válido."""
@@ -1808,96 +1747,6 @@ def append_stream_record(
         stream_file.write(json.dumps(record, ensure_ascii=False) + "\n")
         stream_file.flush()
         os.fsync(stream_file.fileno())
-
-def read_log_page_with_cursor(
-    path: Path,
-    cursor: int | str = 0,
-    page_size: int = 200,
-) -> tuple[list[tuple[int, str]], int]:
-    """Leo una página y devuelvo el cursor de su último registro."""
-
-    if page_size <= 0 or not path.exists():
-        return [], int(cursor) if isinstance(cursor, int) else 0
-    if cursor == "tail":
-        return read_tail_log_records(path, page_size)
-    lines: list[tuple[int, str]] = []
-    try:
-        with path.open(encoding="utf-8") as stream_file:
-            for line in stream_file:
-                try:
-                    record = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if record.get("record_type") != "log":
-                    continue
-                sequence = int(record.get("sequence", 0))
-                if isinstance(cursor, int) and sequence <= cursor:
-                    continue
-                log_line = (
-                    f"{record.get('recorded_at', '-')} | {record.get('message', '')}"
-                )
-                lines.append((sequence, log_line))
-                if len(lines) == page_size:
-                    break
-    except OSError:
-        return [], int(cursor) if isinstance(cursor, int) else 0
-    next_cursor = lines[-1][0] if lines else (
-        int(cursor) if isinstance(cursor, int) else 0
-    )
-    return lines, next_cursor
-
-def read_tail_log_records(
-    path: Path,
-    page_size: int,
-) -> tuple[list[tuple[int, str]], int]:
-    """Leo la página final sin recorrer el JSONL completo en cada refresco."""
-
-    records: list[tuple[int, str]] = []
-    try:
-        with path.open("rb") as stream_file:
-            position = stream_file.seek(0, os.SEEK_END)
-            pending = b""
-            while position > 0 and len(records) < page_size:
-                block_size = min(8192, position)
-                position -= block_size
-                stream_file.seek(position)
-                pending = stream_file.read(block_size) + pending
-                raw_lines = pending.split(b"\n")
-                pending = raw_lines.pop(0)
-                for raw_line in reversed(raw_lines):
-                    if not raw_line:
-                        continue
-                    try:
-                        record = json.loads(raw_line.decode("utf-8"))
-                    except (UnicodeDecodeError, json.JSONDecodeError):
-                        continue
-                    if record.get("record_type") != "log":
-                        continue
-                    sequence = int(record.get("sequence", 0))
-                    records.append(
-                        (
-                            sequence,
-                            f"{record.get('recorded_at', '-')} | {record.get('message', '')}",
-                        )
-                    )
-                    if len(records) == page_size:
-                        break
-            if pending and len(records) < page_size:
-                try:
-                    record = json.loads(pending.decode("utf-8"))
-                except (UnicodeDecodeError, json.JSONDecodeError):
-                    record = {}
-                if record.get("record_type") == "log":
-                    records.append(
-                        (
-                            int(record.get("sequence", 0)),
-                            f"{record.get('recorded_at', '-')} | {record.get('message', '')}",
-                        )
-                    )
-    except OSError:
-        return [], 0
-    records.reverse()
-    return records, records[-1][0] if records else 0
 
 def read_streaming_state(path: Path) -> dict[str, Any] | None:
     """Reconstruyo el último estado sin materializar eventos ni logs."""

@@ -200,6 +200,10 @@ Las rutas de archivos se construyen directamente con los nombres canónicos:
 `04_spark_data` y `04_spark_log`. No se utilizan diccionarios de nombres,
 alias abreviados ni nombres de archivo alternativos.
 
+Todas las URLs externas se declaran como constantes visibles al comienzo del
+módulo que las utiliza. Las consultas no contienen URLs literales ocultas o
+escritas directamente dentro de las funciones.
+
 Los mapas de rutas utilizan nombres de archivo canónicos completos: cada
 valor debe coincidir exactamente con el nombre generado después del
 identificador del RUN. No se utilizan alias semánticos como nombres de
