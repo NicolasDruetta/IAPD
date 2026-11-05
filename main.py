@@ -975,7 +975,11 @@ def render_streaming() -> None:
         presentation_market_timestamp = format_presentation_timestamp(
             market_timestamp,
         )
-        market_date = snapshot.get("historical_date") or "-"
+        market_date = (
+            snapshot.get("historical_date") or "-"
+            if snapshot["is_active"]
+            else "-"
+        )
         market_time = (
             presentation_market_timestamp.split(" ", 1)[1]
             if presentation_market_timestamp != "-"
@@ -1378,8 +1382,8 @@ def render_streaming() -> None:
     if last_execution_notice:
         st.info(last_execution_notice)
     with st.container(border=True):
-        date_col, time_col, elapsed_col = st.columns(
-            [1, 1, 2],
+        date_col, time_col, elapsed_col, data_col = st.columns(
+            [1, 1, 1, 1],
             gap="small",
             vertical_alignment="top",
         )
@@ -1405,6 +1409,9 @@ def render_streaming() -> None:
                 )
             else:
                 st.text(elapsed_text)
+        with data_col:
+            st.caption("Cantidad de datos descargados")
+            st.text(str(snapshot.get("event_count", 0)))
     activity_rows, activity_interval = get_activity_chart_rows(
         controller_module,
         run_id,

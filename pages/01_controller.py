@@ -2,6 +2,8 @@
 
 import atexit
 import functions
+import json
+import os
 import threading
 import time
 
@@ -11,9 +13,75 @@ _ACTIVE_SERVICE: Any = None
 HEARTBEAT_TIMEOUT_SECONDS = 900
 _KAFKA_MODULE: Any = None
 _MANAGER_LOCK = threading.RLock()
+_RUN_SEQUENCES: dict[str, int] = {}
 _SPARK_MODULE: Any = None
 _STREAMING_MODULE: Any = None
 _SUPERVISOR_THREAD: threading.Thread | None = None
+
+def append_controller_log(run_id: str, line: str) -> None:
+    """Agrego una línea numerada al log propio del Controller."""
+
+    log_path = DATA_DIRECTORY / "runs" / f"{run_id}_01_controller_log.txt"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    previous_number = functions.read_console_tail(log_path, 1)[2]
+    persisted_line = f"[#{previous_number + 1}] {line}"
+    with log_path.open("a", encoding="utf-8") as log_file:
+        log_file.write(persisted_line + "\n")
+        log_file.flush()
+        os.fsync(log_file.fileno())
+    functions.append_console_buffer(run_id, "controller", persisted_line)
+
+def append_run_record(
+    run_id: str,
+    record_type: str,
+    payload: dict[str, Any],
+) -> None:
+    """Agrego un registro general al JSONL persistente del RUN."""
+
+    run_info_path = DATA_DIRECTORY / "runs" / f"{run_id}_00_run_info.jsonl"
+    with _MANAGER_LOCK:
+        sequence = _RUN_SEQUENCES.get(run_id)
+        if sequence is None:
+            streaming_module = _require_streaming_module()
+            state = streaming_module.read_streaming_state(run_info_path)
+            sequence = int(state.get("sequence", 0)) if state else 0
+        sequence += 1
+        _RUN_SEQUENCES[run_id] = sequence
+        record = {
+            "record_type": record_type,
+            "sequence": sequence,
+            "run_id": run_id,
+            "recorded_at": _require_streaming_module().get_utc_timestamp(),
+            **payload,
+        }
+        run_info_path.parent.mkdir(parents=True, exist_ok=True)
+        with run_info_path.open("a", encoding="utf-8") as run_info_file:
+            run_info_file.write(json.dumps(record, ensure_ascii=False) + "\n")
+            run_info_file.flush()
+            os.fsync(run_info_file.fileno())
+
+def append_run_state(service: Any) -> None:
+    """Persisto el estado actual del RUN administrado por el Controller."""
+
+    snapshot = service.get_snapshot()
+    append_run_record(
+        snapshot["run_id"],
+        "state",
+        {
+            "status": snapshot["status"],
+            "error": snapshot["error"],
+            "event_count": snapshot["event_count"],
+            "log_count": snapshot["log_count"],
+            "market_timestamp": snapshot["market_timestamp"],
+            "replay_position": snapshot["replay_position"],
+            "historical_date": snapshot["historical_date"],
+            "started_at": snapshot["started_at"],
+            "ended_at": snapshot["ended_at"],
+            "last_heartbeat": snapshot["last_heartbeat"],
+            "end_reason": snapshot["end_reason"],
+            "is_active": snapshot["is_active"],
+        },
+    )
 
 def append_spark_checkpoint(
     run_id: str | None,
@@ -39,10 +107,9 @@ def append_spark_checkpoint(
             return
         state = streaming_module.read_streaming_state(streaming_path)
         sequence = int(state.get("sequence", 0)) if state else 0
-        streaming_module.append_stream_record(
-            streaming_path,
+        _RUN_SEQUENCES[run_id] = sequence
+        append_run_record(
             run_id,
-            sequence + 1,
             "spark_checkpoint",
             checkpoint,
         )
@@ -175,12 +242,10 @@ def mark_interrupted_run() -> dict[str, Any] | None:
         else metadata.get("streaming_file")
     )
     if isinstance(run_id, str) and isinstance(streaming_file, str):
-        streaming_path = streaming_module.DATA_DIRECTORY / "runs" / streaming_file
         sequence = int(metadata.get("sequence", 0))
-        streaming_module.append_stream_record(
-            streaming_path,
+        _RUN_SEQUENCES[run_id] = sequence
+        append_run_record(
             run_id,
-            sequence + 1,
             "state",
             {
                 "status": "Incompleto",
@@ -278,6 +343,11 @@ def start_run(
             }
         started_at = streaming_module.get_utc_timestamp()
         run_id = streaming_module.build_run_stem(started_at)
+        run_info_path = DATA_DIRECTORY / "runs" / f"{run_id}_00_run_info.jsonl"
+        if run_info_path.exists():
+            raise RuntimeError(
+                "El identificador del RUN ya existe; esperá un segundo y volvé a iniciar."
+            )
         kafka_log_path = _KAFKA_MODULE.initialize_run(run_id)
         try:
             _ACTIVE_SERVICE = streaming_module.AlpacaStreamingService(
@@ -290,12 +360,16 @@ def start_run(
                 universe_metadata,
                 feed,
                 replay_speed,
+                run_info_file_name=run_info_path.name,
                 release_callback=release_active_service,
                 kafka_log_file_name=kafka_log_path.name,
                 publish_events_callback=_KAFKA_MODULE.publish_events,
                 confirm_kafka_publication_callback=(
                     _SPARK_MODULE.confirm_kafka_publication
                 ),
+                append_controller_log_callback=append_controller_log,
+                append_run_record_callback=append_run_record,
+                append_run_state_callback=append_run_state,
             )
         except FileExistsError as error:
             raise RuntimeError(

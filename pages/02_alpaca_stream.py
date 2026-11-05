@@ -202,6 +202,7 @@ class AlpacaStreamingService:
         universe_metadata: dict[str, Any],
         feed: str = "iex",
         replay_speed: float = 1.0,
+        run_info_file_name: str | None = None,
         release_callback: Callable[["AlpacaStreamingService"], None]
         | None = None,
         kafka_log_file_name: str | None = None,
@@ -211,6 +212,13 @@ class AlpacaStreamingService:
         ] | None = None,
         confirm_kafka_publication_callback: Callable[[str], None]
         | None = None,
+        append_controller_log_callback: Callable[[str, str], None]
+        | None = None,
+        append_run_record_callback: Callable[
+            [str, str, dict[str, Any]],
+            None,
+        ] | None = None,
+        append_run_state_callback: Callable[[Any], None] | None = None,
     ) -> None:
         self._api_key = api_key
         self._api_secret = api_secret
@@ -221,12 +229,18 @@ class AlpacaStreamingService:
         self._universe_metadata = universe_metadata
         self._feed = feed
         self._replay_speed = replay_speed
+        self._run_info_file_name = (
+            run_info_file_name or f"{run_stem}_00_run_info.jsonl"
+        )
         self._release_callback = release_callback
         self._kafka_log_file_name = kafka_log_file_name
         self._publish_events_callback = publish_events_callback
         self._confirm_kafka_publication_callback = (
             confirm_kafka_publication_callback
         )
+        self._append_controller_log_callback = append_controller_log_callback
+        self._append_run_record_callback = append_run_record_callback
+        self._append_run_state_callback = append_run_state_callback
         self._events: deque[AlpacaEvent] = deque()
         self._stop_event = threading.Event()
         self._pipeline_ready = threading.Event()
@@ -249,39 +263,26 @@ class AlpacaStreamingService:
         self._market_timestamp: str | None = None
         self._spark_checkpoint: dict[str, Any] | None = None
         self._spark_console_initialized = False
-        self._sequence = 0
         self._spark_checkpoint_processed = 0
         self._started_at = started_at
-        self._console_sequences = {
-            "alpaca": 0,
-            "log": 0,
-            "spark": 0,
-        }
+        self._console_sequences = {"alpaca": 0, "spark": 0}
         self._historical_path = DATA_DIRECTORY / "runs" / f"{run_stem}_02_alpaca_data.jsonl"
-        self._run_info_path = DATA_DIRECTORY / "runs" / f"{run_stem}_00_run_info.jsonl"
-        self._log_handler_path = (
-            DATA_DIRECTORY / "runs" / f"{run_stem}_01_controller_log.txt"
-        )
         self._log_alpaca_path = (
             DATA_DIRECTORY / "runs" / f"{run_stem}_02_alpaca_log.txt"
         )
         self._log_spark_path = (
             DATA_DIRECTORY / "runs" / f"{run_stem}_04_spark_log.txt"
         )
-        self._streaming_path = self._run_info_path
         ensure_data_directory()
         if any(
             path.exists()
             for path in (
-                self._run_info_path,
                 self._historical_path,
-                self._log_handler_path,
                 self._log_alpaca_path,
                 self._log_spark_path,
             )
         ):
             raise FileExistsError(f"El RUN ya existe: {run_stem}")
-        self._run_info_path.touch(exist_ok=False)
 
     def start(self) -> bool:
         """Inicio los hilos de streaming y supervisión del RUN."""
@@ -292,7 +293,8 @@ class AlpacaStreamingService:
             self._status = "Descargando histórico"
             self._last_heartbeat_at = self._started_at
             self._last_heartbeat_monotonic = time.monotonic()
-            self._append_run_info_locked(
+            self._append_run_record_callback(
+                self._run_id,
                 "run_started",
                 {
                     "symbols": list(self._symbols),
@@ -301,8 +303,10 @@ class AlpacaStreamingService:
                     "replay_speed": self._replay_speed,
                     "started_at": self._started_at,
                     "data_file": self._historical_path.name,
-                    "run_info_file": self._run_info_path.name,
-                    "log_controller_file": self._log_handler_path.name,
+                    "run_info_file": self._run_info_file_name,
+                    "log_controller_file": (
+                        f"{self._run_stem}_01_controller_log.txt"
+                    ),
                     "log_alpaca_file": self._log_alpaca_path.name,
                     "log_spark_file": self._log_spark_path.name,
                     "kafka_log_file": self._kafka_log_file_name,
@@ -329,11 +333,12 @@ class AlpacaStreamingService:
                         fetched=self._universe_metadata["fetched_at"],
                     )
                 )
-                self._append_run_info_locked(
+                self._append_run_record_callback(
+                    self._run_id,
                     "universe",
                     self._universe_metadata,
                 )
-            self._append_state_locked()
+            self._append_run_state_callback(self)
             self._stream_thread = threading.Thread(
                 target=self._run_stream,
                 daemon=True,
@@ -341,7 +346,7 @@ class AlpacaStreamingService:
             )
             self._stream_thread.start()
             self._add_log("REPLAY | worker de supervisión iniciado")
-            self._append_state_locked()
+            self._append_run_state_callback(self)
         return True
 
     def heartbeat(self, run_id: str) -> bool:
@@ -352,7 +357,7 @@ class AlpacaStreamingService:
                 return False
             self._last_heartbeat_monotonic = time.monotonic()
             self._last_heartbeat_at = get_utc_timestamp()
-            self._append_state_locked()
+            self._append_run_state_callback(self)
         return True
 
     def heartbeat_elapsed(self) -> float:
@@ -372,7 +377,7 @@ class AlpacaStreamingService:
             self._stop_event.set()
             self._pipeline_ready.set()
             self._add_log(f"REPLAY | detención solicitada: {end_reason}")
-            self._append_state_locked()
+            self._append_run_state_callback(self)
         self._join_threads()
         if not self.is_running():
             self._finish("Detenido", end_reason)
@@ -424,9 +429,11 @@ class AlpacaStreamingService:
                 "ended_at": self._ended_at,
                 "last_heartbeat": self._last_heartbeat_at,
                 "end_reason": self._end_reason,
-                "run_info_file": self._run_info_path.name,
+                "run_info_file": self._run_info_file_name,
                 "data_file": self._historical_path.name,
-                "log_controller_file": self._log_handler_path.name,
+                "log_controller_file": (
+                    f"{self._run_stem}_01_controller_log.txt"
+                ),
                 "log_alpaca_file": self._log_alpaca_path.name,
                 "log_spark_file": self._log_spark_path.name,
                 "kafka_log_file": self._kafka_log_file_name,
@@ -454,7 +461,11 @@ class AlpacaStreamingService:
                 if line == "Spark | esperando eventos bursátiles.":
                     continue
                 self._append_console_line_locked("spark", line)
-            self._append_run_info_locked("spark_checkpoint", checkpoint)
+            self._append_run_record_callback(
+                self._run_id,
+                "spark_checkpoint",
+                checkpoint,
+            )
             self._spark_checkpoint_processed = processed_count
             self._spark_checkpoint = dict(checkpoint)
             self._spark_console_initialized = True
@@ -572,14 +583,15 @@ class AlpacaStreamingService:
             self._add_log(
                 f"REPLAY | histórico listo: {historical_date} | archivo={historical_path.name}"
             )
-            self._append_run_info_locked(
+            self._append_run_record_callback(
+                self._run_id,
                 "historical_complete",
                 {
                     "data_file": historical_path.name,
                     "ordered_by_timestamp": True,
                 },
             )
-            self._append_state_locked()
+            self._append_run_state_callback(self)
         if not streamed:
             self._replay_cached_file(historical_path)
         self._finish("Completado", "replay_completed")
@@ -591,7 +603,7 @@ class AlpacaStreamingService:
             if self._finished:
                 return
             self._historical_date = historical_date
-            self._append_state_locked()
+            self._append_run_state_callback(self)
 
     def _emit_replay_batch(self, events: list[AlpacaEvent]) -> None:
         """Persisto y publico un lote cronológico con ritmo controlado."""
@@ -640,7 +652,7 @@ class AlpacaStreamingService:
             self._add_log(
                 f"REPLAY | lote emitido={self._replay_batch_number} | operaciones={trade_count} | cotizaciones={quote_count} | total_emitidos={self._event_count}"
             )
-            self._append_state_locked()
+            self._append_run_state_callback(self)
             if self._publish_events_callback is not None:
                 self._publish_events_callback(
                     self._run_id,
@@ -688,7 +700,8 @@ class AlpacaStreamingService:
             self._add_log(
                 f"REPLAY | finalizado: {status} | causa={end_reason}"
             )
-            self._append_run_info_locked(
+            self._append_run_record_callback(
+                self._run_id,
                 "run_finished",
                 {
                     "status": status,
@@ -697,30 +710,9 @@ class AlpacaStreamingService:
                     "ended_at": self._ended_at,
                 },
             )
-            self._append_state_locked()
+            self._append_run_state_callback(self)
         if self._release_callback is not None:
             self._release_callback(self)
-
-    def _append_state_locked(self) -> None:
-        """Agrego el estado actual al único registro persistente del RUN."""
-
-        self._append_run_info_locked(
-            "state",
-            {
-                        "status": self._status,
-                        "error": self._error,
-                        "event_count": self._event_count,
-                        "log_count": self._log_count,
-                        "market_timestamp": self._market_timestamp,
-                        "replay_position": self._replay_position,
-                        "historical_date": self._historical_date,
-                        "started_at": self._started_at,
-                        "ended_at": self._ended_at,
-                        "last_heartbeat": self._last_heartbeat_at,
-                        "end_reason": self._end_reason,
-                        "is_active": self.is_active(),
-            },
-        )
 
     def _append_console_line_locked(self, console_name: str, line: str) -> None:
         """Genero la numeración definitiva y la agrego al TXT correspondiente."""
@@ -729,7 +721,6 @@ class AlpacaStreamingService:
         self._console_sequences[console_name] = next_sequence
         console_paths = {
             "alpaca": self._log_alpaca_path,
-            "log": self._log_handler_path,
             "spark": self._log_spark_path,
         }
         persisted_line = f"[#{next_sequence}] {line}"
@@ -743,32 +734,9 @@ class AlpacaStreamingService:
             os.fsync(console_file.fileno())
         functions.append_console_buffer(
             self._run_id,
-            "controller" if console_name == "log" else console_name,
+            console_name,
             persisted_line,
         )
-
-    def _append_run_info_locked(
-        self,
-        record_type: str,
-        payload: dict[str, Any],
-    ) -> None:
-        """Persisto únicamente información estructurada de control del RUN."""
-
-        self._sequence += 1
-        record = {
-            "record_type": record_type,
-            "sequence": self._sequence,
-            "run_id": self._run_id,
-            "recorded_at": get_utc_timestamp(),
-            **payload,
-        }
-        with self._run_info_path.open(
-            "a",
-            encoding="utf-8",
-        ) as run_info_file:
-            run_info_file.write(json.dumps(record, ensure_ascii=False) + "\n")
-            run_info_file.flush()
-            os.fsync(run_info_file.fileno())
 
     def _add_log(self, message: str) -> None:
         """Agrego un mensaje operativo al TXT del RUN."""
@@ -778,9 +746,13 @@ class AlpacaStreamingService:
                 get_utc_timestamp(),
                 source_timezone=timezone.utc,
             )
-            self._append_console_line_locked("log", f"{timestamp} | {message}")
+            if self._append_controller_log_callback is not None:
+                self._append_controller_log_callback(
+                    self._run_id,
+                    f"{timestamp} | {message}",
+                )
             self._log_count += 1
-            self._append_state_locked()
+            self._append_run_state_callback(self)
 
     def _join_threads(self) -> None:
         """Espero el cierre de los hilos sin bloquearse a sí mismos."""
@@ -1579,27 +1551,6 @@ def read_json(path: Path) -> dict[str, Any] | None:
     except (OSError, json.JSONDecodeError):
         return None
     return content if isinstance(content, dict) else None
-
-def append_stream_record(
-    path: Path,
-    run_id: str,
-    sequence: int,
-    record_type: str,
-    payload: dict[str, Any],
-) -> None:
-    """Agrego un registro de recuperación sin reemplazar el JSONL."""
-
-    record = {
-        "record_type": record_type,
-        "sequence": sequence,
-        "run_id": run_id,
-        "recorded_at": get_utc_timestamp(),
-        **payload,
-    }
-    with path.open("a", encoding="utf-8") as stream_file:
-        stream_file.write(json.dumps(record, ensure_ascii=False) + "\n")
-        stream_file.flush()
-        os.fsync(stream_file.fileno())
 
 def read_streaming_state(path: Path) -> dict[str, Any] | None:
     """Reconstruyo el último estado sin materializar eventos ni logs."""

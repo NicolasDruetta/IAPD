@@ -68,40 +68,37 @@ def read_console_buffer(
     cursor: int,
     initial_load: bool,
 ) -> tuple[list[str], int, int, bool]:
-    """Devuelvo registros nuevos desde el buffer sin releer el TXT."""
+    """Sincronizo el buffer y devuelvo los registros posteriores al cursor."""
 
     key = (run_id, console_name)
+    tail_lines, _, _ = read_console_tail(path, CONSOLE_BUFFER_SIZE)
     with _CONSOLE_BUFFER_LOCK:
-        seeded = key in _CONSOLE_BUFFER_SEEDED
-    if not seeded or initial_load:
-        tail_lines, _, _ = read_console_tail(path, CONSOLE_BUFFER_SIZE)
-        with _CONSOLE_BUFFER_LOCK:
-            buffer = _CONSOLE_BUFFERS.setdefault(
-                key,
-                deque(maxlen=CONSOLE_BUFFER_SIZE),
-            )
-            merged = {
+        buffer = _CONSOLE_BUFFERS.setdefault(
+            key,
+            deque(maxlen=CONSOLE_BUFFER_SIZE),
+        )
+        merged = {
+            console_line_number(line): line
+            for line in buffer
+            if console_line_number(line)
+        }
+        merged.update(
+            {
                 console_line_number(line): line
-                for line in buffer
+                for line in tail_lines
                 if console_line_number(line)
             }
-            merged.update(
-                {
-                    console_line_number(line): line
-                    for line in tail_lines
-                    if console_line_number(line)
-                }
-            )
-            buffer.clear()
-            buffer.extend(
-                line
-                for _, line in sorted(merged.items())[-CONSOLE_BUFFER_SIZE:]
-            )
-            _CONSOLE_BUFFER_TOTALS[key] = max(
-                _CONSOLE_BUFFER_TOTALS.get(key, 0),
-                *(merged or {0}),
-            )
-            _CONSOLE_BUFFER_SEEDED.add(key)
+        )
+        buffer.clear()
+        buffer.extend(
+            line
+            for _, line in sorted(merged.items())[-CONSOLE_BUFFER_SIZE:]
+        )
+        _CONSOLE_BUFFER_TOTALS[key] = max(
+            _CONSOLE_BUFFER_TOTALS.get(key, 0),
+            *(merged or {0}),
+        )
+        _CONSOLE_BUFFER_SEEDED.add(key)
     with _CONSOLE_BUFFER_LOCK:
         buffer = _CONSOLE_BUFFERS.get(key, deque())
         lines = list(buffer)
