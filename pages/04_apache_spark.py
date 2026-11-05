@@ -1,5 +1,3 @@
-"""Consumo Structured Streaming, transformación y persistencia Spark."""
-
 import ast
 import functions
 import json
@@ -50,31 +48,6 @@ EVENT_SCHEMA = StructType(
         StructField("mode", StringType(), True),
     ]
 )
-
-def append_spark_log(run_id: str, message: str) -> None:
-    """Agrego un mensaje agrupado al TXT persistente de Spark."""
-
-    path = DATA_DIRECTORY / "runs" / f"{run_id}_04_spark_log.txt"
-    with _SPARK_LOCK:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        sequence = 0
-        if path.exists():
-            with path.open(encoding="utf-8") as log_file:
-                for line in log_file:
-                    if line.startswith("[#"):
-                        try:
-                            sequence = max(sequence, int(line.split("]", 1)[0][2:]))
-                        except (IndexError, ValueError):
-                            continue
-        with path.open("a", encoding="utf-8") as log_file:
-            log_file.write(f"[#{sequence + 1}] {message}\n")
-            log_file.flush()
-            os.fsync(log_file.fileno())
-        functions.append_console_buffer(
-            run_id,
-            "spark",
-            f"[#{sequence + 1}] {message}",
-        )
 
 def confirm_kafka_publication(run_id: str) -> None:
     """Habilito la visibilidad Spark después del ACK de Kafka."""
@@ -430,7 +403,7 @@ def monitor_workers(run_id: str, state: dict[str, Any]) -> None:
             )
         state["logs"] = (state["logs"] + monitor_lines)[-64:]
         for line in monitor_lines:
-            append_spark_log(run_id, line)
+            functions.append_console_log(run_id, "spark", line)
     except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError, StopIteration):
         return
 
@@ -465,8 +438,9 @@ def process_batch(run_id: str, data_frame: DataFrame, batch_id: int) -> None:
         raise RuntimeError(
             "Spark recibió un lote sin confirmación previa de publicación en Kafka."
         )
-    append_spark_log(
+    functions.append_console_log(
         run_id,
+        "spark",
         f"ETL | Kafka | lote_recibido={batch_id} | tópico={KAFKA_TOPIC}",
     )
     valid_frame = input_frame.where(
@@ -496,8 +470,9 @@ def process_batch(run_id: str, data_frame: DataFrame, batch_id: int) -> None:
     if processed_count == 0:
         input_frame.unpersist()
         processed_frame.unpersist()
-        append_spark_log(
+        functions.append_console_log(
             run_id,
+            "spark",
             f"DATAFRAME | batch_id={batch_id} | registros_entrada={input_count} | validos=0 | invalidos={invalid_count} | duplicados_eliminados={duplicate_count}",
         )
         return
@@ -551,7 +526,7 @@ def process_batch(run_id: str, data_frame: DataFrame, batch_id: int) -> None:
     input_frame.unpersist()
     processed_frame.unpersist()
     for line in state["logs"]:
-        append_spark_log(run_id, line)
+        functions.append_console_log(run_id, "spark", line)
 
 def consolidate_parquet(run_id: str) -> bool:
     """Consolido los archivos Parquet temporales en un único archivo final."""
@@ -647,7 +622,7 @@ def start_streaming(run_id: str, mode: str = "REPLAY") -> None:
             _STARTING_RUNS.discard(run_id)
             _RUN_STATES[run_id]["status"] = "error"
             _RUN_STATES[run_id]["logs"] = [error_message]
-        append_spark_log(run_id, error_message)
+        functions.append_console_log(run_id, "spark", error_message)
         raise RuntimeError(error_message)
     (DATA_DIRECTORY / "spark").mkdir(parents=True, exist_ok=True)
     checkpoint_path = str(DATA_DIRECTORY / "spark" / f"{run_id}_04_spark_checkpoint")
@@ -695,20 +670,22 @@ def stop_streaming(
             if query.isActive:
                 query.stop()
         except Exception as error:
-            append_spark_log(run_id, f"ERROR | STOP | cierre Spark: {error}")
+            functions.append_console_log(run_id, "spark", f"ERROR | STOP | cierre Spark: {error}")
             return False
     if finalize:
         try:
             consolidated = consolidate_parquet(run_id)
         except Exception as error:
-            append_spark_log(
+            functions.append_console_log(
                 run_id,
+                "spark",
                 f"ERROR | consolidación Parquet: {error}",
             )
             return False
         if not consolidated:
-            append_spark_log(
+            functions.append_console_log(
                 run_id,
+                "spark",
                 "ERROR | consolidación Parquet no completada; "
                 "conservo temporales y checkpoint.",
             )

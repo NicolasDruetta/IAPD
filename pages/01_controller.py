@@ -1,5 +1,3 @@
-"""Control del ciclo de vida de las ejecuciones del laboratorio."""
-
 import atexit
 import functions
 import json
@@ -17,19 +15,6 @@ _RUN_SEQUENCES: dict[str, int] = {}
 _SPARK_MODULE: Any = None
 _STREAMING_MODULE: Any = None
 _SUPERVISOR_THREAD: threading.Thread | None = None
-
-def append_controller_log(run_id: str, line: str) -> None:
-    """Agrego una línea numerada al log propio del Controller."""
-
-    log_path = DATA_DIRECTORY / "runs" / f"{run_id}_01_controller_log.txt"
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    previous_number = functions.read_console_tail(log_path, 1)[2]
-    persisted_line = f"[#{previous_number + 1}] {line}"
-    with log_path.open("a", encoding="utf-8") as log_file:
-        log_file.write(persisted_line + "\n")
-        log_file.flush()
-        os.fsync(log_file.fileno())
-    functions.append_console_buffer(run_id, "controller", persisted_line)
 
 def append_run_record(
     run_id: str,
@@ -54,6 +39,18 @@ def append_run_record(
             "recorded_at": _require_streaming_module().get_utc_timestamp(),
             **payload,
         }
+        if record_type == "run_started":
+            record.update(
+                {
+                    "run_info_file": f"{run_id}_00_run_info.jsonl",
+                    "data_file": f"{run_id}_02_alpaca_data.jsonl",
+                    "log_controller_file": f"{run_id}_01_controller_log.txt",
+                    "log_alpaca_file": f"{run_id}_02_alpaca_log.txt",
+                    "log_spark_file": f"{run_id}_04_spark_log.txt",
+                    "kafka_log_file": f"{run_id}_03_kafka_log.txt",
+                    "console_schema_version": 4,
+                }
+            )
         run_info_path.parent.mkdir(parents=True, exist_ok=True)
         with run_info_path.open("a", encoding="utf-8") as run_info_file:
             run_info_file.write(json.dumps(record, ensure_ascii=False) + "\n")
@@ -83,63 +80,6 @@ def append_run_state(service: Any) -> None:
         },
     )
 
-def append_spark_checkpoint(
-    run_id: str | None,
-    checkpoint: dict[str, Any],
-    console_lines: list[str] | None = None,
-) -> None:
-    """Persisto el acumulado de Spark del RUN correspondiente."""
-
-    streaming_module = _require_streaming_module()
-    if run_id is None:
-        return
-    service = get_active_service()
-    if service is not None and service.get_snapshot()["run_id"] == run_id:
-        service.append_spark_checkpoint(checkpoint, console_lines or [])
-        return
-    streaming_path = DATA_DIRECTORY / "runs" / f"{run_id}_00_run_info.jsonl"
-    if streaming_path.exists():
-        previous = streaming_module.read_spark_checkpoint(streaming_path)
-        processed_count = int(checkpoint.get("processed_events", 0))
-        if previous is not None and processed_count <= int(
-            previous.get("processed_events", 0)
-        ):
-            return
-        state = streaming_module.read_streaming_state(streaming_path)
-        sequence = int(state.get("sequence", 0)) if state else 0
-        _RUN_SEQUENCES[run_id] = sequence
-        append_run_record(
-            run_id,
-            "spark_checkpoint",
-            checkpoint,
-        )
-        for line in console_lines or []:
-            spark_path = DATA_DIRECTORY / "runs" / f"{run_id}_04_spark_log.txt"
-            previous_number = functions.read_console_tail(
-                spark_path,
-                1,
-            )[2]
-            with spark_path.open("a", encoding="utf-8") as spark_file:
-                persisted_line = f"[#{previous_number + 1}] {line}"
-                spark_file.write(persisted_line + "\n")
-            functions.append_console_buffer(
-                run_id,
-                "spark",
-                persisted_line,
-            )
-
-def ensure_spark_console_records(
-    run_id: str | None,
-    console_lines: list[str],
-) -> None:
-    """Persisto la primera salida Spark del RUN activo."""
-
-    if run_id is None:
-        return
-    service = get_active_service()
-    if service is not None and service.get_snapshot()["run_id"] == run_id:
-        service.ensure_spark_console_records(console_lines)
-
 def fail_active_run(error: str) -> None:
     """Finalizo con error el RUN activo cuando falla su inicialización."""
 
@@ -153,27 +93,26 @@ def get_active_service() -> Any:
     with _MANAGER_LOCK:
         return _ACTIVE_SERVICE
 
-def get_events_after(
-    run_id: str | None,
-    processed_count: int,
-) -> list[Any]:
-    """Obtengo los eventos posteriores al checkpoint de Spark."""
-
-    streaming_module = _require_streaming_module()
-    if run_id is None:
-        return []
-    service = get_active_service()
-    if service is not None and service.get_snapshot()["run_id"] == run_id:
-        return service.get_events_after(processed_count)
-    return streaming_module.read_events_after(run_id, processed_count)
-
 def get_run_snapshot() -> dict[str, Any]:
     """Obtengo el estado activo o la última ejecución persistida."""
 
     streaming_module = _require_streaming_module()
     service = get_active_service()
     if service is not None:
-        return service.get_snapshot()
+        snapshot = service.get_snapshot()
+        run_id = snapshot["run_id"]
+        snapshot.update(
+            {
+                "run_info_file": f"{run_id}_00_run_info.jsonl",
+                "data_file": f"{run_id}_02_alpaca_data.jsonl",
+                "log_controller_file": f"{run_id}_01_controller_log.txt",
+                "log_alpaca_file": f"{run_id}_02_alpaca_log.txt",
+                "log_spark_file": f"{run_id}_04_spark_log.txt",
+                "kafka_log_file": f"{run_id}_03_kafka_log.txt",
+                "console_schema_version": 3,
+            }
+        )
+        return snapshot
     metadata = streaming_module.get_latest_metadata()
     if metadata is not None:
         metadata.setdefault("mode", "REPLAY")
@@ -209,20 +148,6 @@ def get_run_snapshot() -> dict[str, Any]:
         "is_active": False,
         "console_schema_version": 0,
     }
-
-def get_spark_checkpoint(run_id: str | None) -> dict[str, Any] | None:
-    """Obtengo el checkpoint Spark activo o persistido."""
-
-    streaming_module = _require_streaming_module()
-    if run_id is None:
-        return None
-    service = get_active_service()
-    if service is not None and service.get_snapshot()["run_id"] == run_id:
-        return service.get_spark_checkpoint()
-    new_path = DATA_DIRECTORY / "runs" / f"{run_id}_00_run_info.jsonl"
-    if new_path.exists():
-        return streaming_module.read_spark_checkpoint(new_path)
-    return None
 
 def mark_interrupted_run() -> dict[str, Any] | None:
     """Reconozco un RUN activo que pertenecía a otro proceso Python."""
@@ -348,7 +273,7 @@ def start_run(
             raise RuntimeError(
                 "El identificador del RUN ya existe; esperá un segundo y volvé a iniciar."
             )
-        kafka_log_path = _KAFKA_MODULE.initialize_run(run_id)
+        _KAFKA_MODULE.initialize_run(run_id)
         try:
             _ACTIVE_SERVICE = streaming_module.AlpacaStreamingService(
                 api_key,
@@ -360,14 +285,12 @@ def start_run(
                 universe_metadata,
                 feed,
                 replay_speed,
-                run_info_file_name=run_info_path.name,
                 release_callback=release_active_service,
-                kafka_log_file_name=kafka_log_path.name,
                 publish_events_callback=_KAFKA_MODULE.publish_events,
                 confirm_kafka_publication_callback=(
                     _SPARK_MODULE.confirm_kafka_publication
                 ),
-                append_controller_log_callback=append_controller_log,
+                append_controller_log_callback=functions.append_console_log,
                 append_run_record_callback=append_run_record,
                 append_run_state_callback=append_run_state,
             )

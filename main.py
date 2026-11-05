@@ -1,5 +1,3 @@
-"""Interfaz principal de Apache Big Data Lab."""
-
 import importlib.util
 import functions
 import json

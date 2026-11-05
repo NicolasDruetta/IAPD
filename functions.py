@@ -1,5 +1,3 @@
-"""Funciones comunes para las consolas persistentes del laboratorio."""
-
 import json
 import os
 import re
@@ -12,7 +10,43 @@ _CONSOLE_BUFFER_LOCK = threading.RLock()
 _CONSOLE_BUFFERS: dict[tuple[str, str], deque[str]] = {}
 _CONSOLE_BUFFER_SEEDED: set[tuple[str, str]] = set()
 _CONSOLE_BUFFER_TOTALS: dict[tuple[str, str], int] = {}
+_CONSOLE_LOG_LOCK = threading.RLock()
+_CONSOLE_LOG_SEQUENCES: dict[tuple[str, str], int] = {}
 CONSOLE_BUFFER_SIZE = 200
+DATA_DIRECTORY = Path(__file__).parent / "data"
+
+def append_console_log(
+    run_id: str,
+    console_name: str,
+    line: str,
+) -> None:
+    """Persisto y publico una línea numerada de cualquier consola."""
+
+    if console_name == "alpaca":
+        file_name = "02_alpaca_log.txt"
+    elif console_name == "controller":
+        file_name = "01_controller_log.txt"
+    elif console_name == "kafka":
+        file_name = "03_kafka_log.txt"
+    elif console_name == "spark":
+        file_name = "04_spark_log.txt"
+    else:
+        raise ValueError(f"Consola no válida: {console_name}")
+    key = (run_id, console_name)
+    path = DATA_DIRECTORY / "runs" / f"{run_id}_{file_name}"
+    with _CONSOLE_LOG_LOCK:
+        sequence = _CONSOLE_LOG_SEQUENCES.get(key)
+        if sequence is None:
+            sequence = read_console_tail(path, 1)[2]
+        sequence += 1
+        _CONSOLE_LOG_SEQUENCES[key] = sequence
+        persisted_line = f"[#{sequence}] {line}"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as log_file:
+            log_file.write(persisted_line + "\n")
+            log_file.flush()
+            os.fsync(log_file.fileno())
+        append_console_buffer(run_id, console_name, persisted_line)
 
 def append_console_buffer(
     run_id: str,

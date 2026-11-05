@@ -1,9 +1,6 @@
-"""Obtención de cotizaciones y operaciones bursátiles mediante Alpaca."""
-
 import certifi
 import functions
 import heapq
-import itertools
 import json
 import os
 import queue
@@ -36,9 +33,7 @@ NEW_YORK_TIMEZONE = ZoneInfo("America/New_York")
 RANKED_SYMBOL_COUNT = 20
 REPLAY_BATCH_SIZE = 100
 REPLAY_WINDOW_MINUTES = 1
-SP500_COMPONENTS_URL = (
-    "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-)
+SP500_COMPONENTS_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 STOCK_SNAPSHOTS_URL = "https://data.alpaca.markets/v2/stocks/snapshots"
 
 class SP500TableParser(HTMLParser):
@@ -156,8 +151,8 @@ class AlpacaEvent:
         size = self._format_number(self.size)
         return f"{timestamp} | {self.symbol} | {self.event_type} | {price} | {size}"
 
-    @staticmethod
     def _format_number(
+        self,
         value: float | None,
         decimals: int | None = None,
     ) -> str:
@@ -202,17 +197,15 @@ class AlpacaStreamingService:
         universe_metadata: dict[str, Any],
         feed: str = "iex",
         replay_speed: float = 1.0,
-        run_info_file_name: str | None = None,
         release_callback: Callable[["AlpacaStreamingService"], None]
         | None = None,
-        kafka_log_file_name: str | None = None,
         publish_events_callback: Callable[
             [str, list[dict[str, Any]], threading.Event | None],
             None,
         ] | None = None,
         confirm_kafka_publication_callback: Callable[[str], None]
         | None = None,
-        append_controller_log_callback: Callable[[str, str], None]
+        append_controller_log_callback: Callable[[str, str, str], None]
         | None = None,
         append_run_record_callback: Callable[
             [str, str, dict[str, Any]],
@@ -229,11 +222,7 @@ class AlpacaStreamingService:
         self._universe_metadata = universe_metadata
         self._feed = feed
         self._replay_speed = replay_speed
-        self._run_info_file_name = (
-            run_info_file_name or f"{run_stem}_00_run_info.jsonl"
-        )
         self._release_callback = release_callback
-        self._kafka_log_file_name = kafka_log_file_name
         self._publish_events_callback = publish_events_callback
         self._confirm_kafka_publication_callback = (
             confirm_kafka_publication_callback
@@ -261,17 +250,10 @@ class AlpacaStreamingService:
         self._finished = False
         self._log_count = 0
         self._market_timestamp: str | None = None
-        self._spark_checkpoint: dict[str, Any] | None = None
-        self._spark_console_initialized = False
-        self._spark_checkpoint_processed = 0
         self._started_at = started_at
-        self._console_sequences = {"alpaca": 0, "spark": 0}
         self._historical_path = DATA_DIRECTORY / "runs" / f"{run_stem}_02_alpaca_data.jsonl"
         self._log_alpaca_path = (
             DATA_DIRECTORY / "runs" / f"{run_stem}_02_alpaca_log.txt"
-        )
-        self._log_spark_path = (
-            DATA_DIRECTORY / "runs" / f"{run_stem}_04_spark_log.txt"
         )
         ensure_data_directory()
         if any(
@@ -279,7 +261,6 @@ class AlpacaStreamingService:
             for path in (
                 self._historical_path,
                 self._log_alpaca_path,
-                self._log_spark_path,
             )
         ):
             raise FileExistsError(f"El RUN ya existe: {run_stem}")
@@ -302,16 +283,7 @@ class AlpacaStreamingService:
                     "feed": self._feed,
                     "replay_speed": self._replay_speed,
                     "started_at": self._started_at,
-                    "data_file": self._historical_path.name,
-                    "run_info_file": self._run_info_file_name,
-                    "log_controller_file": (
-                        f"{self._run_stem}_01_controller_log.txt"
-                    ),
-                    "log_alpaca_file": self._log_alpaca_path.name,
-                    "log_spark_file": self._log_spark_path.name,
-                    "kafka_log_file": self._kafka_log_file_name,
                     "universe": self._universe_metadata,
-                    "console_schema_version": 4,
                 },
             )
             self._add_log("REPLAY | RUN iniciado")
@@ -424,74 +396,12 @@ class AlpacaStreamingService:
                 "replay_position": self._replay_position,
                 "historical_date": self._historical_date,
                 "logs": [],
-                "console_schema_version": 3,
                 "started_at": self._started_at,
                 "ended_at": self._ended_at,
                 "last_heartbeat": self._last_heartbeat_at,
                 "end_reason": self._end_reason,
-                "run_info_file": self._run_info_file_name,
-                "data_file": self._historical_path.name,
-                "log_controller_file": (
-                    f"{self._run_stem}_01_controller_log.txt"
-                ),
-                "log_alpaca_file": self._log_alpaca_path.name,
-                "log_spark_file": self._log_spark_path.name,
-                "kafka_log_file": self._kafka_log_file_name,
                 "is_active": self.is_active(),
             }
-
-    def get_events_after(self, processed_count: int) -> list[AlpacaEvent]:
-        """Devuelvo solo los eventos posteriores al checkpoint de Spark."""
-
-        with self._lock:
-            return list(itertools.islice(self._events, processed_count, None))
-
-    def append_spark_checkpoint(
-        self,
-        checkpoint: dict[str, Any],
-        console_lines: list[str],
-    ) -> bool:
-        """Persisto Spark y sus líneas visibles una sola vez."""
-
-        processed_count = int(checkpoint.get("processed_events", 0))
-        with self._lock:
-            if processed_count <= self._spark_checkpoint_processed:
-                return False
-            for line in console_lines:
-                if line == "Spark | esperando eventos bursátiles.":
-                    continue
-                self._append_console_line_locked("spark", line)
-            self._append_run_record_callback(
-                self._run_id,
-                "spark_checkpoint",
-                checkpoint,
-            )
-            self._spark_checkpoint_processed = processed_count
-            self._spark_checkpoint = dict(checkpoint)
-            self._spark_console_initialized = True
-            return True
-
-    def ensure_spark_console_records(self, console_lines: list[str]) -> None:
-        """Persisto una única entrada inicial de la consola Spark."""
-
-        with self._lock:
-            if self._spark_console_initialized:
-                return
-            for line in console_lines:
-                if line == "Spark | esperando eventos bursátiles.":
-                    continue
-                self._append_console_line_locked("spark", line)
-            self._spark_console_initialized = True
-
-    def get_spark_checkpoint(self) -> dict[str, Any] | None:
-        """Devuelvo el checkpoint activo sin releer el JSONL."""
-
-        with self._lock:
-            return (
-                dict(self._spark_checkpoint)
-                if self._spark_checkpoint is not None
-                else None
-            )
 
     def _run_stream(self) -> None:
         """Ejecuto la descarga y reproducción histórica en un hilo propio."""
@@ -641,7 +551,8 @@ class AlpacaStreamingService:
             self._status = "Reproduciendo"
             self._replay_batch_number += 1
             for _, record in stream_records:
-                self._append_console_line_locked(
+                functions.append_console_log(
+                    self._run_id,
                     "alpaca",
                     event_from_record(record, mode="REPLAY").to_display_line(),
                 )
@@ -714,30 +625,6 @@ class AlpacaStreamingService:
         if self._release_callback is not None:
             self._release_callback(self)
 
-    def _append_console_line_locked(self, console_name: str, line: str) -> None:
-        """Genero la numeración definitiva y la agrego al TXT correspondiente."""
-
-        next_sequence = self._console_sequences[console_name] + 1
-        self._console_sequences[console_name] = next_sequence
-        console_paths = {
-            "alpaca": self._log_alpaca_path,
-            "spark": self._log_spark_path,
-        }
-        persisted_line = f"[#{next_sequence}] {line}"
-        console_paths[console_name].parent.mkdir(parents=True, exist_ok=True)
-        with console_paths[console_name].open(
-            "a",
-            encoding="utf-8",
-        ) as console_file:
-            console_file.write(persisted_line + "\n")
-            console_file.flush()
-            os.fsync(console_file.fileno())
-        functions.append_console_buffer(
-            self._run_id,
-            console_name,
-            persisted_line,
-        )
-
     def _add_log(self, message: str) -> None:
         """Agrego un mensaje operativo al TXT del RUN."""
 
@@ -749,6 +636,7 @@ class AlpacaStreamingService:
             if self._append_controller_log_callback is not None:
                 self._append_controller_log_callback(
                     self._run_id,
+                    "controller",
                     f"{timestamp} | {message}",
                 )
             self._log_count += 1
@@ -1707,54 +1595,6 @@ def read_events_after(
             return []
         return events
     return []
-
-def read_spark_checkpoint(path: Path) -> dict[str, Any] | None:
-    """Leo el último acumulado confirmado por Spark."""
-
-    if path.name.endswith("_run_info.jsonl"):
-        checkpoint = None
-        try:
-            with path.open(encoding="utf-8") as run_info_file:
-                for line in run_info_file:
-                    record = json.loads(line)
-                    if record.get("record_type") == "spark_checkpoint":
-                        checkpoint = {
-                            key: value
-                            for key, value in record.items()
-                            if key not in {
-                                "record_type",
-                                "sequence",
-                                "run_id",
-                                "recorded_at",
-                            }
-                        }
-        except (OSError, json.JSONDecodeError):
-            return None
-        return checkpoint
-    if not path.exists():
-        return None
-    checkpoint: dict[str, Any] | None = None
-    try:
-        with path.open(encoding="utf-8") as stream_file:
-            for line in stream_file:
-                try:
-                    record = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if record.get("record_type") == "spark_checkpoint":
-                    checkpoint = {
-                        key: value
-                        for key, value in record.items()
-                        if key not in {
-                            "record_type",
-                            "sequence",
-                            "run_id",
-                            "recorded_at",
-                        }
-                    }
-    except OSError:
-        return None
-    return checkpoint
 
 def to_number(value: Any) -> float | None:
     """Convierto números persistidos a un valor seguro para la interfaz."""

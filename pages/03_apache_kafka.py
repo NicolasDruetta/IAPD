@@ -1,5 +1,3 @@
-"""Publicación y persistencia del flujo de eventos en Apache Kafka."""
-
 import atexit
 import functions
 import json
@@ -23,33 +21,6 @@ _KAFKA_LOCK = threading.RLock()
 _KAFKA_PRODUCER: KafkaProducer | None = None
 _RUN_CONNECTIONS: set[str] = set()
 _RUN_STATS: dict[str, dict[str, Any]] = {}
-def append_log(run_id: str, message: str) -> None:
-    """Agrego un mensaje operativo al TXT persistente de Kafka."""
-
-    path = get_log_path(run_id)
-    with _KAFKA_LOCK:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        sequence = 0
-        if path.exists():
-            with path.open(encoding="utf-8") as log_file:
-                for line in log_file:
-                    if line.startswith("[#"):
-                        try:
-                            sequence = max(
-                                sequence,
-                                int(line.split("]", 1)[0][2:]),
-                            )
-                        except (IndexError, ValueError):
-                            continue
-        with path.open("a", encoding="utf-8") as log_file:
-            log_file.write(f"[#{sequence + 1}] {message}\n")
-            log_file.flush()
-            os.fsync(log_file.fileno())
-        functions.append_console_buffer(
-            run_id,
-            "kafka",
-            f"[#{sequence + 1}] {message}",
-        )
 
 def close_producer() -> None:
     """Cierro el productor Kafka compartido cuando finaliza el proceso."""
@@ -161,8 +132,9 @@ def publish_events(
             reset_producer()
             if stop_event is not None and stop_event.is_set():
                 raise InterruptedError("Publicación Kafka detenida.") from error
-            append_log(
+            functions.append_console_log(
                 run_id,
+                "kafka",
                 f"KAFKA | run={run_id} | esperando_broker | intento={attempt} | error={error}",
             )
             if stop_event is not None:
@@ -173,8 +145,9 @@ def publish_events(
     if producer is None or not partitions:
         raise RuntimeError(f"Kafka no informó particiones para el topic {KAFKA_TOPIC}.")
     if attempt > 1:
-        append_log(
+        functions.append_console_log(
             run_id,
+            "kafka",
             f"KAFKA | run={run_id} | broker_restaurado | reintentos={attempt - 1}",
         )
     while True:
@@ -194,8 +167,9 @@ def publish_events(
             attempt += 1
             if stop_event is not None and stop_event.is_set():
                 raise InterruptedError("Publicación Kafka detenida.") from error
-            append_log(
+            functions.append_console_log(
                 run_id,
+                "kafka",
                 f"KAFKA | run={run_id} | esperando_broker | intento={attempt} | error={error}",
             )
             if stop_event is not None:
@@ -222,8 +196,9 @@ def publish_events(
                         raise InterruptedError(
                             "Publicación Kafka detenida."
                         ) from metadata_error
-                    append_log(
+                    functions.append_console_log(
                         run_id,
+                        "kafka",
                         f"KAFKA | run={run_id} | esperando_broker | intento={attempt} | error={metadata_error}",
                     )
                     if stop_event is not None:
@@ -234,8 +209,9 @@ def publish_events(
                     else:
                         time.sleep(KAFKA_RETRY_BACKOFF_SECONDS)
         except Exception as error:
-            append_log(
+            functions.append_console_log(
                 run_id,
+                "kafka",
                 f"KAFKA | run={run_id} | modo={mode} | error_publicacion={error}",
             )
             raise
@@ -268,14 +244,15 @@ def publish_events(
             _RUN_CONNECTIONS.add(run_id)
             connection_line = f"KAFKA | {mode} | broker={KAFKA_BOOTSTRAP_SERVERS} | topic={KAFKA_TOPIC} | particiones={len(partitions)}"
     if connection_line is not None:
-        append_log(run_id, connection_line)
+        functions.append_console_log(run_id, "kafka", connection_line)
     if should_log:
         distribution = ",".join(
             f"{partition}:{partition_counts.get(partition, 0)}"
             for partition in partitions
         )
-        append_log(
+        functions.append_console_log(
             run_id,
+            "kafka",
             f"KAFKA | lote={batch} | eventos={len(events)} | TRADE={trade_count} | QUOTE={quote_count} | total={total} | particiones={distribution} | confirmados={len(metadata)}",
         )
 
