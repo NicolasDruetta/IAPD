@@ -1,6 +1,7 @@
 """Publicación y persistencia del flujo de eventos en Apache Kafka."""
 
 import atexit
+import functions
 import json
 import os
 import threading
@@ -22,8 +23,6 @@ _KAFKA_LOCK = threading.RLock()
 _KAFKA_PRODUCER: KafkaProducer | None = None
 _RUN_CONNECTIONS: set[str] = set()
 _RUN_STATS: dict[str, dict[str, Any]] = {}
-_CONSOLE_BUFFER_SINK: Any = None
-
 def append_log(run_id: str, message: str) -> None:
     """Agrego un mensaje operativo al TXT persistente de Kafka."""
 
@@ -46,18 +45,11 @@ def append_log(run_id: str, message: str) -> None:
             log_file.write(f"[#{sequence + 1}] {message}\n")
             log_file.flush()
             os.fsync(log_file.fileno())
-        if _CONSOLE_BUFFER_SINK is not None:
-            _CONSOLE_BUFFER_SINK(
-                run_id,
-                "kafka",
-                f"[#{sequence + 1}] {message}",
-            )
-
-def configure_console_buffer(sink: Any) -> None:
-    """Registro el destino en memoria de la consola Kafka."""
-
-    global _CONSOLE_BUFFER_SINK
-    _CONSOLE_BUFFER_SINK = sink
+        functions.append_console_buffer(
+            run_id,
+            "kafka",
+            f"[#{sequence + 1}] {message}",
+        )
 
 def close_producer() -> None:
     """Cierro el productor Kafka compartido cuando finaliza el proceso."""

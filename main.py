@@ -1,6 +1,7 @@
 """Interfaz principal de Apache Big Data Lab."""
 
 import importlib.util
+import functions
 import json
 import streamlit as st
 import sys
@@ -560,7 +561,6 @@ def render_log_console(
     )
 
 def get_console_buffer_view(
-    streaming_module: ModuleType,
     run_id: str | None,
     console_name: str,
     console_path: Path | None,
@@ -577,7 +577,7 @@ def get_console_buffer_view(
             console_state["cursor"] = 0
             console_state["line_number"] = 0
         return [], 0 if clear_consoles else cursor_start, 0 if clear_consoles else cursor_start, initial_load, False
-    lines, cursor_end, total, resync = streaming_module.read_console_buffer(
+    lines, cursor_end, total, resync = functions.read_console_buffer(
         run_id,
         console_name,
         console_path,
@@ -808,12 +808,6 @@ def render_streaming() -> None:
     controller_module.configure_pipeline_modules(
         kafka_module,
         spark_module,
-    )
-    kafka_module.configure_console_buffer(
-        streaming_module.append_console_buffer,
-    )
-    spark_module.configure_console_buffer(
-        streaming_module.append_console_buffer,
     )
     snapshot = controller_module.get_run_snapshot()
     active_run_id = snapshot["run_id"] if snapshot["is_active"] else None
@@ -1144,7 +1138,6 @@ def render_streaming() -> None:
         )
         log_lines, cursor_start, next_cursor, initial_load, resync = (
             get_console_buffer_view(
-                streaming_module,
                 run_id,
                 "controller",
                 execution_path,
@@ -1207,7 +1200,6 @@ def render_streaming() -> None:
         )
         events, cursor_start, next_cursor, initial_load, resync = (
             get_console_buffer_view(
-                streaming_module,
                 run_id,
                 "alpaca",
                 alpaca_path,
@@ -1272,7 +1264,6 @@ def render_streaming() -> None:
         kafka_state = get_console_state("kafka-log-console", run_id)
         kafka_records, cursor_start, next_cursor, initial_load, resync = (
             get_console_buffer_view(
-                streaming_module,
                 run_id,
                 "kafka",
                 kafka_path,
@@ -1327,7 +1318,6 @@ def render_streaming() -> None:
         spark_state = get_console_state("spark-log-console", run_id)
         spark_records, cursor_start, next_cursor, initial_load, resync = (
             get_console_buffer_view(
-                streaming_module,
                 run_id,
                 "spark",
                 spark_path,
@@ -1387,21 +1377,19 @@ def render_streaming() -> None:
     
     if last_execution_notice:
         st.info(last_execution_notice)
-    date_col, time_col, elapsed_col = st.columns(
-        [1, 1, 2],
-        gap="small",
-        vertical_alignment="top",
-    )
-    with date_col:
-        with st.container(border=True):
+    with st.container(border=True):
+        date_col, time_col, elapsed_col = st.columns(
+            [1, 1, 2],
+            gap="small",
+            vertical_alignment="top",
+        )
+        with date_col:
             st.caption("Fecha de mercado analizada")
             st.text(market_date)
-    with time_col:
-        with st.container(border=True):
+        with time_col:
             st.caption("Última hora procesada")
             st.text(market_time)
-    with elapsed_col:
-        with st.container(border=True):
+        with elapsed_col:
             st.caption("Tiempo de ejecución transcurrido")
             if snapshot["is_active"] and not st.session_state.start_pending:
                 EXECUTION_TIMER_COMPONENT(

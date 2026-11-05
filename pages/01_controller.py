@@ -1,6 +1,7 @@
 """Control del ciclo de vida de las ejecuciones del laboratorio."""
 
 import atexit
+import functions
 import threading
 import time
 
@@ -47,14 +48,14 @@ def append_spark_checkpoint(
         )
         for line in console_lines or []:
             spark_path = DATA_DIRECTORY / "runs" / f"{run_id}_04_spark_log.txt"
-            previous_number = streaming_module.read_console_tail(
+            previous_number = functions.read_console_tail(
                 spark_path,
                 1,
             )[2]
             with spark_path.open("a", encoding="utf-8") as spark_file:
                 persisted_line = f"[#{previous_number + 1}] {line}"
                 spark_file.write(persisted_line + "\n")
-            streaming_module.append_console_buffer(
+            functions.append_console_buffer(
                 run_id,
                 "spark",
                 persisted_line,

@@ -1,6 +1,7 @@
 """Consumo Structured Streaming, transformación y persistencia Spark."""
 
 import ast
+import functions
 import json
 import os
 import shutil
@@ -27,7 +28,6 @@ SPARK_DRIVER_PORT = os.getenv("SPARK_DRIVER_PORT", "4041")
 SPARK_MASTER = os.getenv("SPARK_MASTER_URL", "spark://spark-master:7077")
 SPARK_MASTER_UI_URL = os.getenv("SPARK_MASTER_UI_URL", "http://spark-master:8080")
 SPARK_UI_URL = os.getenv("SPARK_UI_URL", "http://localhost:4040")
-_CONSOLE_BUFFER_SINK: Any = None
 _KAFKA_CONFIRMED_RUNS: set[str] = set()
 _RUN_STATES: dict[str, dict[str, Any]] = {}
 _SPARK_ERROR: str | None = None
@@ -70,18 +70,11 @@ def append_spark_log(run_id: str, message: str) -> None:
             log_file.write(f"[#{sequence + 1}] {message}\n")
             log_file.flush()
             os.fsync(log_file.fileno())
-        if _CONSOLE_BUFFER_SINK is not None:
-            _CONSOLE_BUFFER_SINK(
-                run_id,
-                "spark",
-                f"[#{sequence + 1}] {message}",
-            )
-
-def configure_console_buffer(sink: Any) -> None:
-    """Registro el destino en memoria de la consola Spark."""
-
-    global _CONSOLE_BUFFER_SINK
-    _CONSOLE_BUFFER_SINK = sink
+        functions.append_console_buffer(
+            run_id,
+            "spark",
+            f"[#{sequence + 1}] {message}",
+        )
 
 def confirm_kafka_publication(run_id: str) -> None:
     """Habilito la visibilidad Spark después del ACK de Kafka."""
