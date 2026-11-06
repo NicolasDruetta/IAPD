@@ -2,6 +2,7 @@
 certifi==2026.10.23
 kafka-python-ng==2.2.3
 pandas==2.3.3
+pyarrow==22.0.0
 psycopg[binary]==3.2.12
 pyspark==4.2.0
 streamlit==1.66.1

@@ -4,29 +4,30 @@ import math
 import pandas as pd
 import psycopg
 
+from pathlib import Path
 from psycopg.types.json import Jsonb
 from typing import Any
 
+DATA_DIRECTORY = Path(__file__).parent.parent / "data"
 FEED_NAME = "IEX"
 MARKET_ANSWERS_TABLE = "market_answers"
 MARKET_METRICS_TABLE = "market_metrics"
 
 def analyze_and_persist(
     run_id: str,
-    aggregate_rows: list[dict[str, Any]],
-    activity_rows: list[dict[str, Any]],
     feed: str = FEED_NAME,
 ) -> bool:
-    """Calculo el análisis acumulado y guardo solo sus resultados."""
+    """Leo el Parquet definitivo y guardo solo sus resultados."""
 
-    if not aggregate_rows:
+    parquet_path = DATA_DIRECTORY / "runs" / f"{run_id}_04_apache_spark_data.parquet"
+    if not parquet_path.exists():
         return False
     try:
-        metrics, answers = calculate_analysis(aggregate_rows, feed)
-        top_volume, activity, activity_interval = prepare_chart_data(
-            aggregate_rows,
-            activity_rows,
-        )
+        frame = pd.read_parquet(parquet_path)
+        if frame.empty:
+            return False
+        metrics, answers = calculate_analysis(frame, feed)
+        top_volume, activity, activity_interval = prepare_chart_data(frame)
         with functions.get_postgresql_connection() as connection:
             ensure_tables(connection)
             persist_analysis(
@@ -41,7 +42,7 @@ def analyze_and_persist(
         functions.append_console_log(
             run_id,
             "pandas_postgresql",
-            f"AGGREGATES | recibidos={len(aggregate_rows)} | feed={feed}",
+            f"PARQUET | ruta={parquet_path} | registros={len(frame)}",
         )
         functions.append_console_log(
             run_id,
@@ -54,7 +55,7 @@ def analyze_and_persist(
             f"POSTGRES | metricas_guardadas={len(metrics)} | respuestas_persistidas={len(answers)}",
         )
         return True
-    except (OSError, TypeError, ValueError, psycopg.Error) as error:
+    except (OSError, TypeError, ValueError, pd.errors.ParserError, psycopg.Error) as error:
         functions.append_console_log(
             run_id,
             "pandas_postgresql",
@@ -63,21 +64,15 @@ def analyze_and_persist(
         return False
 
 def calculate_analysis(
-    aggregate_rows: list[dict[str, Any]],
+    frame: pd.DataFrame,
     feed: str = FEED_NAME,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Calculo métricas por símbolo y las dos respuestas con Pandas."""
 
-    frame = pd.DataFrame(aggregate_rows)
-    if frame.empty:
+    prepared = _prepare_events(frame)
+    if prepared.empty:
         return [], []
-    numeric_columns = ["return_count", "return_sum", "return_sum_squares", "spread_count", "spread_sum", "trade_count", "total_volume"]
-    for column in numeric_columns:
-        if column not in frame:
-            frame[column] = pd.NA
-        frame[column] = pd.to_numeric(frame[column], errors="coerce")
-    frame["volatility"] = frame.apply(_sample_standard_deviation, axis=1)
-    frame["spread_mean"] = frame.apply(_mean_spread, axis=1)
+    metrics_frame = _build_metrics_frame(prepared)
     metrics = [
         {
             "feed": feed,
@@ -89,17 +84,17 @@ def calculate_analysis(
             "trade_count": _integer_or_none(row.trade_count),
             "volatility": _float_or_none(row.volatility),
         }
-        for row in frame.itertuples(index=False)
+        for row in metrics_frame.itertuples(index=False)
     ]
     answers = [
         _build_answer(
-            frame,
+            metrics_frame,
             "volatility",
             "Las acciones con más operaciones presentan mayor volatilidad.",
             feed,
         ),
         _build_answer(
-            frame,
+            metrics_frame,
             "spread_mean",
             "Las acciones más negociadas tienen menor spread entre compra y venta.",
             feed,
@@ -232,42 +227,32 @@ def persist_analysis(
     connection.commit()
 
 def prepare_chart_data(
-    aggregate_rows: list[dict[str, Any]],
-    activity_rows: list[dict[str, Any]],
+    frame: pd.DataFrame,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
     """Preparo en Pandas los datos completos de los dos gráficos."""
 
-    volume_frame = pd.DataFrame(aggregate_rows)
-    if volume_frame.empty:
-        top_volume = []
-    else:
-        volume_frame["total_volume"] = pd.to_numeric(
-            volume_frame["total_volume"],
-            errors="coerce",
-        ).fillna(0.0)
-        top_volume = [
-            {
-                "symbol": str(row.symbol),
-                "total_volume": float(row.total_volume),
-            }
-            for row in volume_frame.sort_values(
-                ["total_volume", "symbol"],
-                ascending=[False, True],
-            ).head(10).itertuples(index=False)
-        ]
-    activity_frame = pd.DataFrame(activity_rows)
-    if activity_frame.empty:
-        return top_volume, [], 1
-    activity_frame["second_value"] = pd.to_datetime(
-        activity_frame["second"],
-        errors="coerce",
-        utc=True,
+    prepared = _prepare_events(frame)
+    if prepared.empty:
+        return [], [], 1
+    trade_frame = prepared[prepared["event_type"] == "TRADE"]
+    volume_frame = trade_frame.groupby("symbol", as_index=False)["size"].sum()
+    top_volume = [
+        {
+            "symbol": str(row.symbol),
+            "total_volume": float(row.size),
+        }
+        for row in volume_frame.sort_values(
+            ["size", "symbol"],
+            ascending=[False, True],
+        ).head(10).itertuples(index=False)
+    ]
+    activity_frame = (
+        prepared.assign(second_value=prepared["timestamp_value"].dt.floor("s"))
+        .groupby(["second_value", "event_type"], as_index=False)
+        .size()
+        .rename(columns={"size": "events"})
+        .sort_values(["second_value", "event_type"])
     )
-    activity_frame["events"] = pd.to_numeric(
-        activity_frame["events"],
-        errors="coerce",
-    ).fillna(0).astype(int)
-    activity_frame = activity_frame.dropna(subset=["second_value"])
     if activity_frame.empty:
         return top_volume, [], 1
     elapsed_seconds = (
@@ -344,6 +329,59 @@ def _build_answer(
         "symbol_count": symbol_count,
     }
 
+def _build_metrics_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    """Calculo métricas financieras a partir de los eventos Parquet."""
+
+    symbols = pd.DataFrame({"symbol": sorted(frame["symbol"].dropna().unique())})
+    trades = frame[frame["event_type"] == "TRADE"].copy()
+    quotes = frame[frame["event_type"] == "QUOTE"].copy()
+    trade_metrics = trades.groupby("symbol").agg(
+        trade_count=("symbol", "size"),
+        total_volume=("size", "sum"),
+    )
+    valid_trades = trades[trades["price"] > 0].copy()
+    valid_trades["previous_price"] = valid_trades.groupby("symbol")["price"].shift(1)
+    valid_trades["return_value"] = (
+        valid_trades["price"] / valid_trades["previous_price"] - 1
+    )
+    valid_trades.loc[
+        valid_trades["previous_price"] <= 0,
+        "return_value",
+    ] = pd.NA
+    return_metrics = valid_trades.groupby("symbol").agg(
+        return_count=("return_value", "count"),
+        volatility=("return_value", "std"),
+    )
+    valid_quotes = quotes[
+        (quotes["bid_price"] > 0)
+        & (quotes["ask_price"] > 0)
+        & (quotes["ask_price"] >= quotes["bid_price"])
+    ].copy()
+    valid_quotes["spread_value"] = (
+        valid_quotes["ask_price"] - valid_quotes["bid_price"]
+    ) / ((valid_quotes["ask_price"] + valid_quotes["bid_price"]) / 2)
+    quote_metrics = valid_quotes.groupby("symbol").agg(
+        spread_count=("spread_value", "count"),
+        spread_mean=("spread_value", "mean"),
+    )
+    metrics = symbols.merge(
+        trade_metrics,
+        on="symbol",
+        how="left",
+    ).merge(
+        return_metrics,
+        on="symbol",
+        how="left",
+    ).merge(
+        quote_metrics,
+        on="symbol",
+        how="left",
+    )
+    for column in ["trade_count", "return_count", "spread_count"]:
+        metrics[column] = metrics[column].fillna(0).astype(int)
+    metrics["total_volume"] = metrics["total_volume"].fillna(0.0)
+    return metrics
+
 def _float_or_none(value: Any) -> float | None:
     """Convierto valores Pandas a números SQL o nulos."""
 
@@ -358,20 +396,38 @@ def _integer_or_none(value: Any) -> int | None:
         return None
     return int(value)
 
-def _mean_spread(row: Any) -> float | None:
-    """Calculo el spread medio desde suma y cantidad válidas."""
+def _prepare_events(frame: pd.DataFrame) -> pd.DataFrame:
+    """Preparo timestamps y tipos numéricos para el análisis."""
 
-    if pd.isna(row.spread_count) or row.spread_count <= 0:
-        return None
-    return float(row.spread_sum) / float(row.spread_count)
-
-def _sample_standard_deviation(row: Any) -> float | None:
-    """Calculo la desviación estándar desde estadísticas suficientes."""
-
-    if pd.isna(row.return_count) or row.return_count < 2:
-        return None
-    variance = (
-        float(row.return_sum_squares)
-        - (float(row.return_sum) ** 2 / float(row.return_count))
-    ) / float(row.return_count - 1)
-    return math.sqrt(max(variance, 0.0))
+    prepared = frame.copy()
+    prepared["timestamp_value"] = pd.to_datetime(
+        prepared["timestamp"],
+        errors="coerce",
+        utc=True,
+    )
+    prepared["received_at_value"] = pd.to_datetime(
+        prepared["received_at"],
+        errors="coerce",
+        utc=True,
+    )
+    for column in [
+        "price",
+        "size",
+        "bid_price",
+        "bid_size",
+        "ask_price",
+        "ask_size",
+    ]:
+        prepared[column] = pd.to_numeric(
+            prepared[column],
+            errors="coerce",
+        )
+    prepared = prepared[
+        prepared["timestamp_value"].notna()
+        & prepared["symbol"].notna()
+        & prepared["event_type"].isin(["TRADE", "QUOTE"])
+    ].copy()
+    return prepared.sort_values(
+        ["symbol", "timestamp_value", "received_at_value", "price", "size"],
+        na_position="last",
+    )

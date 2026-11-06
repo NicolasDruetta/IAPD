@@ -607,7 +607,7 @@ class AlpacaStreamingService:
         current_thread = threading.current_thread()
         for thread in (self._stream_thread,):
             if thread is not None and thread is not current_thread:
-                thread.join(timeout=5)
+                thread.join()
 
     def _safe_error(self, error: Exception) -> str:
         """Devuelvo un error útil sin incluir secretos de autenticación."""

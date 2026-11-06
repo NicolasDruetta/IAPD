@@ -34,69 +34,6 @@ SYMBOL_OPTIONS = {
     },
 }
 
-def format_presentation_timestamp(
-    value: Any = None,
-    source_timezone: tzinfo | None = None,
-) -> str:
-    """Convierto un timestamp zonificado a la hora oficial del laboratorio."""
-
-    if value is None or value == "":
-        return "-"
-    if isinstance(value, datetime):
-        timestamp = value
-    else:
-        text = str(value).replace("Z", "+00:00")
-        try:
-            timestamp = datetime.fromisoformat(text)
-        except ValueError:
-            return str(value)
-    if timestamp.tzinfo is None:
-        if source_timezone is None:
-            return str(value)
-        timestamp = timestamp.replace(tzinfo=source_timezone)
-    return timestamp.astimezone(PRESENTATION_TIMEZONE).strftime(
-        "%Y-%m-%d %H:%M:%S"
-    )
-
-def format_presentation_log_line(line: str) -> str:
-    """Convierto la marca UTC de un log al horario del laboratorio."""
-
-    timestamp_text, separator, message = line.partition(" | ")
-    if not separator:
-        return line
-    timestamp = format_presentation_timestamp(
-        timestamp_text,
-        source_timezone=timezone.utc,
-    )
-    if timestamp == timestamp_text:
-        return line
-    return f"{timestamp} | {message}"
-
-def format_elapsed_time(
-    started_at: str | None,
-    ended_at: str | None = None,
-) -> str:
-    """Formateo el tiempo transcurrido desde el inicio del RUN."""
-
-    if not started_at:
-        return "00:00:00"
-    try:
-        started_timestamp = datetime.fromisoformat(
-            started_at.replace("Z", "+00:00")
-        )
-        end_timestamp = datetime.fromisoformat(
-            ended_at.replace("Z", "+00:00")
-        ) if ended_at else datetime.now(timezone.utc)
-    except ValueError:
-        return "00:00:00"
-    elapsed_seconds = max(
-        0,
-        int((end_timestamp - started_timestamp).total_seconds()),
-    )
-    hours, remainder = divmod(elapsed_seconds, 3600)
-    minutes, seconds = divmod(remainder, 60)
-    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-
 def get_console_state(console_id: str, run_id: str | None) -> dict[str, Any]:
     """Mantengo el contador visual independiente de cada consola y RUN."""
 
@@ -150,201 +87,51 @@ def load_custom_css() -> None:
     css_content = css_path.read_text(encoding="utf-8")
     st.markdown(f"<style>{css_content}</style>", unsafe_allow_html=True)
 
-def load_page_module(module_name: str) -> ModuleType:
-    """Cargo un módulo de procesamiento sin construir su interfaz."""
+def render_header() -> None:
+    """Muestro el encabezado general del laboratorio."""
 
-    module_path = Path(__file__).parent / "stages" / f"{module_name}.py"
-    source_mtime_ns = module_path.stat().st_mtime_ns
-    cached_module = sys.modules.get(module_name)
-    if cached_module is not None:
-        cached_mtime_ns = getattr(
-            cached_module,
-            "_SOURCE_MTIME_NS",
-            None,
-        )
-        active_service = getattr(
-            cached_module,
-            "get_active_service",
-            lambda: None,
-        )()
-        if active_service is None and module_name == "02_alpaca_stream":
-            controller_module = sys.modules.get("01_python_controller")
-            active_service = getattr(
-                controller_module,
-                "get_active_service",
-                lambda: None,
-            )()
-        if (
-            cached_mtime_ns == source_mtime_ns
-            or (
-                active_service is not None
-                and active_service.is_active()
-            )
-            or (
-                module_name == "04_apache_spark"
-                and _has_active_spark_query(cached_module)
-            )
+    icon_path = Path(__file__).parent / "assets" / "icon.png"
+    theme_key = "theme-dark" if st.session_state.dark_mode else "theme-light"
+    with st.container(key=theme_key):
+        st.empty()
+    with st.container(
+        width="content",
+        horizontal=True,
+        gap="small",
+        vertical_alignment="center",
+    ):
+        icon_col = st.container(width="content")
+        title_col = st.container(width="stretch")
+        theme_col = st.container(width="content")
+    with icon_col:
+        st.image(str(icon_path), width=50)
+    with title_col:
+        st.title("Apache Big Data Lab")
+    with theme_col:
+        if st.button(
+            "",
+            icon=(
+                ":material/light_mode:"
+                if st.session_state.dark_mode
+                else ":material/dark_mode:"
+            ),
+            help=(
+                "Light Mode"
+                if st.session_state.dark_mode
+                else "Dark Mode"
+            ),
+            key="theme-toggle-button",
+            width=36,
         ):
-            return cached_module
-        sys.modules.pop(module_name, None)
-    spec = importlib.util.spec_from_file_location(
-        module_name, module_path
-    )
-    if spec is None or spec.loader is None:
-        raise ImportError("No se pudo cargar el módulo de Alpaca")
-    module = importlib.util.module_from_spec(spec)
-    module.DATA_DIRECTORY = DATA_DIRECTORY
-    module.PRESENTATION_TIMEZONE = PRESENTATION_TIMEZONE
-    module.format_presentation_timestamp = format_presentation_timestamp
-    sys.modules[module_name] = module
-    try:
-        spec.loader.exec_module(module)
-        module._SOURCE_MTIME_NS = source_mtime_ns
-    except Exception:
-        sys.modules.pop(module_name, None)
-        raise
-    return module
+            st.session_state.dark_mode = not st.session_state.dark_mode
+            st.session_state.theme_user_set = True
+            st.rerun()
 
-def _has_active_spark_query(module: ModuleType) -> bool:
-    """Consulto Spark sin propagar errores de conexión a la interfaz."""
+    st.subheader("Streaming y análisis de operaciones bursátiles con procesamiento distribuido durante una rueda de mercado.")
+    st.caption("Materia: IAPD. Autor: Nicolás Druetta. Año: 2026.")
 
-    try:
-        return bool(
-            getattr(module, "has_active_query", lambda: False)()
-        )
-    except Exception:
-        return False
-
-def mark_start_pending() -> None:
-    """Marco que el usuario acaba de solicitar el inicio."""
-
-    st.session_state.manual_stop_status = False
-    st.session_state.start_requested = True
-    st.session_state.start_pending = True
-
-def handle_start_error(
-    error: Exception,
-    controller_module: ModuleType,
-    spark_module: ModuleType,
-    run_id: str | None,
-) -> None:
-    """Finalizo el RUN y conservo el error visible tras un fallo de inicio."""
-
-    error_message = " ".join(str(error).split()) or error.__class__.__name__
-    if run_id is not None:
-        spark_module.stop_streaming(run_id, finalize=False)
-    controller_module.fail_active_run(error_message)
-    st.session_state.start_pending = False
-    st.session_state.start_operation = None
-    st.session_state.alpaca_run_id = None
-
-def start_run_in_background(
-    operation: dict[str, Any],
-    controller_module: ModuleType,
-    streaming_module: ModuleType,
-    symbols: list[str],
-    symbol_ranking: str | None,
-    replay_speed: float,
-) -> None:
-    """Inicio el RUN sin bloquear el refresco visual de Streamlit."""
-
-    try:
-        operation["service"] = controller_module.start_run(
-            streaming_module.ALPACA_API_KEY,
-            streaming_module.ALPACA_SECRET_KEY,
-            symbols,
-            ranking=symbol_ranking,
-            replay_speed=replay_speed,
-        )
-    except Exception as error:
-        operation["error"] = error
-    finally:
-        operation["done"] = True
-
-def mark_stop_pending() -> None:
-    """Marco que el usuario acaba de solicitar la detención."""
-
-    st.session_state.stop_pending = True
-
-def render_log_console(
-    lines: list[str],
-    console_id: str,
-    cursor_end: int,
-    cursor_start: int = 0,
-    has_more: bool = False,
-    initial_load: bool = False,
-    placeholder: bool = False,
-    resync: bool = False,
-) -> None:
-    """Muestro y actualizo incrementalmente una consola de registros."""
-
-    components.LOG_CONSOLE_COMPONENT(
-        data={"lines": lines},
-        height=250,
-        key=console_id,
-    )
-
-def get_console_buffer_view(
-    run_id: str | None,
-    console_name: str,
-    console_path: Path | None,
-    console_state: dict[str, Any],
-    clear_consoles: bool,
-) -> tuple[list[str], int, int, bool, bool]:
-    """Leo solamente los 200 últimos registros del TXT de cada consola."""
-
-    if clear_consoles or run_id is None or console_path is None:
-        console_state["line_number"] = 0
-        return [], 0, 0, True, False
-    lines, _, total = functions.read_console_tail(console_path, 200)
-    console_state["line_number"] = total
-    return lines, 0, total, True, False
-
-def render_research_questions(analysis_data: dict[str, Any]) -> None:
-    """Muestro respuestas y tablas nativas con métricas del RUN actual."""
-
-    answers = {
-        str(answer["question_id"]): answer
-        for answer in analysis_data.get("answers", [])
-    }
-    metrics = analysis_data.get("metrics", [])
-    questions = (
-        (
-            "volatility",
-            "1. ¿Las acciones con más operaciones presentan mayor volatilidad?",
-            ["symbol", "trade_count", "return_count", "volatility"],
-        ),
-        (
-            "spread",
-            "2. ¿Las acciones más negociadas tienen menor spread entre compra y venta?",
-            ["symbol", "trade_count", "spread_count", "spread_mean"],
-        ),
-    )
-    for question_id, title, columns in questions:
-        st.markdown(f"#### {title}")
-        answer = answers.get(question_id)
-        correlation = answer.get("correlation") if answer else None
-        st.caption("Correlación")
-        st.write(
-            "Datos insuficientes"
-            if correlation is None
-            else f"{float(correlation):.4f}"
-        )
-        st.caption("Interpretación")
-        st.write(
-            answer.get("conclusion", "Datos insuficientes. Feed observado: IEX.")
-            if answer
-            else "Datos insuficientes. Feed observado: IEX."
-        )
-        st.caption("Tabla por acción")
-        table_rows = [
-            {column: row.get(column) for column in columns}
-            for row in metrics
-        ]
-        st.dataframe(table_rows, hide_index=True, width="stretch")
-
-def render_streaming() -> None:
-    """Muestro las consolas de Alpaca y el estado de Spark."""
+def render_config() -> None:
+    """Muestro la configuración y coordino el estado del RUN."""
 
     controller_module = load_page_module("01_python_controller")
     streaming_module = load_page_module("02_alpaca_stream")
@@ -380,7 +167,8 @@ def render_streaming() -> None:
             ),
             default_option,
         )
-    st.subheader("Símbolos bursátiles a analizar")
+    st.subheader("CONFIG")
+    st.caption("Símbolos bursátiles a analizar")
     symbols_col, actions_col = st.columns(
         [1, 1],
         gap="small",
@@ -582,50 +370,6 @@ def render_streaming() -> None:
     if snapshot["error"] and not st.session_state.start_pending:
         st.error("**Error:** " + (" ".join(str(snapshot["error"]).split())))
 
-    st.divider()
-    st.write("")
-
-    last_execution_notice = None
-    if (
-        snapshot["run_id"]
-        and not snapshot["is_active"]
-        and not st.session_state.start_pending
-    ):
-        last_execution_at = snapshot["ended_at"] or snapshot["started_at"]
-        last_execution_text = (
-            format_presentation_timestamp(last_execution_at)
-            if last_execution_at
-            else "-"
-        )
-        elapsed_text = format_elapsed_time(
-            snapshot["started_at"],
-            snapshot["ended_at"],
-        )
-        history_mode = snapshot["mode"] or "-"
-        history_run_id = snapshot["run_id"] or "-"
-        completion_text = {
-            "Completado": "Finalizado correctamente.",
-            "Error": "Finalizado con error.",
-        }.get(snapshot["status"], f"{snapshot['status']}.")
-        if (
-            snapshot["status"] == "Detenido"
-            and snapshot.get("end_reason") == "manual_stop"
-        ):
-            completion_text = "Detenido manualmente."
-        last_execution_notice = f"Datos de la **última ejecución:** {last_execution_text}. **Duración:** {elapsed_text}. **{completion_text}** | **Modo:** {history_mode}. | **RUN:** {history_run_id}."
-        automatic_stop_messages = {
-            "heartbeat_timeout": "La ejecución se detuvo automáticamente porque la interfaz dejó de enviar señales de actividad durante 15 minutos.",
-            "process_restart": "La ejecución se detuvo automáticamente porque se reinició el proceso de la aplicación.",
-            "process_shutdown": "La ejecución se detuvo automáticamente porque se cerró el proceso de la aplicación.",
-        }
-        automatic_stop_reason = snapshot.get("end_reason")
-        automatic_stop_message = automatic_stop_messages.get(
-            automatic_stop_reason,
-        )
-        if automatic_stop_message and automatic_stop_reason != "manual_stop":
-            st.error(automatic_stop_message)
-        st.info(last_execution_notice)
-
     run_id = None if st.session_state.start_pending else snapshot["run_id"]
     if run_id is not None and snapshot["is_active"]:
         try:
@@ -646,7 +390,27 @@ def render_streaming() -> None:
             run_id,
             finalize=snapshot.get("status") == "Completado",
         )
-    spark_result = spark_module.get_snapshot(run_id)
+
+def render_consoles() -> None:
+    """Muestro las cinco consolas del pipeline."""
+
+    controller_module = load_page_module("01_python_controller")
+    streaming_module = load_page_module("02_alpaca_stream")
+    kafka_module = load_page_module("03_apache_kafka")
+    spark_module = load_page_module("04_apache_spark")
+    load_page_module("05_pandas_postgresql")
+    controller_module.configure_streaming_module(streaming_module)
+    controller_module.configure_pipeline_modules(
+        kafka_module,
+        spark_module,
+    )
+    snapshot = controller_module.get_run_snapshot()
+    clear_consoles = bool(
+        st.session_state.start_requested
+        or st.session_state.start_pending
+    )
+    run_id = None if st.session_state.start_pending else snapshot["run_id"]
+
     st.subheader("CONSOLAS")
     execution_column, alpaca_column = st.columns(
         2,
@@ -983,14 +747,37 @@ def render_streaming() -> None:
     if clear_consoles:
         st.session_state.start_requested = False
 
-    st.divider()
-    st.subheader("PREGUNTAS DE INVESTIGACIÓN")
-    analysis_data = charts_module.get_market_analysis(run_id)
-    render_research_questions(analysis_data)
+def render_info() -> None:
+    """Muestro la información de la última ejecución."""
+
+    controller_module = load_page_module("01_python_controller")
+    streaming_module = load_page_module("02_alpaca_stream")
+    controller_module.configure_streaming_module(streaming_module)
+    snapshot = controller_module.get_run_snapshot()
+    if st.session_state.start_pending:
+        elapsed_text = "-"
+        market_date = "-"
+        market_time = "-"
+    else:
+        elapsed_text = format_elapsed_time(
+            snapshot["started_at"],
+            snapshot["ended_at"],
+        )
+        market_timestamp = snapshot.get("market_timestamp")
+        presentation_market_timestamp = format_presentation_timestamp(
+            market_timestamp,
+        )
+        market_date = (
+            snapshot.get("historical_date") or "-"
+            if snapshot["is_active"]
+            else "-"
+        )
+        market_time = (
+            presentation_market_timestamp.split(" ", 1)[1]
+            if presentation_market_timestamp != "-"
+            else "-"
+        )
     st.write("")
-    
-    if last_execution_notice:
-        st.info(last_execution_notice)
     with st.container(border=True):
         date_col, time_col, elapsed_col, data_col = st.columns(
             [1, 1, 1, 1],
@@ -1022,6 +809,19 @@ def render_streaming() -> None:
         with data_col:
             st.caption("Cantidad de datos descargados")
             st.text(str(snapshot.get("event_count", 0)))
+
+def render_charts() -> None:
+    """Muestro los gráficos de la última ejecución."""
+
+    analysis_data = st.session_state.get(
+        "analysis_data",
+        {
+            "activity_interval": 1,
+            "activity_rows": [],
+            "top_volume": [],
+        },
+    )
+
     st.subheader("GRÁFICOS")
     top_volume = analysis_data.get("top_volume", [])
     activity_rows = analysis_data.get("activity_rows", [])
@@ -1037,6 +837,94 @@ def render_streaming() -> None:
     with activity_column:
         st.subheader("Actividad bursátil en el tiempo")
         render_activity_chart(activity_rows, activity_interval)
+
+def render_questions() -> None:
+    """Muestro las preguntas de investigación y sus tablas."""
+
+    charts_module = load_page_module("06_streamlit_charts")
+    analysis_run_id = st.session_state.alpaca_run_id
+    if analysis_run_id is None:
+        streaming_module = load_page_module("02_alpaca_stream")
+        metadata = streaming_module.get_latest_metadata()
+        analysis_run_id = metadata.get("run_id") if metadata else None
+    st.subheader("PREGUNTAS DE INVESTIGACIÓN")
+    analysis_data = charts_module.get_market_analysis(analysis_run_id)
+    st.session_state.analysis_data = analysis_data
+    answers = {
+        str(answer["question_id"]): answer
+        for answer in analysis_data.get("answers", [])
+    }
+    metrics = analysis_data.get("metrics", [])
+    questions = (
+        (
+            "volatility",
+            "1. ¿Las acciones con más operaciones presentan mayor volatilidad?",
+            ["symbol", "trade_count", "return_count", "volatility"],
+            "cantidad de operaciones y volatilidad",
+        ),
+        (
+            "spread",
+            "2. ¿Las acciones más negociadas tienen menor spread entre compra y venta?",
+            ["symbol", "trade_count", "spread_count", "spread_mean"],
+            "cantidad de operaciones y spread",
+        ),
+    )
+    question_columns = st.columns(
+        2,
+        gap="small",
+        vertical_alignment="top",
+    )
+    for question_column, (question_id, title, columns, correlation_description) in zip(
+        question_columns,
+        questions,
+    ):
+        with question_column:
+            st.markdown(f"#### {title}")
+            answer = answers.get(question_id)
+            correlation = answer.get("correlation") if answer else None
+            table_rows = [
+                {column: row.get(column) for column in columns}
+                for row in metrics
+            ]
+            st.dataframe(table_rows, hide_index=True, width="stretch")
+            correlation_text = (
+                "Datos insuficientes"
+                if correlation is None
+                else f"{float(correlation):.4f}"
+            )
+            conclusion = (
+                answer.get("conclusion", "Datos insuficientes.")
+                if answer
+                else "Datos insuficientes."
+            )
+            st.write(
+                f"**Correlación:** {correlation_text} ({correlation_description})"
+            )
+            st.write(f"**Interpretación:** {conclusion}")
+
+render_config = st.fragment(render_config, run_every="5s")
+render_consoles = st.fragment(render_consoles, run_every="5s")
+render_info = st.fragment(render_info, run_every="5s")
+render_questions = st.fragment(render_questions, run_every="5s")
+render_charts = st.fragment(render_charts, run_every="5s")
+
+def render_log_console(
+    lines: list[str],
+    console_id: str,
+    cursor_end: int,
+    cursor_start: int = 0,
+    has_more: bool = False,
+    initial_load: bool = False,
+    placeholder: bool = False,
+    resync: bool = False,
+) -> None:
+    """Muestro y actualizo incrementalmente una consola de registros."""
+
+    components.LOG_CONSOLE_COMPONENT(
+        data={"lines": lines},
+        height=250,
+        key=console_id,
+    )
 
 def render_activity_chart(
     rows: list[dict[str, Any]],
@@ -1101,7 +989,7 @@ def render_activity_chart(
         spec=chart_spec,
         use_container_width=True,
     )
-    
+
 def render_volume_chart(rows: list[dict[str, Any]]) -> None:
     """Muestro el gráfico con el acumulado confirmado por Spark."""
 
@@ -1189,3 +1077,252 @@ def render_volume_chart(rows: list[dict[str, Any]]) -> None:
         spec=chart_spec,
         use_container_width=True,
     )
+
+def load_page_module(module_name: str) -> ModuleType:
+    """Cargo un módulo de procesamiento sin construir su interfaz."""
+
+    module_path = Path(__file__).parent / "stages" / f"{module_name}.py"
+    source_mtime_ns = module_path.stat().st_mtime_ns
+    cached_module = sys.modules.get(module_name)
+    if cached_module is not None:
+        cached_mtime_ns = getattr(
+            cached_module,
+            "_SOURCE_MTIME_NS",
+            None,
+        )
+        active_service = getattr(
+            cached_module,
+            "get_active_service",
+            lambda: None,
+        )()
+        if active_service is None and module_name == "02_alpaca_stream":
+            controller_module = sys.modules.get("01_python_controller")
+            active_service = getattr(
+                controller_module,
+                "get_active_service",
+                lambda: None,
+            )()
+        if (
+            cached_mtime_ns == source_mtime_ns
+            or (
+                active_service is not None
+                and active_service.is_active()
+            )
+            or (
+                module_name == "04_apache_spark"
+                and _has_active_spark_query(cached_module)
+            )
+        ):
+            return cached_module
+        sys.modules.pop(module_name, None)
+    spec = importlib.util.spec_from_file_location(
+        module_name, module_path
+    )
+    if spec is None or spec.loader is None:
+        raise ImportError("No se pudo cargar el módulo de Alpaca")
+    module = importlib.util.module_from_spec(spec)
+    module.DATA_DIRECTORY = DATA_DIRECTORY
+    module.PRESENTATION_TIMEZONE = PRESENTATION_TIMEZONE
+    module.format_presentation_timestamp = format_presentation_timestamp
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+        module._SOURCE_MTIME_NS = source_mtime_ns
+    except Exception:
+        sys.modules.pop(module_name, None)
+        raise
+    return module
+
+def _has_active_spark_query(module: ModuleType) -> bool:
+    """Consulto Spark sin propagar errores de conexión a la interfaz."""
+
+    try:
+        return bool(
+            getattr(module, "has_active_query", lambda: False)()
+        )
+    except Exception:
+        return False
+
+def mark_start_pending() -> None:
+    """Marco que el usuario acaba de solicitar el inicio."""
+
+    st.session_state.manual_stop_status = False
+    st.session_state.start_requested = True
+    st.session_state.start_pending = True
+
+def handle_start_error(
+    error: Exception,
+    controller_module: ModuleType,
+    spark_module: ModuleType,
+    run_id: str | None,
+) -> None:
+    """Finalizo el RUN y conservo el error visible tras un fallo de inicio."""
+
+    error_message = " ".join(str(error).split()) or error.__class__.__name__
+    if run_id is not None:
+        spark_module.stop_streaming(run_id, finalize=False)
+    controller_module.fail_active_run(error_message)
+    st.session_state.start_pending = False
+    st.session_state.start_operation = None
+    st.session_state.alpaca_run_id = None
+
+def start_run_in_background(
+    operation: dict[str, Any],
+    controller_module: ModuleType,
+    streaming_module: ModuleType,
+    symbols: list[str],
+    symbol_ranking: str | None,
+    replay_speed: float,
+) -> None:
+    """Inicio el RUN sin bloquear el refresco visual de Streamlit."""
+
+    try:
+        operation["service"] = controller_module.start_run(
+            streaming_module.ALPACA_API_KEY,
+            streaming_module.ALPACA_SECRET_KEY,
+            symbols,
+            ranking=symbol_ranking,
+            replay_speed=replay_speed,
+        )
+    except Exception as error:
+        operation["error"] = error
+    finally:
+        operation["done"] = True
+
+def mark_stop_pending() -> None:
+    """Marco que el usuario acaba de solicitar la detención."""
+
+    st.session_state.stop_pending = True
+
+def get_console_buffer_view(
+    run_id: str | None,
+    console_name: str,
+    console_path: Path | None,
+    console_state: dict[str, Any],
+    clear_consoles: bool,
+) -> tuple[list[str], int, int, bool, bool]:
+    """Leo solamente los 200 últimos registros del TXT de cada consola."""
+
+    if clear_consoles or run_id is None or console_path is None:
+        console_state["line_number"] = 0
+        return [], 0, 0, True, False
+    lines, _, total = functions.read_console_tail(console_path, 200)
+    console_state["line_number"] = total
+    return lines, 0, total, True, False
+
+    """Muestro respuestas y tablas nativas con métricas del RUN actual."""
+
+    answers = {
+        str(answer["question_id"]): answer
+        for answer in analysis_data.get("answers", [])
+    }
+    metrics = analysis_data.get("metrics", [])
+    questions = (
+        (
+            "volatility",
+            "1. ¿Las acciones con más operaciones presentan mayor volatilidad?",
+            ["symbol", "trade_count", "return_count", "volatility"],
+            "cantidad de operaciones y volatilidad",
+        ),
+        (
+            "spread",
+            "2. ¿Las acciones más negociadas tienen menor spread entre compra y venta?",
+            ["symbol", "trade_count", "spread_count", "spread_mean"],
+            "cantidad de operaciones y spread",
+        ),
+    )
+    question_columns = st.columns(
+        2,
+        gap="small",
+        vertical_alignment="top",
+    )
+    for question_column, (question_id, title, columns, correlation_description) in zip(
+        question_columns,
+        questions,
+    ):
+        with question_column:
+            st.markdown(f"#### {title}")
+            answer = answers.get(question_id)
+            correlation = answer.get("correlation") if answer else None
+            table_rows = [
+                {column: row.get(column) for column in columns}
+                for row in metrics
+            ]
+            st.dataframe(table_rows, hide_index=True, width="stretch")
+            correlation_text = (
+                "Datos insuficientes"
+                if correlation is None
+                else f"{float(correlation):.4f}"
+            )
+            conclusion = (
+                answer.get("conclusion", "Datos insuficientes.")
+                if answer
+                else "Datos insuficientes."
+            )
+            st.write(
+                f"**Correlación:** {correlation_text} ({correlation_description})"
+            )
+            st.write(f"**Interpretación:** {conclusion}")
+
+def format_elapsed_time(
+    started_at: str | None,
+    ended_at: str | None = None,
+) -> str:
+    """Formateo el tiempo transcurrido desde el inicio del RUN."""
+
+    if not started_at:
+        return "00:00:00"
+    try:
+        started_timestamp = datetime.fromisoformat(
+            started_at.replace("Z", "+00:00")
+        )
+        end_timestamp = datetime.fromisoformat(
+            ended_at.replace("Z", "+00:00")
+        ) if ended_at else datetime.now(timezone.utc)
+    except ValueError:
+        return "00:00:00"
+    elapsed_seconds = max(
+        0,
+        int((end_timestamp - started_timestamp).total_seconds()),
+    )
+    hours, remainder = divmod(elapsed_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+def format_presentation_timestamp(
+    value: Any = None,
+    source_timezone: tzinfo | None = None,
+) -> str:
+    """Convierto un timestamp zonificado a la hora oficial del laboratorio."""
+
+    if value is None or value == "":
+        return "-"
+    if isinstance(value, datetime):
+        timestamp = value
+    else:
+        text = str(value).replace("Z", "+00:00")
+        try:
+            timestamp = datetime.fromisoformat(text)
+        except ValueError:
+            return str(value)
+    if timestamp.tzinfo is None:
+        if source_timezone is None:
+            return str(value)
+        timestamp = timestamp.replace(tzinfo=source_timezone)
+    return timestamp.astimezone(PRESENTATION_TIMEZONE).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+
+def format_presentation_log_line(line: str) -> str:
+    """Convierto la marca UTC de un log al horario del laboratorio."""
+
+    timestamp_text, separator, message = line.partition(" | ")
+    if not separator:
+        return line
+    timestamp = format_presentation_timestamp(
+        timestamp_text,
+        source_timezone=timezone.utc,
+    )
+    if timestamp == timestamp_text:
+        return line
+    return f"{timestamp} | {message}"
