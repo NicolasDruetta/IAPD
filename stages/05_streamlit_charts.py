@@ -1,5 +1,3 @@
-"""Preparo los resultados analíticos de Spark para los gráficos."""
-
 from datetime import datetime, timedelta, timezone
 from typing import Any
 

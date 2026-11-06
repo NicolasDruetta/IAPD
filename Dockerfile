@@ -37,7 +37,7 @@ COPY main.py ./main.py
 COPY components.py ./components.py
 COPY functions.py ./functions.py
 COPY renders.py ./renders.py
-COPY pages ./pages
+COPY stages ./stages
 COPY assets ./assets
 COPY README.md ./README.md
 COPY AGENTS.md ./AGENTS.md

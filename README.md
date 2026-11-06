@@ -211,10 +211,12 @@ NicolasDruetta_TP2/
 ├── .dockerignore
 ├── docker/
 │   └── Dockerfile
-├── pages/
-│   ├── 01_controller.py
+├── stages/
+│   ├── 01_python_controller.py
 │   ├── 02_alpaca_stream.py
-│   └── 03_apache_spark.py
+│   ├── 03_apache_kafka.py
+│   ├── 04_apache_spark.py
+│   └── 05_streamlit_charts.py
 ├── data/
 │   └── (archivos de RUN y directorios legacy conservados)
 └── assets/
@@ -223,10 +225,11 @@ NicolasDruetta_TP2/
 
 - `main.py`: punto de entrada de Streamlit, controles, tarjetas de estado,
   consolas y funciones comunes.
-- `pages/01_controller.py`: ciclo de vida, estados y supervisión del RUN.
-- `pages/02_alpaca_stream.py`: conexión LIVE, descarga histórica,
+- `stages/01_python_controller.py`: ciclo de vida, estados y supervisión del RUN.
+- `stages/02_alpaca_stream.py`: conexión LIVE, descarga histórica,
   reproducción REPLAY, ciclo de vida y persistencia de Alpaca.
-- `pages/03_apache_spark.py`: procesamiento específico de Spark distribuido.
+- `stages/03_apache_kafka.py`: publicación de eventos en Kafka.
+- `stages/04_apache_spark.py`: procesamiento específico de Spark distribuido.
 - `compose.yaml`: servicios Streamlit/Driver, Master y dos Workers.
 - `Dockerfile`: imagen común con Python, PySpark y Java.
 - `.dockerignore`: archivos excluidos del contexto de construcción.
@@ -401,7 +404,7 @@ Se inicia con:
 docker compose up
 ```
 
-Los cambios en `main.py`, `pages/`, `assets/` y los recursos del proyecto se
+Los cambios en `main.py`, `stages/`, `assets/` y los recursos del proyecto se
 reflejan al guardar y actualizar el navegador. El Master y los Workers no se
 reconstruyen ni se reinician por esos cambios. La imagen solo debe
 reconstruirse cuando cambien `requirements.txt`, `docker/Dockerfile` u otra

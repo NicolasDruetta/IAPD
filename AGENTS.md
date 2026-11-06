@@ -66,10 +66,10 @@ El proyecto no utiliza decoradores de Python, incluidos los decoradores de
 Streamlit. Las funcionalidades equivalentes se expresan mediante funciones
 convencionales y llamadas explícitas.
 
-Cada archivo de `pages/` contiene exclusivamente funciones relacionadas con su
+Cada archivo de `stages/` contiene exclusivamente funciones relacionadas con su
 propia tecnología o funcionalidad. Las funciones comunes de logs y archivos se ubican en `functions.py`.
 La presentación y los gráficos de Streamlit se ubican en `main.py` y
-`pages/05_streamlit_charts.py`, respectivamente.
+`stages/05_streamlit_charts.py`, respectivamente.
 
 Los módulos de procesamiento `01` a `04` no contienen interfaz Streamlit.
 El cargador del punto de entrada las proporciona al módulo especializado antes
@@ -88,7 +88,7 @@ La documentación es breve, precisa y relacionada con la implementación.
 ## 7. Organización del código
 
 `main.py` centraliza el punto de entrada y la interfaz Streamlit.
-`pages/05_streamlit_charts.py` implementa exclusivamente los gráficos.
+`stages/05_streamlit_charts.py` implementa exclusivamente los gráficos.
 `functions.py` centraliza la escritura y lectura compartida de logs.
 
 Los módulos `01` a `04` procesan datos sin interfaz. El módulo `05` contiene
@@ -100,7 +100,7 @@ visuales.
 
 Las funciones de nivel superior se ordenan alfabéticamente por nombre dentro
 de cada módulo. Esta regla se aplica a `main.py` y a todos los módulos de
-`pages/`, sin mezclar funciones entre archivos.
+`stages/`, sin mezclar funciones entre archivos.
 
 ## 8. Buenas prácticas de desarrollo
 
@@ -188,7 +188,7 @@ timestamps originales durante la presentación.
 
 ## 11. Numeración de módulos
 
-Los módulos de `pages/` utilizan una numeración progresiva que refleja el
+Los módulos de `stages/` utilizan una numeración progresiva que refleja el
 orden real de implementación. Cada nueva tecnología recibe el siguiente
 número disponible y no se crean archivos anticipadamente para etapas futuras.
 

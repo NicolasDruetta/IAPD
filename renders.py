@@ -153,7 +153,7 @@ def load_custom_css() -> None:
 def load_page_module(module_name: str) -> ModuleType:
     """Cargo un módulo de procesamiento sin construir su interfaz."""
 
-    module_path = Path(__file__).parent / "pages" / f"{module_name}.py"
+    module_path = Path(__file__).parent / "stages" / f"{module_name}.py"
     source_mtime_ns = module_path.stat().st_mtime_ns
     cached_module = sys.modules.get(module_name)
     if cached_module is not None:
