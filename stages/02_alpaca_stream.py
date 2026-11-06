@@ -349,8 +349,7 @@ class AlpacaStreamingService:
             self._add_log(f"REPLAY | detención solicitada: {end_reason}")
             self._append_run_state_callback(self)
         self._join_threads()
-        if not self.is_running():
-            self._finish("Detenido", end_reason)
+        self._finish("Detenido", end_reason)
 
     def fail(self, error: str) -> None:
         """Finalizo el RUN con error y libero sus recursos."""

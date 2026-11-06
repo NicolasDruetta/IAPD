@@ -598,13 +598,20 @@ def process_batch(run_id: str, data_frame: DataFrame, batch_id: int) -> None:
             info_file.flush()
             os.fsync(info_file.fileno())
         for message in (
-            f"DATAFRAME | batch_id={batch_id} | registros_entrada={input_count} | validos={valid_count} | invalidos={input_count - valid_count} | duplicados_eliminados={valid_count - processed_count}",
-            f"PARQUET | batch_id={batch_id} | ruta={parquet_path} | registros={processed_count}",
-            f"EDA | batch_id={batch_id} | simbolos={len(result_rows)} | operaciones={checkpoint['processed_events_by_type']['TRADE']} | cotizaciones={checkpoint['processed_events_by_type']['QUOTE']}",
+            f"TRANSFORM | batch_id={batch_id} | entrada={input_count} | validos={valid_count} | invalidos={input_count - valid_count} | duplicados_eliminados={valid_count - processed_count}",
+            f"LOAD | batch_id={batch_id} | ruta={parquet_path} | registros={processed_count} | estado=completado",
+            f"EDA | batch_id={batch_id} | simbolos={len(result_rows)} | trades={checkpoint['processed_events_by_type']['TRADE']} | quotes={checkpoint['processed_events_by_type']['QUOTE']} | actividad_temporal={len(activity_rows)}",
             f"EDA | batch_id={batch_id} | volumen_trade_por_accion={top_volume_rows(totals)}",
         ):
             functions.append_console_log(run_id, "spark", message)
     except Exception as error:
+        if "InterruptedException" in str(error) and not has_active_query():
+            functions.append_console_log(
+                run_id,
+                "spark",
+                f"STOP | batch_id={batch_id} | microbatch interrumpido",
+            )
+            return
         functions.append_console_log(
             run_id, "spark", f"ERROR | batch_id={batch_id} | procesamiento={error}"
         )
