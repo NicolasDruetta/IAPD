@@ -9,9 +9,16 @@ services:
   kafka:
     image: apache/kafka:4.0.0
     hostname: kafka
+    user: "0:0"
     cpus: "0.5"
     mem_limit: 768m
     mem_reservation: 512m
+    command:
+      - /bin/sh
+      - -c
+      - >-
+        mkdir -p /var/lib/kafka/data /etc/kafka/secrets /mnt/shared/config
+        && exec /etc/kafka/docker/run
     environment:
       CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
@@ -42,6 +49,24 @@ services:
       timeout: 5s
       retries: 20
       start_period: 15s
+
+  postgres:
+    image: postgres:17-alpine
+    hostname: postgres
+    environment:
+      POSTGRES_DB: apache_big_data_lab
+      POSTGRES_PASSWORD: apache_big_data_lab
+      POSTGRES_USER: bigdata
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U bigdata -d apache_big_data_lab
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
 
   spark-master:
     <<: *lab-image
@@ -191,6 +216,11 @@ services:
       SPARK_UI_URL: http://localhost:4040
       SPARK_DRIVER_MEMORY: 2g
       SPARK_EXECUTOR_MEMORY: 512m
+      POSTGRES_DB: apache_big_data_lab
+      POSTGRES_HOST: postgres
+      POSTGRES_PASSWORD: apache_big_data_lab
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: bigdata
     depends_on:
       spark-master:
         condition: service_healthy
@@ -198,9 +228,14 @@ services:
         condition: service_healthy
       spark-worker-2:
         condition: service_healthy
+      postgres:
+        condition: service_healthy
     ports:
       - "8502:8501"
       - "4040:4040"
     volumes:
       - ./data:/app/data
+
+volumes:
+  postgres-data:
 

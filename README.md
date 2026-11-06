@@ -27,11 +27,12 @@ mediante herramientas de paralelismo, streaming y Big Data.
 
 - Obtener cotizaciones y operaciones bursátiles reales mediante una fuente externa.
 - Procesar datos en tiempo real y mediante reproducción histórica.
-- Persistir los eventos recibidos en formato JSONL.
+- Transmitir los eventos recibidos en memoria a Kafka para su consumo mediante
+  Structured Streaming desde el tópico Kafka.
 - Aplicar procesamiento local mediante PySpark sobre lotes acotados.
 - Observar cantidades de registros, particiones y duración de las operaciones.
 - Mantener una interfaz clara para visualizar el estado y los resultados.
-- Establecer una base modular para las tecnologías previstas del trabajo.
+- Mantener una base modular para las tecnologías implementadas del trabajo.
 
 ## 3. Tecnologías
 
@@ -43,24 +44,19 @@ mediante herramientas de paralelismo, streaming y Big Data.
 - **Alpaca Market Data:** estado del mercado, cotizaciones y operaciones LIVE y
   datos históricos REPLAY.
 - **WebSocket:** recepción de cotizaciones y operaciones durante el modo LIVE.
-- **JSONL:** persistencia incremental de eventos y registros de ejecución.
+- **Apache Kafka:** publicación de eventos en un tópico Kafka.
+- **Apache Structured Streaming:** consumo del tópico Kafka mediante Spark.
+- **Apache Parquet:** almacenamiento de los resultados procesados por Spark.
+- **JSONL:** persistencia estructurada de información del RUN y checkpoints.
 - **certifi:** almacén de certificados utilizado para conexiones seguras.
 - **Apache Spark y PySpark:** procesamiento distribuido mediante un Driver,
   un Master y dos Workers dentro de Docker.
+- **Pandas:** cálculo de estadísticas y correlaciones sobre agregados de Spark.
+- **PostgreSQL:** persistencia idempotente de métricas y respuestas por RUN.
 - **Docker Compose:** orquestación reproducible de la aplicación y del clúster.
 
-### Previstas
-
-- **Apache Kafka:** ingesta y distribución de eventos mediante tópicos.
-- **Apache Hadoop HDFS:** almacenamiento distribuido.
-- **Apache Parquet:** persistencia columnar.
-- **Apache Spark SQL:** consultas y análisis mediante SQL.
-- **Apache Structured Streaming:** procesamiento continuo por microbatches.
-- **Apache Flink:** procesamiento alternativo de flujos.
-- **Apache Airflow:** orquestación de tareas y procesos batch.
-- **Apache Spark MLlib:** análisis y modelos de Machine Learning.
-
-Las tecnologías previstas no forman parte de la ejecución funcional actual.
+Kafka, Structured Streaming, Parquet, Pandas y PostgreSQL forman parte de la
+ejecución funcional actual.
 
 ## 4. Arquitectura del proyecto
 
@@ -69,17 +65,14 @@ El flujo conceptual considerado por el proyecto es:
 ```text
 Navegador
     ↓
-    Controller → Alpaca → Spark Driver
+    Controller → Alpaca (Market Data) → Memoria → Kafka → Streaming (Kafka Topic) → Spark Driver
     ↓
 Spark Master
     ├── Spark Worker 1
     └── Spark Worker 2
 
-Alpaca Market Data → Persistencia JSONL → Controller → Lotes PySpark → Streamlit
+Controller → Alpaca (Market Data) → Memoria → Kafka → Streaming (Kafka Topic) → Spark → Parquet → Pandas → PostgreSQL → Streamlit
 ```
-
-Kafka, Hadoop HDFS, Parquet, Flink y Airflow forman parte de la arquitectura
-académica prevista, pero todavía no están integrados.
 
 ## 5. Procesamiento de datos
 
@@ -106,22 +99,25 @@ está activa. Al refrescar Streamlit, la aplicación recupera el RUN existente y
 no vuelve a consultar el mercado ni crea otra conexión.
 
 REPLAY no depende de archivos históricos incluidos en el repositorio. Cada RUN
-nuevo genera exactamente cinco archivos directamente en `data/`, usando la
+nuevo genera los logs, la información del RUN y el Parquet directamente en
+`data/`, usando la
 hora de `America/Argentina/Cordoba` y el identificador `YYYYMMDD_HHMMSS`:
 
 ```text
 data/
-├── YYYYMMDD_HHMMSS_data_alpaca.jsonl
-├── YYYYMMDD_HHMMSS_log_01_controller.txt
-├── YYYYMMDD_HHMMSS_log_02_alpaca_stream.txt
-├── YYYYMMDD_HHMMSS_log_03_apache_spark.txt
-└── YYYYMMDD_HHMMSS_run_info.jsonl
+├── YYYYMMDD_HHMMSS_01_python_controller_info.jsonl
+├── YYYYMMDD_HHMMSS_01_python_controller_log.txt
+├── YYYYMMDD_HHMMSS_02_alpaca_stream_log.txt
+├── YYYYMMDD_HHMMSS_03_apache_kafka_log.txt
+├── YYYYMMDD_HHMMSS_04_apache_spark_data.parquet
+├── YYYYMMDD_HHMMSS_04_apache_spark_log.txt
+└── YYYYMMDD_HHMMSS_05_pandas_postgresql_log.txt
 ```
 
-`_run_info.jsonl` contiene solo información estructurada de control,
-recuperación y checkpoints Spark. `_data_alpaca.jsonl` conserva las
-cotizaciones y operaciones originales de Alpaca, identificadas como `QUOTE` o
-`TRADE`. Cada TXT es la fuente única de verdad de su
+`_01_python_controller_info.jsonl` contiene la información estructurada de control, recuperación
+y checkpoints Spark. Alpaca entrega las cotizaciones y operaciones `QUOTE` y
+`TRADE` en memoria a Kafka; Structured Streaming consume el tópico Kafka y entrega
+los eventos a Spark. Cada TXT es la fuente única de verdad de su
 consola: Python genera la línea numerada y la agrega una sola vez; la interfaz
 lee ese TXT sin renumerar ni reformatear. Los RUN históricos conservan su
 formato anterior y continúan siendo legibles.
@@ -172,17 +168,11 @@ con operaciones, las operaciones descargadas, la consolidación de cada
 ventana y los lotes emitidos. El progreso se actualiza por grupos y lotes,
 sin registrar una línea por operación individual.
 
-Los cinco archivos nuevos se escriben incrementalmente y en modo append-only,
+Los archivos nuevos se escriben incrementalmente y en modo append-only,
 sin truncamiento ni sobrescritura. La interfaz conserva un cursor de bytes por
 consola, carga tras F5 únicamente las últimas 1.000 líneas del TXT y mantiene
 el contador en el número de la última línea persistida. Las líneas anteriores
 permanecen intactas y cada consola ofrece la descarga de su TXT completo.
-
-Los históricos legacy existentes se conservan sin modificación. Cuando uno es
-válido para una nueva sesión, se reutiliza como fuente mediante enlace físico
-para crear el nombre histórico del RUN sin duplicar físicamente sus datos. Si
-el enlace no está disponible, la caché no se reutiliza y se descarga el RUN,
-evitando una duplicación silenciosa.
 
 ### Zona horaria de presentación
 
@@ -197,7 +187,7 @@ Alpaca continúan utilizando `America/New_York`, que es la referencia del
 mercado estadounidense. Los timestamps originales recibidos de Alpaca se
 conservan en UTC para la persistencia y el procesamiento. De este modo, la
 aplicación convierte esos valores únicamente al mostrarlos, sin alterar el
-orden cronológico, los datos JSONL ni los cálculos distribuidos.
+orden cronológico ni los cálculos distribuidos.
 
 ## 6. Organización del proyecto
 
@@ -216,9 +206,10 @@ NicolasDruetta_TP2/
 │   ├── 02_alpaca_stream.py
 │   ├── 03_apache_kafka.py
 │   ├── 04_apache_spark.py
-│   └── 05_streamlit_charts.py
+│   ├── 05_pandas_postgresql.py
+│   └── 06_streamlit_charts.py
 ├── data/
-│   └── (archivos de RUN y directorios legacy conservados)
+│   └── (archivos generados por RUN)
 └── assets/
     └── custom.css
 ```
@@ -230,11 +221,16 @@ NicolasDruetta_TP2/
   reproducción REPLAY, ciclo de vida y persistencia de Alpaca.
 - `stages/03_apache_kafka.py`: publicación de eventos en Kafka.
 - `stages/04_apache_spark.py`: procesamiento específico de Spark distribuido.
-- `compose.yaml`: servicios Streamlit/Driver, Master y dos Workers.
-- `Dockerfile`: imagen común con Python, PySpark y Java.
+- `stages/05_pandas_postgresql.py`: estadísticas, correlaciones y persistencia
+  de métricas y respuestas analíticas.
+- `stages/06_streamlit_charts.py`: consultas PostgreSQL y entrega directa de
+  resultados ya preparados para los gráficos.
+- `renders.py`: presentación nativa de las cinco consolas, preguntas y gráficos.
+- `compose.yaml`: servicios Streamlit/Driver, Master, dos Workers, Kafka y
+  PostgreSQL con volumen persistente.
+- `Dockerfile`: imagen común con Python, Pandas, psycopg, PySpark y Java.
 - `.dockerignore`: archivos excluidos del contexto de construcción.
-- `data/`: cinco archivos por cada RUN nuevo; los directorios legacy existentes
-  se conservan para compatibilidad.
+- `data/`: archivos generados por cada RUN nuevo.
 - `assets/custom.css`: recurso visual centralizado del proyecto.
 - `requirements.txt`: dependencias Python declaradas.
 - `AGENTS.md`: convenciones técnicas de desarrollo.
@@ -280,14 +276,17 @@ La tarjeta de estado informa el estado actual, el tiempo transcurrido y, cuando
 corresponde, la fecha y hora de la última ejecución. El RUN identifica la
 ejecución activa o la última ejecución disponible.
 
-La interfaz presenta tres consolas:
+La interfaz presenta cinco consolas:
 
 1. **Log del controlador:** ciclo de vida, conexión, descarga, workers, heartbeat
    y cierre.
 2. **Obtención de cotizaciones y operaciones bursátiles:** datos actuales en
    LIVE o datos históricos en REPLAY.
-3. **Procesamiento distribuido de cotizaciones y operaciones bursátiles:**
+3. **Publicación de eventos:** confirmaciones reales de Kafka.
+4. **Procesamiento distribuido de cotizaciones y operaciones bursátiles:**
    estado y resultados de Spark.
+5. **Pandas + PostgreSQL:** agregados recibidos, correlaciones y escrituras
+   confirmadas.
 
 Las consolas se actualizan junto con el estado del RUN y mantienen una
 presentación uniforme. En pantallas reducidas, las columnas se reorganizan
@@ -303,25 +302,28 @@ El tamaño de cada transferencia es únicamente un lote técnico de transporte;
 no representa un límite de historial, retención ni cantidad máxima de entradas.
 Los archivos persistentes permanecen completos. Después de F5, cada consola
 lee directamente las últimas 1.000 líneas y coloca el scroll al final, sin
-recuperar progresivamente todo el historial. El gráfico
-Top 10 continúa dentro del fragmento periódico y solo utiliza los resultados
-Spark ya disponibles, sin ejecutar trabajos adicionales para la actualización
-visual.
+recuperar progresivamente todo el historial. Los gráficos continúan dentro del
+fragmento periódico y solo utilizan los resultados ya preparados y confirmados
+en PostgreSQL.
 
-Debajo de las consolas se presenta el gráfico **Top 10 de acciones por volumen
-negociado**. El volumen se calcula exclusivamente sumando el campo `size` de
-las operaciones `TRADE` reales emitidas por Alpaca y confirmadas por Apache
-Spark. Las cantidades `bid_size` y `ask_size` de las cotizaciones `QUOTE` no
-forman parte de ese volumen. Cada
-lote procesado actualiza un acumulado pequeño por símbolo, recalcula el ranking
-y actualiza las diez barras ordenadas de forma descendente durante LIVE o
-REPLAY, sin esperar la finalización del RUN.
+Debajo de las consolas se presentan las dos preguntas de investigación. Spark
+calcula los agregados acumulados por símbolo, Pandas calcula las correlaciones,
+las interpretaciones y los datos de los gráficos, y PostgreSQL guarda una fila
+por RUN y símbolo en `market_metrics` y una fila por pregunta en
+`market_answers`. El análisis identifica el feed IEX, no mezcla RUNs y muestra
+«Datos insuficientes» cuando no existe varianza u observaciones suficientes.
+No se interpreta correlación como causalidad.
 
-El acumulado se asocia al `run_id` y se persiste mediante registros tipados
-`spark_checkpoint` dentro de `_run_info.jsonl`. Spark procesa solo
-los eventos posteriores al último checkpoint, por lo que una actualización de
-Streamlit o un F5 no vuelve a contar lotes ya confirmados ni carga el histórico
-completo para redibujar el gráfico.
+Debajo de las preguntas se presentan los gráficos ya preparados. El volumen se
+calcula exclusivamente sumando el campo `size` de las operaciones `TRADE`
+reales emitidas por Alpaca y confirmadas por Apache Spark. Las cantidades
+`bid_size` y `ask_size` de las cotizaciones `QUOTE` no forman parte de ese
+volumen.
+
+Los resultados de análisis y gráficos se asocian al `run_id` y se actualizan
+mediante UPSERT en PostgreSQL. Streamlit solo consulta la última versión
+confirmada durante el fragmento periódico y un F5 no vuelve a ejecutar Spark ni
+Pandas.
 
 ## 8. Apache Spark
 
@@ -337,12 +339,23 @@ El procesamiento realiza lo siguiente:
 - Reparte el lote por símbolo.
 - Agrupa los eventos por símbolo y tipo.
 - Calcula operaciones ejecutadas, cotizaciones recibidas y volumen negociado.
+- Calcula retornos ordenados, estadísticas suficientes de volatilidad y spreads
+  válidos de cotizaciones para entregar agregados acumulados a Pandas.
 - Informa particiones y duración mediante `time.perf_counter()`.
 
 Los lotes se procesan sin crear un job por cada evento individual. Los
 resultados reales se muestran en la consola Spark junto con el número de lote,
 los registros procesados, las particiones utilizadas, la duración y los
 errores efectivos cuando corresponda.
+
+La etapa Pandas no lee eventos, Kafka ni Parquet. Recibe solamente los
+agregados pequeños acumulados por Spark, calcula las dos correlaciones y usa
+UPSERT para actualizar PostgreSQL. La interfaz consulta esas dos tablas desde
+la etapa 06 durante el fragmento de cinco segundos, sin recalcular el histórico.
+
+PostgreSQL se ejecuta como servicio `postgres` con el volumen persistente
+`postgres-data`. La imagen incorpora `pandas` y `psycopg[binary]`; el archivo
+`compose.yaml` entrega las variables de conexión al contenedor Streamlit.
 
 ## 9. Entorno de ejecución
 
@@ -352,8 +365,8 @@ instalan dentro de la imagen del proyecto.
 
 ### Límites de recursos Docker
 
-Los límites se aplican exclusivamente en `compose.yaml` y mantienen los cuatro
-servicios activos:
+Los límites se aplican exclusivamente en `compose.yaml` y mantienen los cinco
+servicios de la aplicación activos:
 
 | Servicio | CPU máxima | Memoria máxima |
 | --- | ---: | ---: |
@@ -423,19 +436,22 @@ docker compose up --build
 - Consulta del estado oficial del mercado para seleccionar el modo.
 - Selección de la última sesión regular completa mediante el calendario oficial
   de Alpaca, con conversión explícita de `America/New_York` a UTC.
-- Descarga automática y caché local de datos históricos.
+- Descarga automática de datos históricos.
 - REPLAY incremental por ventanas temporales, con cuatro solicitudes HTTP
   concurrentes como máximo y reintentos acotados para HTTP 429.
 - Emisión progresiva y merge cronológico global sin cargar el día completo en
   memoria.
-- Persistencia incremental en cinco archivos por RUN, con TXT de consola
-  numerados, recuperación por cursores y compatibilidad con RUN históricos.
+- Persistencia incremental de los archivos del RUN, con TXT de consola
+  numerados y recuperación por cursores.
 - Gráfico incremental del Top 10 de volumen acumulado confirmado por Spark.
+- Preguntas de investigación con Pandas, PostgreSQL y feed IEX identificado.
 - Visualización de las últimas 1.000 entradas por consola, con historial
   completo conservado en los TXT persistentes.
-- Logs de ejecución, consola de operaciones y consola Spark.
-- Imagen Docker reproducible con Python 3.15, PySpark 4.2.0 y Java 17.
-- Compose con Streamlit/Driver, Master y dos Workers.
+- Logs de ejecución, consola de operaciones, consola Spark y consola Pandas +
+  PostgreSQL.
+- Imagen Docker reproducible con Python 3.15, Pandas, psycopg, PySpark 4.2.0 y
+  Java 17.
+- Compose con Streamlit/Driver, Master, dos Workers y PostgreSQL.
 - Configuración de Spark distribuido mediante `spark://spark-master:7077`.
 - Volumen persistente para `data/`.
 
@@ -445,18 +461,6 @@ docker compose up --build
 - Creación de `SparkSession` dentro del contenedor Streamlit.
 - Ejecución distribuida de DataFrame, Jobs, Stages y Tasks.
 - Confirmación de que ambos Workers ejecutan tareas reales.
-
-### Previsto
-
-- Apache Kafka.
-- Apache Hadoop HDFS.
-- Apache Parquet.
-- Apache Spark SQL.
-- Apache Structured Streaming.
-- Apache Flink.
-- Apache Airflow.
-- Apache Spark MLlib.
-- Procesamiento distribuido multinodo y benchmarking comparativo.
 
 ## 11. Convenciones de desarrollo
 

@@ -35,7 +35,7 @@ def close_producer() -> None:
 def get_log_path(run_id: str) -> Path:
     """Obtengo la ruta del log Kafka correspondiente al RUN."""
 
-    return DATA_DIRECTORY / "runs" / f"{run_id}_03_kafka_log.txt"
+    return DATA_DIRECTORY / "runs" / f"{run_id}_03_apache_kafka_log.txt"
 
 def get_producer() -> KafkaProducer:
     """Obtengo el productor Kafka único del proceso Streamlit."""

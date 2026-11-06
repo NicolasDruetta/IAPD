@@ -68,10 +68,11 @@ convencionales y llamadas explícitas.
 
 Cada archivo de `stages/` contiene exclusivamente funciones relacionadas con su
 propia tecnología o funcionalidad. Las funciones comunes de logs y archivos se ubican en `functions.py`.
-La presentación y los gráficos de Streamlit se ubican en `main.py` y
-`stages/05_streamlit_charts.py`, respectivamente.
+La presentación de Streamlit se ubica en `main.py` y `renders.py`. El análisis
+de Pandas y PostgreSQL se ubica en `stages/05_pandas_postgresql.py`, y la
+consulta de datos para gráficos en `stages/06_streamlit_charts.py`.
 
-Los módulos de procesamiento `01` a `04` no contienen interfaz Streamlit.
+Los módulos de procesamiento `01` a `05` no contienen interfaz Streamlit.
 El cargador del punto de entrada las proporciona al módulo especializado antes
 de ejecutarlo, sin ejecutar una segunda instancia del HTML ni de los elementos
 de Streamlit.
@@ -88,11 +89,15 @@ La documentación es breve, precisa y relacionada con la implementación.
 ## 7. Organización del código
 
 `main.py` centraliza el punto de entrada y la interfaz Streamlit.
-`stages/05_streamlit_charts.py` implementa exclusivamente los gráficos.
+`stages/05_pandas_postgresql.py` implementa exclusivamente el análisis con
+Pandas, la preparación de preguntas y gráficos, y la persistencia en PostgreSQL.
+`stages/06_streamlit_charts.py` implementa exclusivamente la consulta de
+resultados analíticos y gráficos mediante instrucciones `SELECT`; no calcula ni
+transforma datos.
 `functions.py` centraliza la escritura y lectura compartida de logs.
 
-Los módulos `01` a `04` procesan datos sin interfaz. El módulo `05` contiene
-solo funciones de gráficos invocadas desde `main.py`.
+Los módulos `01` a `05` procesan datos sin interfaz. El módulo `06` devuelve
+datos para los gráficos y es invocado desde `renders.py`.
 
 La carpeta `data/` contiene los datos de entrada y generados localmente,
 `outputs/` contiene los resultados generados y `assets/` contiene los recursos
@@ -196,19 +201,38 @@ número disponible y no se crean archivos anticipadamente para etapas futuras.
 
 Dentro de `/app/data/` cada RUN nuevo utiliza directamente el identificador
 `YYYYMMDD_HHMMSS` y genera, cuando la etapa correspondiente se ejecuta,
-`_00_run_info.jsonl`, `_01_controller_log.txt`, `_02_alpaca_data.jsonl`,
-`_02_alpaca_log.txt`, `_03_kafka_log.txt`, `_04_spark_data.parquet` y
-`_04_spark_log.txt`. Structured Streaming conserva durante el RUN sus partes
+`{run_id}_01_python_controller_info.jsonl`,
+`{run_id}_01_python_controller_log.txt`,
+`{run_id}_02_alpaca_stream_log.txt`,
+`{run_id}_03_apache_kafka_log.txt`,
+`{run_id}_04_apache_spark_data.parquet`,
+`{run_id}_04_apache_spark_log.txt` y
+`{run_id}_05_pandas_postgresql_log.txt`.
+Los cinco logs canónicos son
+`{run_id}_01_python_controller_log.txt`,
+`{run_id}_02_alpaca_stream_log.txt`,
+`{run_id}_03_apache_kafka_log.txt`,
+`{run_id}_04_apache_spark_log.txt` y
+`{run_id}_05_pandas_postgresql_log.txt`.
+Structured Streaming conserva durante el RUN sus partes
 Parquet y checkpoint temporales dentro de `spark/`, con el mismo identificador;
 al finalizar
 correctamente se consolida un único Parquet y se eliminan únicamente esos
 temporales. Si el RUN falla, los temporales se conservan para recuperación y
-diagnóstico. Los históricos existentes no se modifican automáticamente.
+diagnóstico.
 
 Las rutas de archivos se construyen directamente con los nombres canónicos:
-`00_run_info`, `01_controller_log`, `02_alpaca_data`, `02_alpaca_log`,
-`04_spark_data` y `04_spark_log`. No se utilizan diccionarios de nombres,
-alias abreviados ni nombres de archivo alternativos.
+`01_python_controller_info`,
+`01_python_controller_log`,
+`02_alpaca_stream_log`,
+`03_apache_kafka_log`,
+`04_apache_spark_data`,
+`04_apache_spark_log` y
+`05_pandas_postgresql_log`.
+Los archivos generados utilizan
+`{run_id}_{numero}_{nombre_modulo}_{tipo}.{extension}`. El número y nombre
+deben corresponder al módulo responsable dentro de `stages/`. No se utilizan
+diccionarios de nombres, alias abreviados ni nombres de archivo alternativos.
 
 Todas las URLs externas se declaran como constantes visibles al comienzo del
 módulo que las utiliza. Las consultas no contienen URLs literales ocultas o
@@ -218,8 +242,7 @@ Los mapas de rutas utilizan nombres de archivo canónicos completos: cada
 valor debe coincidir exactamente con el nombre generado después del
 identificador del RUN. No se utilizan alias semánticos como nombres de
 archivo; las referencias a datos, logs, información y Parquet deben resolver
-directamente al nombre definido en esta sección. La compatibilidad histórica
-se conserva únicamente mediante sus nombres históricos explícitos.
+directamente al nombre definido en esta sección.
 
 ## 13. Logging operativo
 
@@ -246,7 +269,7 @@ estado operativo de los servicios.
 
 ## 16. Anchos fijos y orden de propiedades CSS
 
-Los cinco botones de icono de la interfaz, el alternador de tema y los cuatro
+Los cinco botones de icono de la interfaz, el alternador de tema y los cinco
 botones de descarga de logs, utilizan un ancho de 36 px y una altura de 40 px.
 Para fijar el ancho de un control mediante CSS, utilizo únicamente la
 propiedad `width` necesaria. No agrego declaraciones `min-width` ni

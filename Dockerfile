@@ -1,12 +1,12 @@
-FROM python:3.15-slim-bookworm
+FROM python:3.14-slim-bookworm
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     JAVA_HOME=/usr/lib/jvm/default-java \
-    SPARK_HOME=/usr/local/lib/python3.15/site-packages/pyspark \
+    SPARK_HOME=/usr/local/lib/python3.14/site-packages/pyspark \
     PYSPARK_PYTHON=/usr/local/bin/python \
     PYSPARK_DRIVER_PYTHON=/usr/local/bin/python \
-    PATH="/usr/local/lib/python3.15/site-packages/pyspark/bin:${PATH}"
+    PATH="/usr/local/lib/python3.14/site-packages/pyspark/bin:${PATH}"
 
 WORKDIR /app
 

@@ -300,6 +300,49 @@ def get_console_buffer_view(
     console_state["line_number"] = total
     return lines, 0, total, True, False
 
+def render_research_questions(analysis_data: dict[str, Any]) -> None:
+    """Muestro respuestas y tablas nativas con métricas del RUN actual."""
+
+    answers = {
+        str(answer["question_id"]): answer
+        for answer in analysis_data.get("answers", [])
+    }
+    metrics = analysis_data.get("metrics", [])
+    questions = (
+        (
+            "volatility",
+            "1. ¿Las acciones con más operaciones presentan mayor volatilidad?",
+            ["symbol", "trade_count", "return_count", "volatility"],
+        ),
+        (
+            "spread",
+            "2. ¿Las acciones más negociadas tienen menor spread entre compra y venta?",
+            ["symbol", "trade_count", "spread_count", "spread_mean"],
+        ),
+    )
+    for question_id, title, columns in questions:
+        st.markdown(f"#### {title}")
+        answer = answers.get(question_id)
+        correlation = answer.get("correlation") if answer else None
+        st.caption("Correlación")
+        st.write(
+            "Datos insuficientes"
+            if correlation is None
+            else f"{float(correlation):.4f}"
+        )
+        st.caption("Interpretación")
+        st.write(
+            answer.get("conclusion", "Datos insuficientes. Feed observado: IEX.")
+            if answer
+            else "Datos insuficientes. Feed observado: IEX."
+        )
+        st.caption("Tabla por acción")
+        table_rows = [
+            {column: row.get(column) for column in columns}
+            for row in metrics
+        ]
+        st.dataframe(table_rows, hide_index=True, width="stretch")
+
 def render_streaming() -> None:
     """Muestro las consolas de Alpaca y el estado de Spark."""
 
@@ -307,6 +350,8 @@ def render_streaming() -> None:
     streaming_module = load_page_module("02_alpaca_stream")
     kafka_module = load_page_module("03_apache_kafka")
     spark_module = load_page_module("04_apache_spark")
+    load_page_module("05_pandas_postgresql")
+    charts_module = load_page_module("06_streamlit_charts")
     controller_module.configure_streaming_module(streaming_module)
     controller_module.configure_pipeline_modules(
         kafka_module,
@@ -602,6 +647,7 @@ def render_streaming() -> None:
             finalize=snapshot.get("status") == "Completado",
         )
     spark_result = spark_module.get_snapshot(run_id)
+    st.subheader("CONSOLAS")
     execution_column, alpaca_column = st.columns(
         2,
         gap="small",
@@ -609,35 +655,30 @@ def render_streaming() -> None:
         wrap=True,
     )
     with execution_column:
-        st.subheader("1. Log del controlador (Python clásico)")
+        st.subheader("1. Log del controlador (Python)")
         execution_state = get_console_state(
             "execution-log-console",
             run_id,
         )
-        streaming_file = snapshot.get("streaming_file")
-        streaming_path = (
-            DATA_DIRECTORY / "runs" / streaming_file
-            if streaming_file
-            else None
-        )
         execution_path = (
-            DATA_DIRECTORY / "runs" / f"{run_id}_01_controller_log.txt"
-            if snapshot.get("console_schema_version", 0) >= 3
-            and run_id
-            else streaming_path
+            DATA_DIRECTORY / "runs" / f"{run_id}_01_python_controller_log.txt"
+            if run_id else None
         )
         alpaca_path = (
-            DATA_DIRECTORY / "runs" / f"{run_id}_02_alpaca_log.txt"
-            if snapshot.get("console_schema_version", 0) >= 3
-            and run_id
-            else streaming_path
+            DATA_DIRECTORY / "runs" / f"{run_id}_02_alpaca_stream_log.txt"
+            if run_id else None
         )
-        kafka_path = kafka_module.get_log_path(run_id) if run_id else None
+        kafka_path = (
+            DATA_DIRECTORY / "runs" / f"{run_id}_03_apache_kafka_log.txt"
+            if run_id else None
+        )
         spark_path = (
-            DATA_DIRECTORY / "runs" / f"{run_id}_04_spark_log.txt"
-            if snapshot.get("console_schema_version", 0) >= 3
-            and run_id
-            else streaming_path
+            DATA_DIRECTORY / "runs" / f"{run_id}_04_apache_spark_log.txt"
+            if run_id else None
+        )
+        pandas_postgresql_path = (
+            DATA_DIRECTORY / "runs" / f"{run_id}_05_pandas_postgresql_log.txt"
+            if run_id else None
         )
         downloads_disabled = any(
             path is None or not path.exists()
@@ -646,6 +687,7 @@ def render_streaming() -> None:
                 alpaca_path,
                 kafka_path,
                 spark_path,
+                pandas_postgresql_path,
             )
         )
         log_lines, cursor_start, next_cursor, initial_load, resync = (
@@ -685,7 +727,7 @@ def render_streaming() -> None:
                 file_name=(
                     execution_path.name
                     if execution_path is not None
-                    else "01_controller_log.txt"
+                    else "01_python_controller_log.txt"
                 ),
                 mime="text/plain",
                 key=f"download-execution-log-console-{run_id or 'no-run'}",
@@ -746,7 +788,7 @@ def render_streaming() -> None:
                 file_name=(
                     alpaca_path.name
                     if alpaca_path is not None
-                    else "02_alpaca_log.txt"
+                    else "02_alpaca_stream_log.txt"
                 ),
                 mime="text/plain",
                 key=f"download-alpaca-log-console-{run_id or 'no-run'}",
@@ -765,8 +807,8 @@ def render_streaming() -> None:
             placeholder=is_placeholder,
             resync=resync,
         )
-    kafka_column, spark_column = st.columns(
-        2,
+    kafka_column, spark_column, pandas_postgresql_column = st.columns(
+        3,
         gap="small",
         vertical_alignment="top",
         wrap=True,
@@ -805,7 +847,7 @@ def render_streaming() -> None:
                 file_name=(
                     kafka_path.name
                     if kafka_path is not None
-                    else "log_03_apache_kafka.txt"
+                    else "03_apache_kafka_log.txt"
                 ),
                 mime="text/plain",
                 key=f"download-kafka-log-console-{run_id or 'no-run'}",
@@ -854,7 +896,7 @@ def render_streaming() -> None:
                 file_name=(
                     spark_path.name
                     if spark_path is not None
-                    else "04_spark_log.txt"
+                    else "04_apache_spark_log.txt"
                 ),
                 mime="text/plain",
                 key=f"download-spark-log-console-{run_id or 'no-run'}",
@@ -879,11 +921,72 @@ def render_streaming() -> None:
             "**[Worker 2 ↗](http://localhost:8082/)** &nbsp;-&nbsp; "
             "**[Spark Jobs ↗](http://localhost:4040/)** "
         )
+    with pandas_postgresql_column:
+        st.subheader("5. Log de análisis (Pandas + PostgreSQL)")
+        pandas_postgresql_state = get_console_state(
+            "pandas-postgresql-log-console",
+            run_id,
+        )
+        pandas_postgresql_records, cursor_start, next_cursor, initial_load, resync = (
+            get_console_buffer_view(
+                run_id,
+                "pandas_postgresql",
+                pandas_postgresql_path,
+                pandas_postgresql_state,
+                clear_consoles,
+            )
+        )
+        pandas_postgresql_lines = [
+            format_presentation_log_line(line)
+            for line in pandas_postgresql_records
+        ]
+        is_placeholder = not pandas_postgresql_lines and pandas_postgresql_state["line_number"] == 0
+        if is_placeholder:
+            pandas_postgresql_lines = [
+                "Pandas + PostgreSQL | esperando agregados de Spark."
+            ]
+        with st.container(
+            horizontal=True,
+            horizontal_alignment="distribute",
+            vertical_alignment="center",
+        ):
+            st.caption(
+                f"Registros analíticos: {pandas_postgresql_state['line_number']}"
+            )
+            st.download_button(
+                "↓",
+                data=pandas_postgresql_path.read_bytes()
+                if pandas_postgresql_path is not None and pandas_postgresql_path.exists()
+                else b"",
+                file_name=(
+                    pandas_postgresql_path.name
+                    if pandas_postgresql_path is not None
+                    else "05_pandas_postgresql_log.txt"
+                ),
+                mime="text/plain",
+                key=f"download-pandas-postgresql-log-console-{run_id or 'no-run'}",
+                help="Descargar log completo",
+                disabled=downloads_disabled,
+                type="secondary",
+                width=36,
+            )
+        render_log_console(
+            pandas_postgresql_lines,
+            "pandas-postgresql-log-console",
+            cursor_end=next_cursor,
+            cursor_start=cursor_start,
+            has_more=False,
+            initial_load=initial_load,
+            placeholder=is_placeholder,
+            resync=resync,
+        )
     if clear_consoles:
         st.session_state.start_requested = False
 
     st.divider()
-    st.subheader("5. Gráficos en vivo (Streamlit)")
+    st.subheader("PREGUNTAS DE INVESTIGACIÓN")
+    analysis_data = charts_module.get_market_analysis(run_id)
+    render_research_questions(analysis_data)
     st.write("")
     
     if last_execution_notice:
@@ -919,11 +1022,10 @@ def render_streaming() -> None:
         with data_col:
             st.caption("Cantidad de datos descargados")
             st.text(str(snapshot.get("event_count", 0)))
-    charts_module = load_page_module("05_streamlit_charts")
-    top_volume = spark_result.get("top_volume", [])
-    activity_rows, activity_interval = charts_module.get_activity_chart_rows(
-        spark_result.get("activity_rows", []),
-    )
+    st.subheader("GRÁFICOS")
+    top_volume = analysis_data.get("top_volume", [])
+    activity_rows = analysis_data.get("activity_rows", [])
+    activity_interval = analysis_data.get("activity_interval", 1)
     volume_column, activity_column = st.columns(
         2,
         gap="small",

@@ -1,8 +1,6 @@
 import certifi
 import functions
-import heapq
 import json
-import os
 import queue
 import re
 import ssl
@@ -170,7 +168,7 @@ class AlpacaEvent:
         return f"{value:g}"
 
     def to_record(self, run_id: str) -> dict[str, Any]:
-        """Convierto el evento al registro JSONL persistido."""
+        """Convierto el evento al registro que se publica en Kafka."""
 
         return {
             "run_id": run_id,
@@ -249,15 +247,13 @@ class AlpacaStreamingService:
         self._finished = False
         self._market_timestamp: str | None = None
         self._started_at = started_at
-        self._historical_path = DATA_DIRECTORY / "runs" / f"{run_stem}_02_alpaca_data.jsonl"
         self._log_alpaca_path = (
-            DATA_DIRECTORY / "runs" / f"{run_stem}_02_alpaca_log.txt"
+            DATA_DIRECTORY / "runs" / f"{run_stem}_02_alpaca_stream_log.txt"
         )
         ensure_data_directory()
         if any(
             path.exists()
             for path in (
-                self._historical_path,
                 self._log_alpaca_path,
             )
         ):
@@ -446,8 +442,6 @@ class AlpacaStreamingService:
                         self._api_secret,
                         self._symbols,
                         self._feed,
-                        self._run_id,
-                        self._historical_path,
                         progress_callback=self._add_log,
                         event_callback=enqueue_batch,
                         historical_date_callback=self._set_historical_date,
@@ -471,35 +465,29 @@ class AlpacaStreamingService:
             name=f"alpaca-download-{self._run_id}",
         )
         download_thread.start()
-        streamed = False
         while True:
             batch = batch_queue.get()
             if batch is None or self._stop_event.is_set():
                 break
-            streamed = True
             self._emit_replay_batch(batch)
         download_thread.join()
         result = result_queue.get()
         if isinstance(result, BaseException):
             raise result
-        historical_path, historical_date, downloaded_streamed = result
-        streamed = streamed or downloaded_streamed
+        historical_date = result
         with self._lock:
             self._historical_date = historical_date
             self._add_log(
-                f"REPLAY | histórico listo: {historical_date} | archivo={historical_path.name}"
+                f"REPLAY | histórico listo: {historical_date} | eventos_en_memoria"
             )
             self._append_run_record_callback(
                 self._run_id,
                 "historical_complete",
                 {
-                    "data_file": historical_path.name,
                     "ordered_by_timestamp": True,
                 },
             )
             self._append_run_state_callback(self)
-        if not streamed:
-            self._replay_cached_file(historical_path)
         self._finish("Completado", "replay_completed")
 
     def _set_historical_date(self, historical_date: str) -> None:
@@ -512,7 +500,7 @@ class AlpacaStreamingService:
             self._append_run_state_callback(self)
 
     def _emit_replay_batch(self, events: list[AlpacaEvent]) -> None:
-        """Persisto y publico un lote cronológico con ritmo controlado."""
+        """Preparo y publico un lote cronológico con ritmo controlado."""
 
         for start in range(0, len(events), REPLAY_BATCH_SIZE):
             if self._stop_event.is_set():
@@ -525,7 +513,7 @@ class AlpacaStreamingService:
                 return
 
     def _persist_event_batch(self, events: list[AlpacaEvent]) -> None:
-        """Persisto un lote completo sin sincronizar una vez por evento."""
+        """Publico un lote completo sin sincronizar una vez por evento."""
 
         if not events:
             return
@@ -536,17 +524,17 @@ class AlpacaStreamingService:
             if self._stop_event.is_set():
                 return
             ensure_data_directory()
-            stream_records = []
-            for event in events:
-                record = event.to_record(self._run_id)
-                stream_records.append(("event", record))
+            stream_records = [
+                event.to_record(self._run_id)
+                for event in events
+            ]
             self._events.extend(events)
             self._event_count += len(events)
             self._market_timestamp = events[-1].timestamp
             self._replay_position += len(events)
             self._status = "Reproduciendo"
             self._replay_batch_number += 1
-            for _, record in stream_records:
+            for record in stream_records:
                 functions.append_console_log(
                     self._run_id,
                     "alpaca",
@@ -563,27 +551,10 @@ class AlpacaStreamingService:
             if self._publish_events_callback is not None:
                 self._publish_events_callback(
                     self._run_id,
-                    [record for _, record in stream_records],
+                    stream_records,
                     self._stop_event,
                 )
                 self._kafka_published_count += len(stream_records)
-
-    def _replay_cached_file(self, historical_path: Path) -> None:
-        """Reproduzco una caché completa usando lotes acotados."""
-
-        batch: list[AlpacaEvent] = []
-        with historical_path.open(encoding="utf-8") as historical_file:
-            for line in historical_file:
-                if self._stop_event.is_set():
-                    return
-                batch.append(
-                    event_from_record(json.loads(line), mode="REPLAY")
-                )
-                if len(batch) == REPLAY_BATCH_SIZE:
-                    self._emit_replay_batch(batch)
-                    batch = []
-            if batch:
-                self._emit_replay_batch(batch)
 
     def _finish(
         self,
@@ -652,26 +623,13 @@ def download_historical_dataset(
     symbols: list[str],
     feed: str,
     date_text: str,
-    historical_path: Path,
     session_start: datetime,
     session_end: datetime,
-    run_id: str,
     progress_callback: Callable[[str], None] | None = None,
     event_callback: Callable[[list[AlpacaEvent]], None] | None = None,
     stop_event: threading.Event | None = None,
 ) -> tuple[int, bool]:
-    """Descargo páginas y completo el JSONL histórico del RUN."""
-
-    temporary_prefix = f".tmp_{run_id}_"
-
-    def cleanup_run_temporary_files() -> None:
-        """Elimino solo los temporales pertenecientes al RUN actual."""
-
-        if not Path("/tmp").exists():
-            return
-        for path in Path("/tmp").glob(f"{temporary_prefix}*"):
-            if path.is_file():
-                path.unlink(missing_ok=True)
+    """Descargo páginas y entrego eventos ordenados directamente al pipeline."""
 
     if ALL_MARKET_SYMBOL in symbols:
         raise RuntimeError(
@@ -684,7 +642,6 @@ def download_historical_dataset(
     ]
     if not symbol_groups:
         return 0, False
-    cleanup_run_temporary_files()
     if progress_callback is not None:
         progress_callback(
             f"REPLAY | grupos de símbolos={len(symbol_groups)} | símbolos consultados={len(market_symbols)}"
@@ -744,111 +701,80 @@ def download_historical_dataset(
         symbol_group: list[str],
         window_start: datetime,
         window_end: datetime,
-    ) -> tuple[int, list[tuple[tuple[int, int], Path]], int, int, int, int]:
-        """Descargo un grupo y separo sus símbolos en temporales."""
+    ) -> tuple[int, list[dict[str, Any]], int, int, int, int]:
+        """Descargo un grupo y conservo sus eventos en memoria."""
 
-        symbol_positions = {
-            symbol: position
-            for position, symbol in enumerate(symbol_group)
-        }
-        handles: dict[tuple[str, str], Any] = {}
-        group_paths: dict[str, Path] = {}
+        group_records: list[dict[str, Any]] = []
         event_count = 0
         page_count = 0
-        pages_with_trades = 0
-        pages_with_quotes = 0
-        try:
-            for event_type, api_url, payload_key in (
-                ("TRADE", HISTORICAL_TRADES_API_URL, "trades"),
-                ("QUOTE", HISTORICAL_QUOTES_API_URL, "quotes"),
-            ):
-                next_page_token: str | None = None
-                while True:
-                    query = {
-                        "symbols": ",".join(symbol_group),
-                        "start": window_start.isoformat().replace(
-                            "+00:00",
-                            "Z",
-                        ),
-                        "end": (
-                            (window_end - timedelta(seconds=1)).strftime(
-                                "%Y-%m-%dT%H:%M:%S"
-                            )
-                            + ".999999999Z"
-                        ),
-                        "feed": feed,
-                        "limit": "10000",
-                        "sort": "asc",
-                    }
-                    if next_page_token:
-                        query["page_token"] = next_page_token
-                    payload = request_page(api_url, query)
-                    page_count += 1
-                    page_events = payload.get(payload_key, {})
-                    if any(page_events.values()):
-                        if event_type == "TRADE":
-                            pages_with_trades += 1
-                        else:
-                            pages_with_quotes += 1
-                    for symbol, source_events in page_events.items():
-                        handle_key = (symbol, event_type)
-                        if handle_key not in handles:
-                            group_path = Path("/tmp") / (
-                                f"{temporary_prefix}"
-                                f"{date_text}_{feed}_"
-                                f"{window_start.strftime('%Y%m%dT%H%M%SZ')}_"
-                                f"g{group_index:05d}_"
-                                f"s{symbol_positions.get(symbol, 0):03d}_"
-                                f"{event_type.lower()}.jsonl"
-                            )
-                            group_paths[f"{symbol}:{event_type}"] = group_path
-                            handles[handle_key] = group_path.open(
-                                "w",
-                                encoding="utf-8",
-                            )
-                        group_file = handles[handle_key]
-                        for source_event in source_events:
-                            record = {
-                                "symbol": symbol,
-                                "event_type": event_type,
-                                "timestamp": source_event.get("t"),
-                                "price": source_event.get("p")
-                                if event_type == "TRADE" else None,
-                                "size": source_event.get("s")
-                                if event_type == "TRADE" else None,
-                                "bid_price": source_event.get("bp")
-                                if event_type == "QUOTE" else None,
-                                "bid_size": source_event.get("bs")
-                                if event_type == "QUOTE" else None,
-                                "ask_price": source_event.get("ap")
-                                if event_type == "QUOTE" else None,
-                                "ask_size": source_event.get("as")
-                                if event_type == "QUOTE" else None,
-                                "mode": "REPLAY",
-                                "source": "alpaca_historical",
-                                "raw": source_event,
-                            }
-                            group_file.write(
-                                json.dumps(record, ensure_ascii=False)
-                                + "\n"
-                            )
-                            event_count += 1
-                    next_page_token = payload.get("next_page_token")
-                    if not next_page_token:
-                        break
-        finally:
-            for group_file in handles.values():
-                group_file.close()
+        responses_with_trades = 0
+        responses_with_quotes = 0
+        for event_type, api_url, payload_key in (
+            ("TRADE", HISTORICAL_TRADES_API_URL, "trades"),
+            ("QUOTE", HISTORICAL_QUOTES_API_URL, "quotes"),
+        ):
+            next_page_token: str | None = None
+            while True:
+                query = {
+                    "symbols": ",".join(symbol_group),
+                    "start": window_start.isoformat().replace(
+                        "+00:00",
+                        "Z",
+                    ),
+                    "end": (
+                        (window_end - timedelta(seconds=1)).strftime(
+                            "%Y-%m-%dT%H:%M:%S"
+                        )
+                        + ".999999999Z"
+                    ),
+                    "feed": feed,
+                    "limit": "10000",
+                    "sort": "asc",
+                }
+                if next_page_token:
+                    query["page_token"] = next_page_token
+                payload = request_page(api_url, query)
+                page_count += 1
+                page_events = payload.get(payload_key, {})
+                if any(page_events.values()):
+                    if event_type == "TRADE":
+                        responses_with_trades += 1
+                    else:
+                        responses_with_quotes += 1
+                for symbol, source_events in page_events.items():
+                    for source_event in source_events:
+                        record = {
+                            "symbol": symbol,
+                            "event_type": event_type,
+                            "timestamp": source_event.get("t"),
+                            "price": source_event.get("p")
+                            if event_type == "TRADE" else None,
+                            "size": source_event.get("s")
+                            if event_type == "TRADE" else None,
+                            "bid_price": source_event.get("bp")
+                            if event_type == "QUOTE" else None,
+                            "bid_size": source_event.get("bs")
+                            if event_type == "QUOTE" else None,
+                            "ask_price": source_event.get("ap")
+                            if event_type == "QUOTE" else None,
+                            "ask_size": source_event.get("as")
+                            if event_type == "QUOTE" else None,
+                            "mode": "REPLAY",
+                            "source": "alpaca_historical",
+                            "raw": source_event,
+                        }
+                        group_records.append(record)
+                        event_count += 1
+                next_page_token = payload.get("next_page_token")
+                if not next_page_token:
+                    break
         return (
             group_index,
-            [
-                ((group_index, position), path)
-                for position, path in enumerate(group_paths.values())
-            ],
+            group_records,
             event_count,
             page_count,
-            pages_with_trades,
-            pages_with_quotes,
+            responses_with_trades,
+            responses_with_quotes,
         )
 
     def record_key(
@@ -867,132 +793,92 @@ def download_historical_dataset(
         )
 
     def merge_window(
-        group_paths: list[tuple[int, Path]],
-        historical_file: Any,
+        group_records: list[tuple[int, list[dict[str, Any]]]],
     ) -> tuple[int, list[AlpacaEvent]]:
-        """Mezclo archivos temporales sin cargar la ventana completa."""
+        """Mezclo en memoria los eventos ordenados de la ventana."""
 
-        handles: dict[tuple[int, int], Any] = {}
-        heap: list[tuple[tuple[str, str, str, tuple[int, int]], tuple[int, int], dict[str, Any]]] = []
+        ordered_records = [
+            (
+                record_key(record, (group_index, position)),
+                record,
+            )
+            for group_index, records in group_records
+            for position, record in enumerate(records)
+        ]
+        ordered_records.sort(key=lambda item: item[0])
         batch: list[AlpacaEvent] = []
-        merged_count = 0
-        try:
-            for group_index, group_path in group_paths:
-                handle = group_path.open(encoding="utf-8")
-                handles[group_index] = handle
-                line = handle.readline()
-                if line:
-                    record = json.loads(line)
-                    heapq.heappush(
-                        heap,
-                        (record_key(record, group_index), group_index, record),
-                    )
-            while heap:
-                _, group_index, record = heapq.heappop(heap)
-                historical_file.write(
-                    json.dumps(record, ensure_ascii=False) + "\n"
-                )
-                merged_count += 1
-                if event_callback is not None:
-                    batch.append(event_from_record(record, mode="REPLAY"))
-                    if len(batch) == REPLAY_BATCH_SIZE:
-                        event_callback(batch)
-                        batch = []
-                line = handles[group_index].readline()
-                if line:
-                    next_record = json.loads(line)
-                    heapq.heappush(
-                        heap,
-                        (
-                            record_key(next_record, group_index),
-                            group_index,
-                            next_record,
-                        ),
-                    )
-        finally:
-            for handle in handles.values():
-                handle.close()
-        return merged_count, batch
+        for _, record in ordered_records:
+            if event_callback is not None:
+                batch.append(event_from_record(record, mode="REPLAY"))
+                if len(batch) == REPLAY_BATCH_SIZE:
+                    event_callback(batch)
+                    batch = []
+        return len(ordered_records), batch
 
-    try:
-        with historical_path.open("a", encoding="utf-8") as historical_file:
-            window_start = session_start
-            day_end = session_end
-            if progress_callback is not None:
-                progress_callback(
-                    f"REPLAY | sesión={date_text} | apertura={format_presentation_timestamp(session_start)} | cierre={format_presentation_timestamp(session_end)}"
+    window_start = session_start
+    day_end = session_end
+    if progress_callback is not None:
+        progress_callback(
+            f"REPLAY | sesión={date_text} | apertura={format_presentation_timestamp(session_start)} | cierre={format_presentation_timestamp(session_end)}"
+        )
+    while window_start < day_end:
+        if stop_event is not None and stop_event.is_set():
+            raise InterruptedError("Descarga REPLAY detenida.")
+        window_end = min(
+            window_start + timedelta(minutes=REPLAY_WINDOW_MINUTES),
+            day_end,
+        )
+        group_records: list[tuple[int, list[dict[str, Any]]]] = []
+        window_downloaded = 0
+        window_responses = 0
+        window_responses_with_trades = 0
+        window_responses_with_quotes = 0
+        completed_groups = 0
+        with ThreadPoolExecutor(
+            max_workers=MAX_HTTP_CONCURRENCY
+        ) as executor:
+            futures = [
+                executor.submit(
+                    download_group,
+                    group_index,
+                    symbol_group,
+                    window_start,
+                    window_end,
                 )
-            while window_start < day_end:
-                if stop_event is not None and stop_event.is_set():
-                    raise InterruptedError("Descarga REPLAY detenida.")
-                window_end = min(
-                    window_start + timedelta(minutes=REPLAY_WINDOW_MINUTES),
-                    day_end,
-                )
-                group_paths: list[tuple[int, Path]] = []
-                window_downloaded = 0
-                window_pages = 0
-                window_pages_with_trades = 0
-                window_pages_with_quotes = 0
-                completed_groups = 0
-                with ThreadPoolExecutor(
-                    max_workers=MAX_HTTP_CONCURRENCY
-                ) as executor:
-                    futures = [
-                        executor.submit(
-                            download_group,
-                            group_index,
-                            symbol_group,
-                            window_start,
-                            window_end,
-                        )
-                        for group_index, symbol_group in enumerate(
-                            symbol_groups
-                        )
-                    ]
-                    for future in as_completed(futures):
-                        (
-                            group_index,
-                            symbol_paths,
-                            group_count,
-                            group_pages,
-                            group_pages_with_trades,
-                            group_pages_with_quotes,
-                        ) = future.result()
-                        group_paths.extend(symbol_paths)
-                        window_downloaded += group_count
-                        window_pages += group_pages
-                        window_pages_with_trades += group_pages_with_trades
-                        window_pages_with_quotes += group_pages_with_quotes
-                        completed_groups += 1
-                        if progress_callback is not None:
-                            progress_callback(
-                                f"REPLAY | ventana={format_presentation_timestamp(window_start)}-{format_presentation_timestamp(window_end)} | grupos={completed_groups}/{len(symbol_groups)} | respuestas={window_pages} | páginas_con_operaciones={window_pages_with_trades} | páginas_con_cotizaciones={window_pages_with_quotes} | descargados={window_downloaded}"
-                            )
-                group_paths.sort()
-                merged_count, pending_batch = merge_window(
-                    group_paths,
-                    historical_file,
-                )
-                event_count += merged_count
-                if event_callback is not None and pending_batch:
-                    event_callback(pending_batch)
-                for _, group_path in group_paths:
-                    group_path.unlink(missing_ok=True)
-                historical_file.flush()
-                os.fsync(historical_file.fileno())
+                for group_index, symbol_group in enumerate(symbol_groups)
+            ]
+            for future in as_completed(futures):
+                (
+                    group_index,
+                    records,
+                    group_count,
+                    group_responses,
+                    group_responses_with_trades,
+                    group_responses_with_quotes,
+                ) = future.result()
+                group_records.append((group_index, records))
+                window_downloaded += group_count
+                window_responses += group_responses
+                window_responses_with_trades += group_responses_with_trades
+                window_responses_with_quotes += group_responses_with_quotes
+                completed_groups += 1
                 if progress_callback is not None:
                     progress_callback(
-                        f"REPLAY | ventana={format_presentation_timestamp(window_start)}-{format_presentation_timestamp(window_end)} | respuestas={window_pages} | páginas_con_operaciones={window_pages_with_trades} | páginas_con_cotizaciones={window_pages_with_quotes} | descargados={window_downloaded} | emitidos_acumulados={event_count}"
+                        f"REPLAY | ventana={format_presentation_timestamp(window_start)}-{format_presentation_timestamp(window_end)} | grupos={completed_groups}/{len(symbol_groups)} | respuestas={window_responses} | páginas_con_operaciones={window_responses_with_trades} | páginas_con_cotizaciones={window_responses_with_quotes} | descargados={window_downloaded}"
                     )
-                window_start = window_end
-        if event_count == 0:
-            return 0, False
-        return event_count, event_callback is not None
-    except Exception:
-        raise
-    finally:
-        cleanup_run_temporary_files()
+        group_records.sort(key=lambda item: item[0])
+        merged_count, pending_batch = merge_window(group_records)
+        event_count += merged_count
+        if event_callback is not None and pending_batch:
+            event_callback(pending_batch)
+        if progress_callback is not None:
+            progress_callback(
+                f"REPLAY | ventana={format_presentation_timestamp(window_start)}-{format_presentation_timestamp(window_end)} | respuestas={window_responses} | páginas_con_operaciones={window_responses_with_trades} | páginas_con_cotizaciones={window_responses_with_quotes} | descargados={window_downloaded} | emitidos_acumulados={event_count}"
+            )
+        window_start = window_end
+    if event_count == 0:
+        return 0, False
+    return event_count, event_callback is not None
 
 def ensure_data_directory() -> None:
     """Creo el directorio de registros cuando todavía no existe."""
@@ -1034,14 +920,12 @@ def get_historical_dataset(
     api_secret: str,
     symbols: list[str],
     feed: str,
-    run_id: str,
-    historical_path: Path,
     progress_callback: Callable[[str], None] | None = None,
     event_callback: Callable[[list[AlpacaEvent]], None] | None = None,
     historical_date_callback: Callable[[str], None] | None = None,
     stop_event: threading.Event | None = None,
-) -> tuple[Path, str, bool]:
-    """Obtengo un histórico validado sin crear metadata adicional."""
+) -> str:
+    """Obtengo un histórico validado y lo entrego directamente al pipeline."""
 
     date_text, session_start, session_end = get_latest_market_session(
         api_key,
@@ -1053,22 +937,20 @@ def get_historical_dataset(
         progress_callback(
             f"REPLAY | sesión bursátil seleccionada={date_text} | apertura={format_presentation_timestamp(session_start)} | cierre={format_presentation_timestamp(session_end)}"
         )
-    event_count, streamed = download_historical_dataset(
+    event_count, _ = download_historical_dataset(
         api_key,
         api_secret,
         symbols,
         feed,
         date_text,
-        historical_path,
         session_start,
         session_end,
-        run_id,
         progress_callback,
         event_callback,
         stop_event,
     )
     if event_count > 0:
-        return historical_path, date_text, streamed
+        return date_text
     raise RuntimeError(
         f"Alpaca no devolvió cotizaciones u operaciones para la sesión {date_text}."
     )
@@ -1078,7 +960,11 @@ def get_latest_metadata() -> dict[str, Any] | None:
 
     if not DATA_DIRECTORY.exists():
         return None
-    candidates = list((DATA_DIRECTORY / "runs").glob("*_00_run_info.jsonl"))
+    candidates = list(
+        (DATA_DIRECTORY / "runs").glob(
+            "*_01_python_controller_info.jsonl"
+        )
+    )
     if candidates:
         latest_path = max(candidates, key=lambda path: path.stat().st_mtime_ns)
         latest_stat = latest_path.stat()
@@ -1451,13 +1337,10 @@ def read_streaming_state(path: Path) -> dict[str, Any] | None:
         "last_heartbeat": None,
         "end_reason": None,
         "run_info_file": path.name,
-        "data_file": None,
         "log_handler_file": None,
         "log_alpaca_file": None,
         "log_spark_file": None,
-        "streaming_file": path.name,
-        "historical_file": None,
-        "console_schema_version": 0,
+        "log_pandas_postgresql_file": None,
         "is_active": False,
         "sequence": 0,
         "logs": [],
@@ -1486,17 +1369,13 @@ def read_streaming_state(path: Path) -> dict[str, Any] | None:
                         "mode",
                         "replay_speed",
                         "started_at",
-                        "data_file",
-                        "trades_file",
                         "run_info_file",
                         "log_controller_file",
                         "log_handler_file",
                         "log_alpaca_file",
                         "log_spark_file",
-                        "historical_file",
-                        "streaming_file",
+                        "log_pandas_postgresql_file",
                         "universe",
-                        "console_schema_version",
                     ):
                         if key in record:
                             state[key] = record[key]
@@ -1524,65 +1403,7 @@ def read_streaming_state(path: Path) -> dict[str, Any] | None:
                     state["is_active"] = False
     except OSError:
         return None
-    if state["market_timestamp"] is None and state["event_count"] > 0:
-        data_path = (
-            DATA_DIRECTORY
-            / "runs"
-            / f"{state['run_id']}_02_alpaca_data.jsonl"
-        )
-        try:
-            with data_path.open("rb") as data_file:
-                position = data_file.seek(0, os.SEEK_END)
-                pending = b""
-                while position > 0 and state["market_timestamp"] is None:
-                    block_size = min(8192, position)
-                    position -= block_size
-                    data_file.seek(position)
-                    pending = data_file.read(block_size) + pending
-                    lines = pending.split(b"\n")
-                    pending = lines[0]
-                    for raw_line in reversed(lines[1:]):
-                        try:
-                            record = json.loads(raw_line.decode("utf-8"))
-                        except (UnicodeDecodeError, json.JSONDecodeError):
-                            continue
-                        if isinstance(record, dict) and record.get("timestamp"):
-                            state["market_timestamp"] = record["timestamp"]
-                            break
-        except OSError:
-            pass
     return state if started else None
-
-def read_events_after(
-    run_id: str,
-    processed_count: int,
-) -> list[AlpacaEvent]:
-    """Leo únicamente los eventos posteriores al checkpoint persistido."""
-
-    event_paths = [
-        DATA_DIRECTORY / "runs" / f"{run_id}_02_alpaca_data.jsonl"
-    ]
-    new_events_path = next(
-        (path for path in event_paths if path.exists()),
-        None,
-    )
-    if new_events_path is not None:
-        events: list[AlpacaEvent] = []
-        event_index = 0
-        try:
-            with new_events_path.open(encoding="utf-8") as events_file:
-                for line in events_file:
-                    try:
-                        record = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if event_index >= processed_count:
-                        events.append(event_from_record(record))
-                    event_index += 1
-        except OSError:
-            return []
-        return events
-    return []
 
 def to_number(value: Any) -> float | None:
     """Convierto números persistidos a un valor seguro para la interfaz."""

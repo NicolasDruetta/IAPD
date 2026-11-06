@@ -1,8 +1,8 @@
-import ast
 import functions
 import json
 import os
 import shutil
+import sys
 import threading
 import urllib.request
 
@@ -17,11 +17,15 @@ from pyspark.sql.functions import (
     count,
     date_trunc,
     from_json,
+    lag,
     regexp_replace,
+    row_number,
     sum as sum_rows,
+    to_timestamp,
     when,
 )
 from pyspark.sql.types import DoubleType, StringType, StructField, StructType
+from pyspark.sql.window import Window
 
 _RUN_STATES: dict[str, dict[str, Any]] = {}
 _SPARK_ERROR: str | None = None
@@ -32,6 +36,7 @@ _STARTING_RUNS: set[str] = set()
 EVENT_SCHEMA = StructType(
     [
         StructField("run_id", StringType(), False),
+        StructField("received_at", StringType(), True),
         StructField("timestamp", StringType(), False),
         StructField("symbol", StringType(), False),
         StructField("event_type", StringType(), False),
@@ -62,7 +67,7 @@ def get_checkpoint(run_id: str | None) -> dict[str, Any] | None:
 
     if run_id is None:
         return None
-    path = DATA_DIRECTORY / "runs" / f"{run_id}_00_run_info.jsonl"
+    path = DATA_DIRECTORY / "runs" / f"{run_id}_01_python_controller_info.jsonl"
     if not path.exists():
         return None
     checkpoint = None
@@ -76,38 +81,6 @@ def get_checkpoint(run_id: str | None) -> dict[str, Any] | None:
     except (OSError, json.JSONDecodeError):
         return None
 
-def get_persisted_top_volume(run_id: str | None) -> list[dict[str, Any]]:
-    """Leo el último ranking de volumen persistido por Spark."""
-
-    if run_id is None:
-        return []
-    path = DATA_DIRECTORY / "runs" / f"{run_id}_04_spark_log.txt"
-    if not path.exists():
-        return []
-    marker = "volumen_trade_por_accion="
-    try:
-        with path.open(encoding="utf-8") as spark_log:
-            for line in reversed(spark_log.readlines()):
-                if marker not in line:
-                    continue
-                ranking_text = line.split(marker, 1)[1].strip()
-                ranking = ast.literal_eval(ranking_text)
-                if not isinstance(ranking, list):
-                    return []
-                return [
-                    {
-                        "symbol": str(row["symbol"]),
-                        "total_volume": float(row["total_volume"]),
-                    }
-                    for row in ranking
-                    if isinstance(row, dict)
-                    and row.get("symbol") is not None
-                    and row.get("total_volume") is not None
-                ]
-    except (OSError, SyntaxError, ValueError, KeyError, TypeError):
-        return []
-    return []
-
 def get_snapshot(run_id: str | None = None) -> dict[str, Any]:
     """Devuelvo el resultado acumulado de Spark para un RUN."""
 
@@ -115,19 +88,12 @@ def get_snapshot(run_id: str | None = None) -> dict[str, Any]:
         state = _RUN_STATES.get(run_id or "")
         if state is None:
             checkpoint = get_checkpoint(run_id)
-            totals = (checkpoint or {}).get(
-                "trade_totals",
-                (checkpoint or {}).get("totals", {}),
-            )
-            top_volume = top_volume_rows(totals)
-            if not top_volume:
-                top_volume = get_persisted_top_volume(run_id)
             return {
                 "status": "sin_datos",
                 "logs": ["Spark | esperando eventos bursátiles."],
                 "rows": [],
-                "top_volume": top_volume,
                 "activity_rows": (checkpoint or {}).get("activity_rows", []),
+                "analysis_metrics": (checkpoint or {}).get("analysis_metrics", {}),
                 "checkpoint": checkpoint,
             }
     query = state.get("query")
@@ -174,6 +140,12 @@ def get_snapshot(run_id: str | None = None) -> dict[str, Any]:
                     [],
                 )
             }
+            state["analysis_metrics"] = dict(
+                persisted_checkpoint.get(
+                    "analysis_metrics",
+                    state["analysis_metrics"],
+                )
+            )
     if query is not None:
         try:
             query_active = bool(query.isActive)
@@ -206,15 +178,12 @@ def get_snapshot(run_id: str | None = None) -> dict[str, Any]:
     if state["processed_events"] > 0:
         monitor_workers(run_id, state)
     with _SPARK_LOCK:
-        top_volume = top_volume_rows(state["trade_totals"])
-        if not top_volume:
-            top_volume = get_persisted_top_volume(run_id)
         return {
             "status": state["status"],
             "logs": list(state["logs"]),
             "rows": list(state["rows"]),
-            "top_volume": top_volume,
             "activity_rows": list(state["activity_rows"].values()),
+            "analysis_metrics": dict(state["analysis_metrics"]),
             "checkpoint": dict(state["checkpoint"]),
         }
 
@@ -518,6 +487,185 @@ def read_spark_api_from_master(path: str) -> Any:
     ) as response:
         return json.load(response)
 
+def _get_batch_analysis_rows(
+    processed_frame: DataFrame,
+) -> list[dict[str, Any]]:
+    """Calculo en Spark estadísticas pequeñas por símbolo y microbatch."""
+
+    trade_frame = processed_frame.where(col("event_type") == "TRADE")
+    valid_trade_frame = trade_frame.where(col("price") > 0).withColumn(
+        "timestamp_value",
+        to_timestamp(regexp_replace(
+            col("timestamp"), r"(\.\d{6})\d+(Z)$", r"$1$2"
+        )),
+    ).where(col("timestamp_value").isNotNull())
+    trade_order = Window.partitionBy("symbol").orderBy(
+        col("timestamp_value").asc(),
+        col("received_at").asc_nulls_last(),
+        col("price").asc(),
+        col("size").asc_nulls_last(),
+    )
+    ordered_trades = valid_trade_frame.withColumn(
+        "previous_price",
+        lag("price").over(trade_order),
+    ).withColumn(
+        "return_value",
+        when(
+            col("previous_price") > 0,
+            col("price") / col("previous_price") - 1,
+        ),
+    )
+    trade_stats = ordered_trades.groupBy("symbol").agg(
+        count("return_value").alias("return_count"),
+        sum_rows("return_value").alias("return_sum"),
+        sum_rows(
+            col("return_value") * col("return_value")
+        ).alias("return_sum_squares"),
+    )
+    edge_order = Window.partitionBy("symbol").orderBy(
+        col("timestamp_value").asc(),
+        col("received_at").asc_nulls_last(),
+        col("price").asc(),
+        col("size").asc_nulls_last(),
+    )
+    edge_order_desc = Window.partitionBy("symbol").orderBy(
+        col("timestamp_value").desc(),
+        col("received_at").desc_nulls_last(),
+        col("price").desc(),
+        col("size").desc_nulls_last(),
+    )
+    trade_edges = ordered_trades.withColumn(
+        "first_rank",
+        row_number().over(edge_order),
+    ).withColumn(
+        "last_rank",
+        row_number().over(edge_order_desc),
+    ).where(
+        (col("first_rank") == 1) | (col("last_rank") == 1)
+    ).select(
+        "symbol",
+        "timestamp",
+        "price",
+        "first_rank",
+        "last_rank",
+    ).collect()
+    quote_frame = processed_frame.where(
+        (col("event_type") == "QUOTE")
+        & (col("bid_price") > 0)
+        & (col("ask_price") > 0)
+        & (col("ask_price") >= col("bid_price"))
+    ).withColumn(
+        "mid_price",
+        (col("ask_price") + col("bid_price")) / 2,
+    ).where(col("mid_price") > 0).withColumn(
+        "spread_value",
+        (col("ask_price") - col("bid_price")) / col("mid_price"),
+    )
+    quote_stats = quote_frame.groupBy("symbol").agg(
+        count("*").alias("spread_count"),
+        sum_rows("spread_value").alias("spread_sum"),
+    )
+    trade_counts = trade_frame.groupBy("symbol").agg(
+        count("*").alias("trade_count"),
+    )
+    rows: dict[str, dict[str, Any]] = {}
+    for row in trade_stats.collect():
+        rows[str(row["symbol"])] = {
+            "return_count": int(row["return_count"] or 0),
+            "return_sum": float(row["return_sum"] or 0.0),
+            "return_sum_squares": float(row["return_sum_squares"] or 0.0),
+        }
+    for row in trade_counts.collect():
+        symbol = str(row["symbol"])
+        rows.setdefault(symbol, {})
+        rows[symbol]["trade_count"] = int(row["trade_count"] or 0)
+    for row in quote_stats.collect():
+        symbol = str(row["symbol"])
+        rows.setdefault(symbol, {})
+        rows[symbol].update({
+            "spread_count": int(row["spread_count"] or 0),
+            "spread_sum": float(row["spread_sum"] or 0.0),
+        })
+    for row in trade_edges:
+        symbol = str(row["symbol"])
+        values = rows.setdefault(symbol, {})
+        if row["first_rank"] == 1:
+            values["first_trade_price"] = float(row["price"])
+            values["first_trade_timestamp"] = str(row["timestamp"])
+        if row["last_rank"] == 1:
+            values["last_trade_price"] = float(row["price"])
+            values["last_trade_timestamp"] = str(row["timestamp"])
+    for values in rows.values():
+        values.setdefault("return_count", 0)
+        values.setdefault("return_sum", 0.0)
+        values.setdefault("return_sum_squares", 0.0)
+        values.setdefault("spread_count", 0)
+        values.setdefault("spread_sum", 0.0)
+        values.setdefault("trade_count", 0)
+    return [
+        {"symbol": symbol, **values}
+        for symbol, values in sorted(rows.items())
+    ]
+
+def _merge_analysis_metrics(
+    previous_metrics: dict[str, dict[str, Any]],
+    batch_rows: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Acumulo estadísticas suficientes sin materializar eventos en Pandas."""
+
+    metrics = {symbol: dict(values) for symbol, values in previous_metrics.items()}
+    for row in batch_rows:
+        symbol = str(row["symbol"])
+        previous = metrics.setdefault(symbol, {
+            "return_count": 0,
+            "return_sum": 0.0,
+            "return_sum_squares": 0.0,
+            "spread_count": 0,
+            "spread_sum": 0.0,
+            "trade_count": 0,
+            "total_volume": 0.0,
+        })
+        cross_count = 0
+        cross_sum = 0.0
+        cross_sum_squares = 0.0
+        if (
+            previous.get("last_trade_price", 0) > 0
+            and row.get("first_trade_price", 0) > 0
+        ):
+            cross_return = (
+                row["first_trade_price"] / previous["last_trade_price"] - 1
+            )
+            cross_count = 1
+            cross_sum = cross_return
+            cross_sum_squares = cross_return * cross_return
+        previous["return_count"] += int(row.get("return_count", 0)) + cross_count
+        previous["return_sum"] += float(row.get("return_sum", 0.0)) + cross_sum
+        previous["return_sum_squares"] += (
+            float(row.get("return_sum_squares", 0.0)) + cross_sum_squares
+        )
+        previous["spread_count"] += int(row.get("spread_count", 0))
+        previous["spread_sum"] += float(row.get("spread_sum", 0.0))
+        previous["trade_count"] += int(row.get("trade_count", 0))
+        if row.get("last_trade_price") is not None:
+            previous["last_trade_price"] = row["last_trade_price"]
+            previous["last_trade_timestamp"] = row["last_trade_timestamp"]
+    return metrics
+
+def _persist_analysis_results(
+    run_id: str,
+    analysis_rows: list[dict[str, Any]],
+    activity_rows: list[dict[str, Any]],
+) -> None:
+    """Entrego agregados acumulados a Pandas sin iniciar otra query Spark."""
+
+    analysis_module = sys.modules.get("05_pandas_postgresql")
+    if analysis_module is not None:
+        analysis_module.analyze_and_persist(
+            run_id,
+            analysis_rows,
+            activity_rows,
+        )
+
 def process_batch(run_id: str, data_frame: DataFrame, batch_id: int) -> None:
     """Proceso un microbatch distribuido y persisto sus resultados."""
 
@@ -542,7 +690,7 @@ def process_batch(run_id: str, data_frame: DataFrame, batch_id: int) -> None:
         if not processed_count:
             return
         parquet_path = str(
-            DATA_DIRECTORY / "spark" / f"{run_id}_04_spark_data.parquet.parts"
+            DATA_DIRECTORY / "spark" / f"{run_id}_04_apache_spark_data.parquet.parts"
         )
         processed_frame.write.mode("append").parquet(parquet_path)
         grouped = processed_frame.groupBy("symbol").agg(
@@ -551,6 +699,7 @@ def process_batch(run_id: str, data_frame: DataFrame, batch_id: int) -> None:
             sum_rows(when(col("event_type") == "TRADE", col("size"))).alias("total_volume"),
         ).orderBy("symbol")
         result_rows = [row.asDict() for row in grouped.collect()]
+        batch_analysis_rows = _get_batch_analysis_rows(processed_frame)
         activity_frame = processed_frame.withColumn(
             "second",
             date_trunc("second", regexp_replace(
@@ -584,6 +733,16 @@ def process_batch(run_id: str, data_frame: DataFrame, batch_id: int) -> None:
                 key = f"{row['second']}|{row['event_type']}"
                 previous = state["activity_rows"].get(key, {}).get("events", 0)
                 state["activity_rows"][key] = {**row, "events": previous + row["events"]}
+            state["analysis_metrics"] = _merge_analysis_metrics(
+                state["analysis_metrics"],
+                batch_analysis_rows,
+            )
+            for symbol, metric in state["analysis_metrics"].items():
+                metric["total_volume"] = state["trade_totals"].get(symbol, 0.0)
+            analysis_rows = [
+                {"symbol": symbol, **metric}
+                for symbol, metric in sorted(state["analysis_metrics"].items())
+            ]
             state["status"] = "completado"
             state["checkpoint"] = {
                 "input_events": state["input_events"],
@@ -593,22 +752,26 @@ def process_batch(run_id: str, data_frame: DataFrame, batch_id: int) -> None:
                 "trade_totals": dict(state["trade_totals"]),
                 "processed_events_by_type": dict(state["processed_events_by_type"]),
                 "activity_rows": list(state["activity_rows"].values()),
+                "analysis_metrics": dict(state["analysis_metrics"]),
             }
             checkpoint = dict(state["checkpoint"])
-            totals = dict(state["trade_totals"])
         # Conservamos el registro canónico usado para recuperar gráficos después de F5.
-        info_path = DATA_DIRECTORY / "runs" / f"{run_id}_00_run_info.jsonl"
+        info_path = DATA_DIRECTORY / "runs" / f"{run_id}_01_python_controller_info.jsonl"
         with info_path.open("a", encoding="utf-8") as info_file:
             info_file.write(json.dumps(
                 {"record_type": "spark_checkpoint", **checkpoint}, ensure_ascii=False
             ) + "\n")
             info_file.flush()
             os.fsync(info_file.fileno())
+        _persist_analysis_results(
+            run_id,
+            analysis_rows,
+            list(checkpoint["activity_rows"]),
+        )
         for message in (
             f"TRANSFORM | batch_id={batch_id} | entrada={input_count} | validos={valid_count} | invalidos={input_count - valid_count} | duplicados_eliminados={valid_count - processed_count}",
             f"LOAD | batch_id={batch_id} | ruta={parquet_path} | registros={processed_count} | estado=completado",
             f"EDA | batch_id={batch_id} | simbolos={len(result_rows)} | trades={checkpoint['processed_events_by_type']['TRADE']} | quotes={checkpoint['processed_events_by_type']['QUOTE']} | actividad_temporal={len(activity_rows)}",
-            f"EDA | batch_id={batch_id} | volumen_trade_por_accion={top_volume_rows(totals)}",
         ):
             functions.append_console_log(run_id, "spark", message)
     except Exception as error:
@@ -631,9 +794,9 @@ def process_batch(run_id: str, data_frame: DataFrame, batch_id: int) -> None:
 def consolidate_parquet(run_id: str) -> bool:
     """Consolido los archivos Parquet temporales en un único archivo final."""
 
-    parts_path = DATA_DIRECTORY / "spark" / f"{run_id}_04_spark_data.parquet.parts"
-    final_path = DATA_DIRECTORY / "runs" / f"{run_id}_04_spark_data.parquet"
-    temporary_path = DATA_DIRECTORY / "spark" / f"{run_id}_04_spark_data.parquet.tmp"
+    parts_path = DATA_DIRECTORY / "spark" / f"{run_id}_04_apache_spark_data.parquet.parts"
+    final_path = DATA_DIRECTORY / "runs" / f"{run_id}_04_apache_spark_data.parquet"
+    temporary_path = DATA_DIRECTORY / "spark" / f"{run_id}_04_apache_spark_data.parquet.tmp"
     checkpoint_path = DATA_DIRECTORY / "spark" / f"{run_id}_04_spark_checkpoint"
     if final_path.exists():
         return True
@@ -699,6 +862,7 @@ def start_streaming(run_id: str, mode: str = "REPLAY") -> None:
             "trade_totals": {},
             "processed_events_by_type": {"TRADE": 0, "QUOTE": 0},
             "activity_rows": [],
+            "analysis_metrics": {},
         }
         _RUN_STATES[run_id] = {
             "batch_number": int(checkpoint.get("batch_number", 0)),
@@ -723,6 +887,7 @@ def start_streaming(run_id: str, mode: str = "REPLAY") -> None:
                 f"{row['second']}|{row['event_type']}": row
                 for row in checkpoint.get("activity_rows", [])
             },
+            "analysis_metrics": dict(checkpoint.get("analysis_metrics", {})),
             "trade_totals": dict(checkpoint.get("trade_totals", {})),
         }
     spark = get_spark_session()
@@ -824,13 +989,3 @@ def stop_streaming(
         _RUN_STATES.pop(run_id, None)
     return True
 
-def top_volume_rows(totals: dict[str, float]) -> list[dict[str, Any]]:
-    """Ordeno el ranking acumulado por volumen exclusivamente TRADE."""
-
-    return [
-        {"symbol": symbol, "total_volume": volume}
-        for symbol, volume in sorted(
-            totals.items(),
-            key=lambda item: (-item[1], item[0]),
-        )[:10]
-    ]

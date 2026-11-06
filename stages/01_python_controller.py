@@ -46,7 +46,7 @@ def append_run_record(
 ) -> None:
     """Agrego un registro general al JSONL persistente del RUN."""
 
-    run_info_path = DATA_DIRECTORY / "runs" / f"{run_id}_00_run_info.jsonl"
+    run_info_path = DATA_DIRECTORY / "runs" / f"{run_id}_01_python_controller_info.jsonl"
     with _MANAGER_LOCK:
         sequence = _RUN_SEQUENCES.get(run_id)
         if sequence is None:
@@ -65,13 +65,12 @@ def append_run_record(
         if record_type == "run_started":
             record.update(
                 {
-                    "run_info_file": f"{run_id}_00_run_info.jsonl",
-                    "data_file": f"{run_id}_02_alpaca_data.jsonl",
-                    "log_controller_file": f"{run_id}_01_controller_log.txt",
-                    "log_alpaca_file": f"{run_id}_02_alpaca_log.txt",
-                    "log_spark_file": f"{run_id}_04_spark_log.txt",
-                    "kafka_log_file": f"{run_id}_03_kafka_log.txt",
-                    "console_schema_version": 4,
+                    "run_info_file": f"{run_id}_01_python_controller_info.jsonl",
+                    "log_controller_file": f"{run_id}_01_python_controller_log.txt",
+                    "log_alpaca_file": f"{run_id}_02_alpaca_stream_log.txt",
+                    "log_spark_file": f"{run_id}_04_apache_spark_log.txt",
+                    "kafka_log_file": f"{run_id}_03_apache_kafka_log.txt",
+                    "log_pandas_postgresql_file": f"{run_id}_05_pandas_postgresql_log.txt",
                 }
             )
         run_info_path.parent.mkdir(parents=True, exist_ok=True)
@@ -128,13 +127,12 @@ def get_run_snapshot() -> dict[str, Any]:
         snapshot["log_count"] = _RUN_LOG_COUNTS.get(run_id, 0)
         snapshot.update(
             {
-                "run_info_file": f"{run_id}_00_run_info.jsonl",
-                "data_file": f"{run_id}_02_alpaca_data.jsonl",
-                "log_controller_file": f"{run_id}_01_controller_log.txt",
-                "log_alpaca_file": f"{run_id}_02_alpaca_log.txt",
-                "log_spark_file": f"{run_id}_04_spark_log.txt",
-                "kafka_log_file": f"{run_id}_03_kafka_log.txt",
-                "console_schema_version": 3,
+                "run_info_file": f"{run_id}_01_python_controller_info.jsonl",
+                "log_controller_file": f"{run_id}_01_python_controller_log.txt",
+                "log_alpaca_file": f"{run_id}_02_alpaca_stream_log.txt",
+                "log_spark_file": f"{run_id}_04_apache_spark_log.txt",
+                "kafka_log_file": f"{run_id}_03_apache_kafka_log.txt",
+                "log_pandas_postgresql_file": f"{run_id}_05_pandas_postgresql_log.txt",
             }
         )
         return snapshot
@@ -147,9 +145,6 @@ def get_run_snapshot() -> dict[str, Any]:
         metadata.setdefault("historical_date", None)
         metadata.setdefault("log_count", 0)
         metadata.setdefault("logs", [])
-        metadata.setdefault("streaming_file", None)
-        metadata.setdefault("historical_file", None)
-        metadata.setdefault("console_schema_version", 0)
         return metadata
     return {
         "run_id": None,
@@ -164,14 +159,11 @@ def get_run_snapshot() -> dict[str, Any]:
         "replay_position": 0,
         "historical_date": None,
         "logs": [],
-        "streaming_file": None,
-        "historical_file": None,
         "started_at": None,
         "ended_at": None,
         "last_heartbeat": None,
         "end_reason": None,
         "is_active": False,
-        "console_schema_version": 0,
     }
 
 def mark_interrupted_run() -> dict[str, Any] | None:
@@ -186,12 +178,7 @@ def mark_interrupted_run() -> dict[str, Any] | None:
     metadata["end_reason"] = "process_restart"
     metadata["ended_at"] = streaming_module.get_utc_timestamp()
     run_id = metadata.get("run_id")
-    streaming_file = (
-        metadata.get("run_info_file")
-        if int(metadata.get("console_schema_version", 0)) >= 3
-        else metadata.get("streaming_file")
-    )
-    if isinstance(run_id, str) and isinstance(streaming_file, str):
+    if isinstance(run_id, str) and isinstance(metadata.get("run_info_file"), str):
         sequence = int(metadata.get("sequence", 0))
         _RUN_SEQUENCES[run_id] = sequence
         append_run_record(
@@ -293,7 +280,7 @@ def start_run(
             }
         started_at = streaming_module.get_utc_timestamp()
         run_id = streaming_module.build_run_stem(started_at)
-        run_info_path = DATA_DIRECTORY / "runs" / f"{run_id}_00_run_info.jsonl"
+        run_info_path = DATA_DIRECTORY / "runs" / f"{run_id}_01_python_controller_info.jsonl"
         if run_info_path.exists():
             raise RuntimeError(
                 "El identificador del RUN ya existe; esperá un segundo y volvé a iniciar."
