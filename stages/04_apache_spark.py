@@ -188,7 +188,13 @@ def get_snapshot(run_id: str | None = None) -> dict[str, Any]:
             query_status = f"error_consulta:{error}"
             query_error = error
         with _SPARK_LOCK:
-            if query_status != state["query_status_signature"]:
+            if (
+                query_status != state["query_status_signature"]
+                and (
+                    state["processed_events"] > 0
+                    or (not query_active and query_error is not None)
+                )
+            ):
                 state["query_status_signature"] = query_status
                 functions.append_console_log(
                     run_id,
@@ -197,7 +203,8 @@ def get_snapshot(run_id: str | None = None) -> dict[str, Any]:
                 )
         if not query_active and query_error is not None:
             state["status"] = "error"
-    monitor_workers(run_id, state)
+    if state["processed_events"] > 0:
+        monitor_workers(run_id, state)
     with _SPARK_LOCK:
         top_volume = top_volume_rows(state["trade_totals"])
         if not top_volume:
@@ -760,11 +767,6 @@ def start_streaming(run_id: str, mode: str = "REPLAY") -> None:
         _RUN_STATES[run_id]["query_id"] = str(query.id)
         _RUN_STATES[run_id]["query_started_at"] = query_started_at
         _RUN_STATES[run_id]["query_status_signature"] = "activa"
-    functions.append_console_log(
-        run_id,
-        "spark",
-        f"QUERY | run_id={run_id} | query_id={query.id} | estado=iniciada",
-    )
 
 def stop_streaming(
     run_id: str | None,
