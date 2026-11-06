@@ -34,6 +34,7 @@ RUN mkdir -p /opt/spark-ivy /opt/spark-jars \
         -exec cp {} /opt/spark-jars/ \;
 
 COPY main.py ./main.py
+COPY components.py ./components.py
 COPY functions.py ./functions.py
 COPY pages ./pages
 COPY assets ./assets

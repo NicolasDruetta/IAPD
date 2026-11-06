@@ -143,7 +143,7 @@ def render_volume_chart(rows: list[dict[str, Any]]) -> None:
     chart_text_color = "#ffffff" if dark_mode else "#2f3342"
     volume_encoding = {
         "field": "volume",
-        "title": "Volumen negociado (acciones)",
+        "title": "Volumen negociado",
         "type": "quantitative",
     }
     if not chart_rows:

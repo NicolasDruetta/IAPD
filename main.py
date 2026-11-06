@@ -1,4 +1,5 @@
 import importlib.util
+import components
 import functions
 import json
 import streamlit as st
@@ -11,132 +12,27 @@ from types import ModuleType
 from typing import Any
 from zoneinfo import ZoneInfo
 
-ALL_SYMBOLS_OPTION = "Todos los símbolos del S&P 500"
 DATA_DIRECTORY = Path(__file__).parent / "data"
-MAGNIFICENT_7_SYMBOLS = ("AAPL", "AMZN", "GOOGL", "META", "MSFT", "NVDA", "TSLA")
-MAGNIFICENT_7_OPTION = "Las 7 magníficas: " + ", ".join(MAGNIFICENT_7_SYMBOLS)
 
 CONSOLE_TRANSFER_BATCH_SIZE = 256
-EXECUTION_TIMER_COMPONENT = st.components.v2.component(
-    name="apache_big_data_lab.execution_timer",
-    html='<span class="execution-timer"></span>',
-    isolate_styles=False,
-    js="""
-    export default function ({ parentElement, data }) {
-        const timerElement = parentElement.querySelector(".execution-timer");
-        const state = parentElement.__executionTimerState || {
-            interval: null,
-            timerKey: null,
-        };
-        const formatElapsed = (startedAt, endedAt, active) => {
-            const started = Date.parse(startedAt || "");
-            if (Number.isNaN(started)) {
-                return "00:00:00";
-            }
-            const end = active ? Date.now() : Date.parse(endedAt || "");
-            const elapsed = Math.max(
-                0,
-                Math.floor(((Number.isNaN(end) ? Date.now() : end) - started) / 1000),
-            );
-            const hours = String(Math.floor(elapsed / 3600)).padStart(2, "0");
-            const minutes = String(Math.floor((elapsed % 3600) / 60)).padStart(2, "0");
-            const seconds = String(elapsed % 60).padStart(2, "0");
-            return `${hours}:${minutes}:${seconds}`;
-        };
-        const render = () => {
-            const elapsed = formatElapsed(
-                data.started_at,
-                data.ended_at,
-                data.active,
-            );
-            timerElement.textContent = data.active
-                ? data.prefix
-                    ? `${data.prefix} ${elapsed}.`
-                    : elapsed
-                : data.text;
-        };
-        if (state.timerKey !== data.timer_key) {
-            if (state.interval !== null) {
-                clearInterval(state.interval);
-            }
-            state.timerKey = data.timer_key;
-            state.interval = data.active ? setInterval(render, 1000) : null;
-        }
-        render();
-        parentElement.__executionTimerState = state;
-        return () => {};
-    }
-    """,
-)
-LOG_CONSOLE_COMPONENT = st.components.v2.component(
-    name="apache_big_data_lab.log_console",
-    html=(
-        '<textarea class="log-console" readonly '
-        'aria-label="Consola"></textarea>'
-    ),
-    isolate_styles=False,
-    js="""
-    export default function ({ parentElement, data }) {
-        const consoleElement = parentElement.querySelector("textarea");
-        const text = (Array.isArray(data.lines) ? data.lines : [])
-            .slice(-200).join("\\n");
-        if (consoleElement.value !== text) {
-            consoleElement.value = text;
-            consoleElement.scrollTop = consoleElement.scrollHeight;
-            requestAnimationFrame(() => {
-                consoleElement.scrollTop = consoleElement.scrollHeight;
-            });
-        }
-        return () => {};
-    }
-    """,
-)
-SYSTEM_THEME_COMPONENT = st.components.v2.component(
-    name="apache_big_data_lab.system_theme",
-    html='<span class="system-theme-detector"></span>',
-    isolate_styles=False,
-    js="""
-    export default function ({ parentElement, setStateValue }) {
-        const state = parentElement.__systemThemeState || {
-            mediaQuery: null,
-            reportedTheme: null,
-        };
-        if (state.mediaQuery === null) {
-            state.mediaQuery = window.matchMedia(
-                "(prefers-color-scheme: dark)",
-            );
-            state.mediaQuery.addEventListener("change", (event) => {
-                state.reportedTheme = event.matches;
-                setStateValue("dark", event.matches);
-            });
-        }
-        if (state.reportedTheme !== state.mediaQuery.matches) {
-            state.reportedTheme = state.mediaQuery.matches;
-            setStateValue("dark", state.reportedTheme);
-        }
-        parentElement.__systemThemeState = state;
-        return () => {};
-    }
-    """,
-)
 PRESENTATION_TIMEZONE = ZoneInfo("America/Argentina/Cordoba")
-TOP_LIQUID_OPTION = "Top 20 con más liquidez del S&P 500"
-TOP_VOLUME_OPTION = "Top 20 con más volumen del S&P 500"
-SYMBOL_GROUPS = {
-    ALL_SYMBOLS_OPTION: ("*",),
-    MAGNIFICENT_7_OPTION: MAGNIFICENT_7_SYMBOLS,
-    TOP_LIQUID_OPTION: (),
-    TOP_VOLUME_OPTION: (),
-}
-SYMBOL_OPTIONS = (
-    ALL_SYMBOLS_OPTION,
-    MAGNIFICENT_7_OPTION,
-    TOP_LIQUID_OPTION,
-    TOP_VOLUME_OPTION,
-)
-SYMBOL_RANKINGS = {
-    TOP_LIQUID_OPTION: "trades",
-    TOP_VOLUME_OPTION: "volume",
+SYMBOL_OPTIONS = {
+    "Todos los símbolos del S&P 500": {
+        "value": ("*",),
+        "ranking": None,
+    },
+    "Las 7 magníficas: AAPL, AMZN, GOOGL, META, MSFT, NVDA, TSLA": {
+        "value": ("AAPL", "AMZN", "GOOGL", "META", "MSFT", "NVDA", "TSLA"),
+        "ranking": None,
+    },
+    "Top 20 con más liquidez del S&P 500": {
+        "value": (),
+        "ranking": "trades",
+    },
+    "Top 20 con más volumen del S&P 500": {
+        "value": (),
+        "ranking": "volume",
+    },
 }
 
 def format_presentation_timestamp(
@@ -201,7 +97,6 @@ def format_elapsed_time(
     hours, remainder = divmod(elapsed_seconds, 3600)
     minutes, seconds = divmod(remainder, 60)
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-
 
 def get_console_state(console_id: str, run_id: str | None) -> dict[str, Any]:
     """Mantengo el contador visual independiente de cada consola y RUN."""
@@ -384,7 +279,7 @@ def render_log_console(
 ) -> None:
     """Muestro y actualizo incrementalmente una consola de registros."""
 
-    LOG_CONSOLE_COMPONENT(
+    components.LOG_CONSOLE_COMPONENT(
         data={"lines": lines},
         height=250,
         key=console_id,
@@ -405,61 +300,6 @@ def get_console_buffer_view(
     lines, _, total = functions.read_console_tail(console_path, 200)
     console_state["line_number"] = total
     return lines, 0, total, True, False
-
-st.set_page_config(
-    page_title="Apache Big Data Lab",
-    page_icon="assets/icon.png",
-    layout="wide",
-)
-load_custom_css()
-system_theme = SYSTEM_THEME_COMPONENT(
-    data={},
-    default={"dark": None},
-    key="system-theme-detector",
-    on_dark_change=lambda: None,
-)
-initialize_state(system_theme)
-icon_path = Path(__file__).parent / "assets" / "icon.png"
-theme_key = "theme-dark" if st.session_state.dark_mode else "theme-light"
-with st.container(key=theme_key):
-    st.empty()
-with st.container(
-    width="content",
-    horizontal=True,
-    gap="small",
-    vertical_alignment="center",
-):
-    icon_col = st.container(width="content")
-    title_col = st.container(width="stretch")
-    theme_col = st.container(width="content")
-with icon_col:
-    st.image(str(icon_path), width=50)
-with title_col:
-    st.title("Apache Big Data Lab")
-with theme_col:
-    if st.button(
-        "",
-        icon=(
-            ":material/light_mode:"
-            if st.session_state.dark_mode
-            else ":material/dark_mode:"
-        ),
-        help=(
-            "Light Mode"
-            if st.session_state.dark_mode
-            else "Dark Mode"
-        ),
-        key="theme-toggle-button",
-        width=36,
-    ):
-        st.session_state.dark_mode = not st.session_state.dark_mode
-        st.session_state.theme_user_set = True
-        st.rerun()
-st.subheader(
-    "Streaming y análisis de operaciones bursátiles con procesamiento distribuido durante una rueda de mercado."
-)
-st.caption("Materia: IAPD. Autor: Nicolás Druetta. Año: 2026.")
-st.divider()
 
 def render_streaming() -> None:
     """Muestro las consolas de Alpaca y el estado de Spark."""
@@ -484,15 +324,18 @@ def render_streaming() -> None:
         snapshot = controller_module.get_run_snapshot()
 
     universe = snapshot.get("universe", {})
-    default_option = ALL_SYMBOLS_OPTION
+    option_labels = list(SYMBOL_OPTIONS)
+    default_option = option_labels[0]
     if snapshot["is_active"] and universe.get("selection") == "manual":
-        manual_symbols = [
-            symbol
-            for symbol in snapshot["symbols"]
-            if symbol in MAGNIFICENT_7_SYMBOLS
-        ]
-        if tuple(manual_symbols) == MAGNIFICENT_7_SYMBOLS:
-            default_option = SYMBOL_OPTIONS[1]
+        manual_symbols = tuple(snapshot["symbols"])
+        default_option = next(
+            (
+                label
+                for label, option in SYMBOL_OPTIONS.items()
+                if option["value"] == manual_symbols
+            ),
+            default_option,
+        )
     st.subheader("Símbolos bursátiles a analizar")
     symbols_col, actions_col = st.columns(
         [1, 1],
@@ -503,8 +346,8 @@ def render_streaming() -> None:
         with st.container(key="card-symbols"):
             selected_option = st.selectbox(
                 "Símbolos",
-                options=SYMBOL_OPTIONS,
-                index=SYMBOL_OPTIONS.index(default_option),
+                options=option_labels,
+                index=option_labels.index(default_option),
                 key="symbol-universe",
                 label_visibility="collapsed",
                 disabled=bool(
@@ -538,7 +381,10 @@ def render_streaming() -> None:
                 on_click=mark_start_pending,
                 width="content",
             )
-            if snapshot["is_active"] or st.session_state.stop_pending:
+            if (
+                snapshot["is_active"]
+                and not st.session_state.start_pending
+            ) or st.session_state.stop_pending:
                 stop_clicked = st.button(
                     "⟳ Deteniendo..."
                     if st.session_state.stop_pending
@@ -548,8 +394,9 @@ def render_streaming() -> None:
                     on_click=mark_stop_pending,
                     width="content",
                 )
-    symbols = list(SYMBOL_GROUPS[selected_option])
-    symbol_ranking = SYMBOL_RANKINGS.get(selected_option)
+    selected_symbols = SYMBOL_OPTIONS[selected_option]
+    symbols = list(selected_symbols["value"])
+    symbol_ranking = selected_symbols["ranking"]
     selected_replay_speed = 1.0
     clear_consoles = bool(
         st.session_state.start_requested
@@ -674,7 +521,7 @@ def render_streaming() -> None:
         with st.container(border=True):
             st.caption("Estado")
             if snapshot["is_active"] and not st.session_state.start_pending:
-                EXECUTION_TIMER_COMPONENT(
+                components.EXECUTION_TIMER_COMPONENT(
                     data={
                         "active": True,
                         "ended_at": snapshot["ended_at"],
@@ -1057,7 +904,7 @@ def render_streaming() -> None:
         with elapsed_col:
             st.caption("Tiempo de ejecución transcurrido")
             if snapshot["is_active"] and not st.session_state.start_pending:
-                EXECUTION_TIMER_COMPONENT(
+                components.EXECUTION_TIMER_COMPONENT(
                     data={
                         "active": True,
                         "ended_at": snapshot["ended_at"],
@@ -1089,6 +936,62 @@ def render_streaming() -> None:
     with activity_column:
         st.subheader("Actividad bursátil en el tiempo")
         charts_module.render_activity_chart(activity_rows, activity_interval)
+
+st.set_page_config(
+    page_title="Apache Big Data Lab",
+    page_icon="assets/icon.png",
+    layout="wide",
+)
+
+load_custom_css()
+system_theme = components.SYSTEM_THEME_COMPONENT(
+    data={},
+    default={"dark": None},
+    key="system-theme-detector",
+    on_dark_change=lambda: None,
+)
+initialize_state(system_theme)
+icon_path = Path(__file__).parent / "assets" / "icon.png"
+theme_key = "theme-dark" if st.session_state.dark_mode else "theme-light"
+with st.container(key=theme_key):
+    st.empty()
+with st.container(
+    width="content",
+    horizontal=True,
+    gap="small",
+    vertical_alignment="center",
+):
+    icon_col = st.container(width="content")
+    title_col = st.container(width="stretch")
+    theme_col = st.container(width="content")
+with icon_col:
+    st.image(str(icon_path), width=50)
+with title_col:
+    st.title("Apache Big Data Lab")
+with theme_col:
+    if st.button(
+        "",
+        icon=(
+            ":material/light_mode:"
+            if st.session_state.dark_mode
+            else ":material/dark_mode:"
+        ),
+        help=(
+            "Light Mode"
+            if st.session_state.dark_mode
+            else "Dark Mode"
+        ),
+        key="theme-toggle-button",
+        width=36,
+    ):
+        st.session_state.dark_mode = not st.session_state.dark_mode
+        st.session_state.theme_user_set = True
+        st.rerun()
+st.subheader(
+    "Streaming y análisis de operaciones bursátiles con procesamiento distribuido durante una rueda de mercado."
+)
+st.caption("Materia: IAPD. Autor: Nicolás Druetta. Año: 2026.")
+st.divider()
 
 render_streaming_fragment = st.fragment(render_streaming, run_every="5s")
 render_streaming_fragment()
