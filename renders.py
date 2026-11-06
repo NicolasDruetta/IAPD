@@ -301,7 +301,7 @@ def render_config() -> None:
         run_id = snapshot.get("run_id")
         controller_module.stop_active_run("manual_stop")
         snapshot = controller_module.get_run_snapshot()
-        spark_module.stop_streaming(run_id)
+        spark_module.stop_streaming(run_id, finalize=True)
 
     if st.session_state.start_pending:
         elapsed_text = "-"
@@ -316,11 +316,7 @@ def render_config() -> None:
         presentation_market_timestamp = format_presentation_timestamp(
             market_timestamp,
         )
-        market_date = (
-            snapshot.get("historical_date") or "-"
-            if snapshot["is_active"]
-            else "-"
-        )
+        market_date = snapshot.get("historical_date") or "-"
         market_time = (
             presentation_market_timestamp.split(" ", 1)[1]
             if presentation_market_timestamp != "-"
@@ -412,8 +408,8 @@ def render_consoles() -> None:
     run_id = None if st.session_state.start_pending else snapshot["run_id"]
 
     st.subheader("CONSOLAS")
-    execution_column, alpaca_column = st.columns(
-        2,
+    execution_column, alpaca_column, kafka_column = st.columns(
+        3,
         gap="small",
         vertical_alignment="top",
         wrap=True,
@@ -571,12 +567,6 @@ def render_consoles() -> None:
             placeholder=is_placeholder,
             resync=resync,
         )
-    kafka_column, spark_column, pandas_postgresql_column = st.columns(
-        3,
-        gap="small",
-        vertical_alignment="top",
-        wrap=True,
-    )
     with kafka_column:
         st.subheader("3. Log de publicación (Kafka)")
         kafka_state = get_console_state("kafka-log-console", run_id)
@@ -630,6 +620,12 @@ def render_consoles() -> None:
             placeholder=is_placeholder,
             resync=resync,
         )
+    spark_column, pandas_postgresql_column = st.columns(
+        2,
+        gap="small",
+        vertical_alignment="top",
+        wrap=True,
+    )
     with spark_column:
         st.subheader("4. Log de procesamiento (Spark)")
         spark_state = get_console_state("spark-log-console", run_id)
@@ -767,17 +763,13 @@ def render_info() -> None:
         presentation_market_timestamp = format_presentation_timestamp(
             market_timestamp,
         )
-        market_date = (
-            snapshot.get("historical_date") or "-"
-            if snapshot["is_active"]
-            else "-"
-        )
+        market_date = snapshot.get("historical_date") or "-"
         market_time = (
             presentation_market_timestamp.split(" ", 1)[1]
             if presentation_market_timestamp != "-"
             else "-"
         )
-    st.write("")
+    st.write(f"**INFO**")
     with st.container(border=True):
         date_col, time_col, elapsed_col, data_col = st.columns(
             [1, 1, 1, 1],
@@ -832,10 +824,10 @@ def render_charts() -> None:
         vertical_alignment="top",
     )
     with volume_column:
-        st.subheader("Top 10 acciones por volumen negociado")
+        st.write(f"**1. Top 10 acciones por volumen negociado**")
         render_volume_chart(top_volume)
     with activity_column:
-        st.subheader("Actividad bursátil en el tiempo")
+        st.write(f"**2. Actividad bursátil en el tiempo**")
         render_activity_chart(activity_rows, activity_interval)
 
 def render_questions() -> None:
@@ -855,52 +847,77 @@ def render_questions() -> None:
         for answer in analysis_data.get("answers", [])
     }
     metrics = analysis_data.get("metrics", [])
-    questions = (
-        (
-            "volatility",
-            "1. ¿Las acciones con más operaciones presentan mayor volatilidad?",
-            ["symbol", "trade_count", "return_count", "volatility"],
-            "cantidad de operaciones y volatilidad",
-        ),
-        (
-            "spread",
-            "2. ¿Las acciones más negociadas tienen menor spread entre compra y venta?",
-            ["symbol", "trade_count", "spread_count", "spread_mean"],
-            "cantidad de operaciones y spread",
-        ),
-    )
     question_columns = st.columns(
         2,
         gap="small",
         vertical_alignment="top",
     )
-    for question_column, (question_id, title, columns, correlation_description) in zip(
-        question_columns,
-        questions,
-    ):
-        with question_column:
-            st.markdown(f"#### {title}")
-            answer = answers.get(question_id)
-            correlation = answer.get("correlation") if answer else None
-            table_rows = [
-                {column: row.get(column) for column in columns}
-                for row in metrics
-            ]
-            st.dataframe(table_rows, hide_index=True, width="stretch")
-            correlation_text = (
-                "Datos insuficientes"
-                if correlation is None
-                else f"{float(correlation):.4f}"
-            )
-            conclusion = (
-                answer.get("conclusion", "Datos insuficientes.")
-                if answer
-                else "Datos insuficientes."
-            )
-            st.write(
-                f"**Correlación:** {correlation_text} ({correlation_description})"
-            )
-            st.write(f"**Interpretación:** {conclusion}")
+    with question_columns[0]:
+        st.write(f"**1. ¿Las acciones con más operaciones presentan mayor volatilidad?**")
+        volatility_answer = answers.get("volatility")
+        volatility_correlation = (
+            volatility_answer.get("correlation")
+            if volatility_answer
+            else None
+        )
+        volatility_rows = [
+            {
+                "symbol": row.get("symbol"),
+                "trade_count": row.get("trade_count"),
+                "return_count": row.get("return_count"),
+                "volatility": row.get("volatility"),
+            }
+            for row in metrics
+        ]
+        st.dataframe(volatility_rows, hide_index=True, width="stretch")
+        volatility_correlation_text = (
+            "Datos insuficientes"
+            if volatility_correlation is None
+            else f"{float(volatility_correlation):.4f}"
+        )
+        volatility_conclusion = (
+            volatility_answer.get("conclusion", "Datos insuficientes.")
+            if volatility_answer
+            else "Datos insuficientes."
+        )
+        st.write(
+            f"**Correlación:** {volatility_correlation_text} "
+            "(cantidad de operaciones y volatilidad)"
+        )
+        st.write(f"**Interpretación:** {volatility_conclusion}")
+    with question_columns[1]:
+        st.write(f"**2. ¿Las acciones más negociadas tienen menor spread entre compra y venta?**")
+        spread_answer = answers.get("spread")
+        spread_correlation = (
+            spread_answer.get("correlation")
+            if spread_answer
+            else None
+        )
+        spread_rows = [
+            {
+                "symbol": row.get("symbol"),
+                "trade_count": row.get("trade_count"),
+                "spread_count": row.get("spread_count"),
+                "spread_mean": row.get("spread_mean"),
+            }
+            for row in metrics
+        ]
+        st.dataframe(spread_rows, hide_index=True, width="stretch")
+        spread_correlation_text = (
+            "Datos insuficientes"
+            if spread_correlation is None
+            else f"{float(spread_correlation):.4f}"
+        )
+        spread_conclusion = (
+            spread_answer.get("conclusion", "Datos insuficientes.")
+            if spread_answer
+            else "Datos insuficientes."
+        )
+        st.write(
+            f"**Correlación:** {spread_correlation_text} "
+            "(cantidad de operaciones y spread)"
+        )
+        st.write(f"**Interpretación:** {spread_conclusion}")
 
 render_config = st.fragment(render_config, run_every="5s")
 render_consoles = st.fragment(render_consoles, run_every="5s")

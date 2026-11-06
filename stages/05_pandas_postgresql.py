@@ -7,27 +7,48 @@ import psycopg
 from pathlib import Path
 from psycopg.types.json import Jsonb
 from typing import Any
+from zoneinfo import ZoneInfo
 
 DATA_DIRECTORY = Path(__file__).parent.parent / "data"
 FEED_NAME = "IEX"
 MARKET_ANSWERS_TABLE = "market_answers"
 MARKET_METRICS_TABLE = "market_metrics"
+PRESENTATION_TIMEZONE = ZoneInfo("America/Argentina/Cordoba")
+_ANALYSIS_STATES: dict[str, dict[str, Any]] = {}
 
 def analyze_and_persist(
     run_id: str,
     feed: str = FEED_NAME,
 ) -> bool:
-    """Leo el Parquet definitivo y guardo solo sus resultados."""
+    """Leo solo los lotes Parquet nuevos y guardo sus resultados acumulados."""
 
-    parquet_path = DATA_DIRECTORY / "runs" / f"{run_id}_04_apache_spark_data.parquet"
-    if not parquet_path.exists():
+    parquet_path = DATA_DIRECTORY / "spark" / f"{run_id}_04_apache_spark_data.parquet.parts"
+    batch_paths = sorted(parquet_path.glob("batch_*")) if parquet_path.is_dir() else []
+    if not batch_paths:
         return False
-    try:
+    state = _ANALYSIS_STATES.get(run_id)
+    if state is None:
         frame = pd.read_parquet(parquet_path)
-        if frame.empty:
-            return False
-        metrics, answers = calculate_analysis(frame, feed)
-        top_volume, activity, activity_interval = prepare_chart_data(frame)
+        state = _create_analysis_state()
+        _update_analysis_state(state, frame)
+        state["batches"] = {path.name for path in batch_paths}
+    else:
+        known_batches = state["batches"]
+        new_paths = [path for path in batch_paths if path.name not in known_batches]
+        if not new_paths:
+            return True
+        frame = pd.concat(
+            [pd.read_parquet(path) for path in new_paths],
+            ignore_index=True,
+        )
+        _update_analysis_state(state, frame)
+        known_batches.update(path.name for path in new_paths)
+    metrics_frame = _build_metrics_frame(state)
+    if metrics_frame.empty:
+        return False
+    metrics, answers = _build_analysis_results(metrics_frame, feed)
+    top_volume, activity, activity_interval = prepare_chart_data(state)
+    try:
         with functions.get_postgresql_connection() as connection:
             ensure_tables(connection)
             persist_analysis(
@@ -42,7 +63,7 @@ def analyze_and_persist(
         functions.append_console_log(
             run_id,
             "pandas_postgresql",
-            f"PARQUET | ruta={parquet_path} | registros={len(frame)}",
+            f"PARQUET | lotes={len(state['batches'])} | nuevos={len(frame)}",
         )
         functions.append_console_log(
             run_id,
@@ -55,52 +76,13 @@ def analyze_and_persist(
             f"POSTGRES | metricas_guardadas={len(metrics)} | respuestas_persistidas={len(answers)}",
         )
         return True
-    except (OSError, TypeError, ValueError, pd.errors.ParserError, psycopg.Error) as error:
+    except (OSError, TypeError, ValueError, psycopg.Error) as error:
         functions.append_console_log(
             run_id,
             "pandas_postgresql",
             f"ERROR | análisis={error}",
         )
         return False
-
-def calculate_analysis(
-    frame: pd.DataFrame,
-    feed: str = FEED_NAME,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Calculo métricas por símbolo y las dos respuestas con Pandas."""
-
-    prepared = _prepare_events(frame)
-    if prepared.empty:
-        return [], []
-    metrics_frame = _build_metrics_frame(prepared)
-    metrics = [
-        {
-            "feed": feed,
-            "return_count": _integer_or_none(row.return_count),
-            "spread_count": _integer_or_none(row.spread_count),
-            "spread_mean": _float_or_none(row.spread_mean),
-            "symbol": str(row.symbol),
-            "total_volume": _float_or_none(row.total_volume),
-            "trade_count": _integer_or_none(row.trade_count),
-            "volatility": _float_or_none(row.volatility),
-        }
-        for row in metrics_frame.itertuples(index=False)
-    ]
-    answers = [
-        _build_answer(
-            metrics_frame,
-            "volatility",
-            "Las acciones con más operaciones presentan mayor volatilidad.",
-            feed,
-        ),
-        _build_answer(
-            metrics_frame,
-            "spread_mean",
-            "Las acciones más negociadas tienen menor spread entre compra y venta.",
-            feed,
-        ),
-    ]
-    return metrics, answers
 
 def ensure_tables(connection: psycopg.Connection) -> None:
     """Creo las dos tablas analíticas si todavía no existen."""
@@ -227,32 +209,34 @@ def persist_analysis(
     connection.commit()
 
 def prepare_chart_data(
-    frame: pd.DataFrame,
+    state: dict[str, Any],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
-    """Preparo en Pandas los datos completos de los dos gráficos."""
+    """Preparo los gráficos desde acumulados, sin conservar eventos crudos."""
 
-    prepared = _prepare_events(frame)
-    if prepared.empty:
-        return [], [], 1
-    trade_frame = prepared[prepared["event_type"] == "TRADE"]
-    volume_frame = trade_frame.groupby("symbol", as_index=False)["size"].sum()
+    metrics = state["metrics"]
     top_volume = [
         {
-            "symbol": str(row.symbol),
-            "total_volume": float(row.size),
+            "symbol": symbol,
+            "total_volume": float(values["total_volume"]),
         }
-        for row in volume_frame.sort_values(
-            ["size", "symbol"],
-            ascending=[False, True],
-        ).head(10).itertuples(index=False)
+        for symbol, values in sorted(
+            metrics.items(),
+            key=lambda item: (-item[1]["total_volume"], item[0]),
+        )[:10]
     ]
-    activity_frame = (
-        prepared.assign(second_value=prepared["timestamp_value"].dt.floor("s"))
-        .groupby(["second_value", "event_type"], as_index=False)
-        .size()
-        .rename(columns={"size": "events"})
-        .sort_values(["second_value", "event_type"])
+    activity_frame = pd.DataFrame(state["activity"].values())
+    if activity_frame.empty:
+        return top_volume, [], 1
+    activity_frame["second_value"] = pd.to_datetime(
+        activity_frame["second"],
+        errors="coerce",
+        utc=True,
     )
+    activity_frame["events"] = pd.to_numeric(
+        activity_frame["events"],
+        errors="coerce",
+    ).fillna(0).astype(int)
+    activity_frame = activity_frame.dropna(subset=["second_value"])
     if activity_frame.empty:
         return top_volume, [], 1
     elapsed_seconds = (
@@ -269,10 +253,9 @@ def prepare_chart_data(
         activity_interval = 60
     else:
         activity_interval = 300
-    presentation_timezone = globals().get("PRESENTATION_TIMEZONE", "UTC")
     activity_frame["second_value"] = (
         activity_frame["second_value"]
-        .dt.tz_convert(presentation_timezone)
+        .dt.tz_convert(PRESENTATION_TIMEZONE)
         .dt.floor(f"{activity_interval}s")
     )
     activity_frame = activity_frame.groupby(
@@ -291,6 +274,41 @@ def prepare_chart_data(
         for row in activity_frame.itertuples(index=False)
     ]
     return top_volume, prepared_activity, activity_interval
+
+def _build_analysis_results(
+    metrics_frame: pd.DataFrame,
+    feed: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Construyo métricas y respuestas desde acumulados Pandas."""
+
+    metrics = [
+        {
+            "feed": feed,
+            "return_count": _integer_or_none(row.return_count),
+            "spread_count": _integer_or_none(row.spread_count),
+            "spread_mean": _float_or_none(row.spread_mean),
+            "symbol": str(row.symbol),
+            "total_volume": _float_or_none(row.total_volume),
+            "trade_count": _integer_or_none(row.trade_count),
+            "volatility": _float_or_none(row.volatility),
+        }
+        for row in metrics_frame.itertuples(index=False)
+    ]
+    answers = [
+        _build_answer(
+            metrics_frame,
+            "volatility",
+            "Las acciones con más operaciones presentan mayor volatilidad.",
+            feed,
+        ),
+        _build_answer(
+            metrics_frame,
+            "spread_mean",
+            "Las acciones más negociadas tienen menor spread entre compra y venta.",
+            feed,
+        ),
+    ]
+    return metrics, answers
 
 def _build_answer(
     frame: pd.DataFrame,
@@ -329,75 +347,46 @@ def _build_answer(
         "symbol_count": symbol_count,
     }
 
-def _build_metrics_frame(frame: pd.DataFrame) -> pd.DataFrame:
-    """Calculo métricas financieras a partir de los eventos Parquet."""
+def _build_metrics_frame(
+    state: dict[str, Any],
+) -> pd.DataFrame:
+    """Construyo la tabla financiera desde acumulados suficientes."""
 
-    symbols = pd.DataFrame({"symbol": sorted(frame["symbol"].dropna().unique())})
-    trades = frame[frame["event_type"] == "TRADE"].copy()
-    quotes = frame[frame["event_type"] == "QUOTE"].copy()
-    trade_metrics = trades.groupby("symbol").agg(
-        trade_count=("symbol", "size"),
-        total_volume=("size", "sum"),
-    )
-    valid_trades = trades[trades["price"] > 0].copy()
-    valid_trades["previous_price"] = valid_trades.groupby("symbol")["price"].shift(1)
-    valid_trades["return_value"] = (
-        valid_trades["price"] / valid_trades["previous_price"] - 1
-    )
-    valid_trades.loc[
-        valid_trades["previous_price"] <= 0,
-        "return_value",
-    ] = pd.NA
-    return_metrics = valid_trades.groupby("symbol").agg(
-        return_count=("return_value", "count"),
-        volatility=("return_value", "std"),
-    )
-    valid_quotes = quotes[
-        (quotes["bid_price"] > 0)
-        & (quotes["ask_price"] > 0)
-        & (quotes["ask_price"] >= quotes["bid_price"])
-    ].copy()
-    valid_quotes["spread_value"] = (
-        valid_quotes["ask_price"] - valid_quotes["bid_price"]
-    ) / ((valid_quotes["ask_price"] + valid_quotes["bid_price"]) / 2)
-    quote_metrics = valid_quotes.groupby("symbol").agg(
-        spread_count=("spread_value", "count"),
-        spread_mean=("spread_value", "mean"),
-    )
-    metrics = symbols.merge(
-        trade_metrics,
-        on="symbol",
-        how="left",
-    ).merge(
-        return_metrics,
-        on="symbol",
-        how="left",
-    ).merge(
-        quote_metrics,
-        on="symbol",
-        how="left",
-    )
-    for column in ["trade_count", "return_count", "spread_count"]:
-        metrics[column] = metrics[column].fillna(0).astype(int)
-    metrics["total_volume"] = metrics["total_volume"].fillna(0.0)
-    return metrics
+    rows = []
+    for symbol, values in sorted(state["metrics"].items()):
+        return_count = values["return_count"]
+        volatility = None
+        if return_count >= 2:
+            variance = (
+                values["return_sum_squares"]
+                - values["return_sum"] ** 2 / return_count
+            ) / (return_count - 1)
+            volatility = math.sqrt(max(variance, 0.0))
+        spread_mean = (
+            values["spread_sum"] / values["spread_count"]
+            if values["spread_count"]
+            else None
+        )
+        rows.append(
+            {
+                "return_count": return_count,
+                "spread_count": values["spread_count"],
+                "spread_mean": spread_mean,
+                "symbol": symbol,
+                "total_volume": values["total_volume"],
+                "trade_count": values["trade_count"],
+                "volatility": volatility,
+            }
+        )
+    return pd.DataFrame(rows)
 
-def _float_or_none(value: Any) -> float | None:
-    """Convierto valores Pandas a números SQL o nulos."""
+def _create_analysis_state() -> dict[str, Any]:
+    """Creo el estado pequeño de acumulados, no de eventos crudos."""
 
-    if pd.isna(value):
-        return None
-    return float(value)
-
-def _integer_or_none(value: Any) -> int | None:
-    """Convierto contadores Pandas a enteros SQL o nulos."""
-
-    if pd.isna(value):
-        return None
-    return int(value)
+    return {"activity": {}, "batches": set(), "metrics": {}}
 
 def _prepare_events(frame: pd.DataFrame) -> pd.DataFrame:
-    """Preparo timestamps y tipos numéricos para el análisis."""
+    """Preparo timestamps y tipos numéricos del microbatch Parquet."""
 
     prepared = frame.copy()
     prepared["timestamp_value"] = pd.to_datetime(
@@ -431,3 +420,81 @@ def _prepare_events(frame: pd.DataFrame) -> pd.DataFrame:
         ["symbol", "timestamp_value", "received_at_value", "price", "size"],
         na_position="last",
     )
+
+def _update_analysis_state(
+    state: dict[str, Any],
+    frame: pd.DataFrame,
+) -> None:
+    """Actualizo acumulados financieros y temporales con un microbatch."""
+
+    prepared = _prepare_events(frame)
+    if prepared.empty:
+        return
+    for symbol, symbol_frame in prepared.groupby("symbol", sort=True):
+        values = state["metrics"].setdefault(
+            str(symbol),
+            {
+                "last_trade_price": None,
+                "return_count": 0,
+                "return_sum": 0.0,
+                "return_sum_squares": 0.0,
+                "spread_count": 0,
+                "spread_sum": 0.0,
+                "total_volume": 0.0,
+                "trade_count": 0,
+            },
+        )
+        trades = symbol_frame[symbol_frame["event_type"] == "TRADE"]
+        for row in trades.itertuples(index=False):
+            values["trade_count"] += 1
+            values["total_volume"] += float(row.size) if pd.notna(row.size) else 0.0
+            if pd.notna(row.price) and row.price > 0:
+                previous_price = values["last_trade_price"]
+                if previous_price is not None and previous_price > 0:
+                    return_value = float(row.price) / previous_price - 1
+                    values["return_count"] += 1
+                    values["return_sum"] += return_value
+                    values["return_sum_squares"] += return_value * return_value
+                values["last_trade_price"] = float(row.price)
+        quotes = symbol_frame[
+            (symbol_frame["event_type"] == "QUOTE")
+            & (symbol_frame["bid_price"] > 0)
+            & (symbol_frame["ask_price"] > 0)
+            & (symbol_frame["ask_price"] >= symbol_frame["bid_price"])
+        ].copy()
+        if not quotes.empty:
+            mid_price = (quotes["ask_price"] + quotes["bid_price"]) / 2
+            spread_values = (
+                (quotes["ask_price"] - quotes["bid_price"]) / mid_price
+            )
+            values["spread_count"] += int(spread_values.count())
+            values["spread_sum"] += float(spread_values.sum())
+    activity = (
+        prepared.assign(second=prepared["timestamp_value"].dt.floor("s"))
+        .groupby(["second", "event_type"], as_index=False)
+        .size()
+        .rename(columns={"size": "events"})
+    )
+    for row in activity.itertuples(index=False):
+        second = row.second.isoformat()
+        key = f"{second}|{row.event_type}"
+        previous = state["activity"].get(
+            key,
+            {"event_type": str(row.event_type), "events": 0, "second": second},
+        )
+        previous["events"] += int(row.events)
+        state["activity"][key] = previous
+
+def _float_or_none(value: Any) -> float | None:
+    """Convierto valores Pandas a números SQL o nulos."""
+
+    if pd.isna(value):
+        return None
+    return float(value)
+
+def _integer_or_none(value: Any) -> int | None:
+    """Convierto contadores Pandas a enteros SQL o nulos."""
+
+    if pd.isna(value):
+        return None
+    return int(value)

@@ -455,7 +455,7 @@ def read_spark_api_from_master(path: str) -> Any:
 
 
 def process_batch(run_id: str, data_frame: DataFrame, batch_id: int) -> None:
-    """Proceso un microbatch distribuido y actualizo el Parquet definitivo."""
+    """Proceso un microbatch distribuido y escribo su fragmento Parquet."""
 
     input_frame = data_frame.persist()
     processed_frame = None
@@ -477,12 +477,16 @@ def process_batch(run_id: str, data_frame: DataFrame, batch_id: int) -> None:
         processed_count = processed_frame.count()
         if not processed_count:
             return
-        parquet_parts_path = str(
-            DATA_DIRECTORY / "spark" / f"{run_id}_04_apache_spark_data.parquet.parts"
-        )
-        processed_frame.write.mode("append").parquet(parquet_parts_path)
-        if not consolidate_parquet(run_id):
-            raise RuntimeError("No se pudo actualizar el Parquet definitivo.")
+        parts_path = DATA_DIRECTORY / "spark" / f"{run_id}_04_apache_spark_data.parquet.parts"
+        batch_path = parts_path / f"batch_{batch_id:020d}"
+        temporary_path = parts_path.parent / f".{batch_path.name}.tmp"
+        parts_path.mkdir(parents=True, exist_ok=True)
+        if not batch_path.exists():
+            shutil.rmtree(temporary_path, ignore_errors=True)
+            processed_frame.write.mode("overwrite").parquet(
+                str(temporary_path)
+            )
+            os.replace(temporary_path, batch_path)
         analysis_module = sys.modules.get("05_pandas_postgresql")
         if analysis_module is not None:
             analysis_module.analyze_and_persist(run_id)
@@ -520,7 +524,7 @@ def process_batch(run_id: str, data_frame: DataFrame, batch_id: int) -> None:
             os.fsync(info_file.fileno())
         for message in (
             f"TRANSFORM | batch_id={batch_id} | entrada={input_count} | validos={valid_count} | invalidos={input_count - valid_count} | duplicados_eliminados={valid_count - processed_count}",
-            f"LOAD | batch_id={batch_id} | ruta={DATA_DIRECTORY / 'runs' / f'{run_id}_04_apache_spark_data.parquet'} | registros={processed_count} | estado=completado",
+            f"LOAD | batch_id={batch_id} | ruta={parts_path} | registros={processed_count} | estado=completado",
             f"EDA | batch_id={batch_id} | simbolos={symbol_count} | trades={checkpoint['processed_events_by_type']['TRADE']} | quotes={checkpoint['processed_events_by_type']['QUOTE']}",
         ):
             functions.append_console_log(run_id, "spark", message)
@@ -541,45 +545,77 @@ def process_batch(run_id: str, data_frame: DataFrame, batch_id: int) -> None:
         if processed_frame is not None:
             processed_frame.unpersist()
 
+def initialize_parquet_output(run_id: str, spark: SparkSession) -> None:
+    """Creo el Parquet vacío y el estado visible del RUN."""
+
+    runs_path = DATA_DIRECTORY / "runs"
+    runs_path.mkdir(parents=True, exist_ok=True)
+    final_path = runs_path / f"{run_id}_04_apache_spark_data.parquet"
+    status_path = runs_path / f"{run_id}_04_apache_spark_data_status.txt"
+    if not final_path.exists():
+        temporary_path = DATA_DIRECTORY / "spark" / f"{run_id}_empty_parquet.tmp"
+        temporary_file = runs_path / f".{final_path.name}.empty.tmp"
+        shutil.rmtree(temporary_path, ignore_errors=True)
+        spark.createDataFrame([], EVENT_SCHEMA).coalesce(1).write.mode(
+            "overwrite"
+        ).parquet(str(temporary_path))
+        part_files = sorted(temporary_path.glob("part-*.parquet"))
+        if len(part_files) != 1:
+            raise RuntimeError(
+                f"La inicialización de {run_id} generó {len(part_files)} archivos."
+            )
+        shutil.copy2(part_files[0], temporary_file)
+        os.replace(temporary_file, final_path)
+        shutil.rmtree(temporary_path)
+    status_path.write_text(
+        "Parquet en proceso. Los datos se están escribiendo temporalmente en "
+        f"`/app/data/spark/{run_id}_04_apache_spark_data.parquet.parts/`. "
+        "El archivo definitivo se consolidará aquí cuando finalice la ejecución.",
+        encoding="utf-8",
+    )
+
 def consolidate_parquet(run_id: str) -> bool:
-    """Actualizo el Parquet definitivo mediante reemplazo atómico."""
+    """Consolido una sola vez los fragmentos Parquet del RUN."""
 
     parts_path = DATA_DIRECTORY / "spark" / f"{run_id}_04_apache_spark_data.parquet.parts"
     final_path = DATA_DIRECTORY / "runs" / f"{run_id}_04_apache_spark_data.parquet"
+    status_path = DATA_DIRECTORY / "runs" / f"{run_id}_04_apache_spark_data_status.txt"
     temporary_path = DATA_DIRECTORY / "spark" / f"{run_id}_04_apache_spark_data.parquet.tmp"
-    if not parts_path.exists():
+    if not parts_path.exists() or not any(parts_path.glob("batch_*")):
+        status_path.unlink(missing_ok=True)
         return final_path.exists()
     spark = get_spark_session()
     if spark is None:
         raise RuntimeError("Spark no está disponible para consolidar Parquet.")
-    processed_frame = spark.read.parquet(str(parts_path)).dropDuplicates([
-        "run_id", "timestamp", "symbol", "event_type", "price", "size",
-        "bid_price", "bid_size", "ask_price", "ask_size",
-    ])
-    processed_count = processed_frame.count()
-    if processed_count == 0:
-        return False
-    shutil.rmtree(temporary_path, ignore_errors=True)
-    processed_frame.coalesce(1).write.mode("overwrite").parquet(
-        str(temporary_path)
-    )
-    part_files = sorted(temporary_path.glob("part-*.parquet"))
-    if len(part_files) != 1:
-        raise RuntimeError(
-            f"La consolidación de {run_id} generó {len(part_files)} archivos."
-        )
-    (DATA_DIRECTORY / "runs").mkdir(parents=True, exist_ok=True)
     temporary_file = DATA_DIRECTORY / "runs" / f".{final_path.name}.tmp"
-    shutil.copy2(part_files[0], temporary_file)
-    os.replace(temporary_file, final_path)
-    verified_count = spark.read.parquet(str(final_path)).count()
-    if verified_count != processed_count:
-        raise RuntimeError(
-            f"La verificación de {run_id} esperaba {processed_count} "
-            f"registros y obtuvo {verified_count}."
+    try:
+        processed_frame = spark.read.parquet(str(parts_path)).dropDuplicates([
+            "run_id", "timestamp", "symbol", "event_type", "price", "size",
+            "bid_price", "bid_size", "ask_price", "ask_size",
+        ])
+        shutil.rmtree(temporary_path, ignore_errors=True)
+        processed_frame.coalesce(1).write.mode("overwrite").parquet(
+            str(temporary_path)
         )
-    shutil.rmtree(temporary_path)
-    return True
+        part_files = sorted(temporary_path.glob("part-*.parquet"))
+        if len(part_files) != 1:
+            raise RuntimeError(
+                f"La consolidación de {run_id} generó {len(part_files)} archivos."
+            )
+        shutil.copy2(part_files[0], temporary_file)
+        os.replace(temporary_file, final_path)
+        shutil.rmtree(temporary_path)
+        shutil.rmtree(parts_path)
+        status_path.unlink(missing_ok=True)
+        return True
+    except Exception:
+        temporary_file.unlink(missing_ok=True)
+        status_path.write_text(
+            "Consolidación pendiente. Los fragmentos Parquet permanecen en "
+            f"`/app/data/spark/{run_id}_04_apache_spark_data.parquet.parts/`.",
+            encoding="utf-8",
+        )
+        raise
 
 def start_streaming(run_id: str, mode: str = "REPLAY") -> None:
     """Inicio Structured Streaming Kafka para un RUN sin duplicar queries."""
@@ -639,6 +675,7 @@ def start_streaming(run_id: str, mode: str = "REPLAY") -> None:
     checkpoint_path = str(DATA_DIRECTORY / "spark" / f"{run_id}_04_spark_checkpoint")
     query_started_at = datetime.now(timezone.utc)
     try:
+        initialize_parquet_output(run_id, spark)
         events = (
             spark.readStream.format("kafka")
             .option("kafka.bootstrap.servers", KAFKA_BOOTSTRAP_SERVERS)
