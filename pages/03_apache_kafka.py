@@ -11,16 +11,16 @@ from kafka.errors import KafkaError
 from pathlib import Path
 from typing import Any
 
+_KAFKA_LOCK = threading.RLock()
+_KAFKA_PRODUCER: KafkaProducer | None = None
+_RUN_CONNECTIONS: set[str] = set()
+_RUN_STATS: dict[str, dict[str, Any]] = {}
 KAFKA_BOOTSTRAP_SERVERS = os.getenv(
     "KAFKA_BOOTSTRAP_SERVERS",
     "kafka:9092",
 )
 KAFKA_RETRY_BACKOFF_SECONDS = 2
 KAFKA_TOPIC = os.getenv("KAFKA_TOPIC", "iapd-market-events")
-_KAFKA_LOCK = threading.RLock()
-_KAFKA_PRODUCER: KafkaProducer | None = None
-_RUN_CONNECTIONS: set[str] = set()
-_RUN_STATS: dict[str, dict[str, Any]] = {}
 
 def close_producer() -> None:
     """Cierro el productor Kafka compartido cuando finaliza el proceso."""

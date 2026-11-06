@@ -20,6 +20,11 @@ from pathlib import Path
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
+_LATEST_METADATA_CACHE: dict[
+    str,
+    tuple[int, int, dict[str, Any] | None],
+] = {}
+
 ALPACA_API_KEY = "PKJQMFWVYH6PEXUKK34QAABOUW"
 ALPACA_SECRET_KEY = "5xBskyt9ofjunrzuCa77RDwjP5n5fGCDDv6XrfxqzAyk"
 ALL_MARKET_SYMBOL = "*"
@@ -1587,8 +1592,3 @@ def to_number(value: Any) -> float | None:
         return float(value) if value is not None else None
     except (TypeError, ValueError):
         return None
-
-_LATEST_METADATA_CACHE: dict[
-    str,
-    tuple[int, int, dict[str, Any] | None],
-] = {}

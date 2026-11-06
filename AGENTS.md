@@ -25,9 +25,18 @@ de cada elemento.
 Todas las listas se escriben inline, con todos sus elementos en una sola línea
 por lista; no se divide un elemento por línea, salvo indicación explícita.
 
-Las constantes y variables definidas en el ámbito del módulo se ordenan
-alfabéticamente dentro de sus respectivos bloques. Las variables locales se
-ordenan según la secuencia lógica de la operación para conservar la claridad.
+Las constantes y variables globales de todos los módulos Python se ordenan
+dentro de sus respectivos bloques con esta regla:
+
+- Primero se agrupan los identificadores que comienzan con `_`.
+- Dentro de ese grupo se ordenan alfabéticamente ignorando el `_` inicial.
+- Después se agrupan los identificadores sin `_` inicial.
+- Dentro de ese grupo se ordenan alfabéticamente.
+
+Las variables locales conservan el orden lógico de ejecución para mantener las
+dependencias y la claridad de cada operación. Las variables globales que forman
+parte de una secuencia ejecutable de inicialización conservan el orden necesario
+para no alterar sus dependencias.
 
 ## 3. Organización de imports
 

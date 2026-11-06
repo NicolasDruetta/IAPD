@@ -12,9 +12,8 @@ from types import ModuleType
 from typing import Any
 from zoneinfo import ZoneInfo
 
-DATA_DIRECTORY = Path(__file__).parent / "data"
-
 CONSOLE_TRANSFER_BATCH_SIZE = 256
+DATA_DIRECTORY = Path(__file__).parent / "data"
 PRESENTATION_TIMEZONE = ZoneInfo("America/Argentina/Cordoba")
 SYMBOL_OPTIONS = {
     "Todos los símbolos del S&P 500": {

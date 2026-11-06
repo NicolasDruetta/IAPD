@@ -23,18 +23,6 @@ from pyspark.sql.functions import (
 )
 from pyspark.sql.types import DoubleType, StringType, StructField, StructType
 
-KAFKA_BOOTSTRAP_SERVERS = os.getenv(
-    "KAFKA_BOOTSTRAP_SERVERS",
-    "kafka:9092",
-)
-KAFKA_TOPIC = os.getenv("KAFKA_TOPIC", "iapd-market-events")
-SPARK_APP_NAME = "Apache Big Data Lab"
-SPARK_BLOCK_MANAGER_PORT = os.getenv("SPARK_BLOCK_MANAGER_PORT", "4042")
-SPARK_DRIVER_HOST = os.getenv("SPARK_DRIVER_HOST", "spark-driver")
-SPARK_DRIVER_PORT = os.getenv("SPARK_DRIVER_PORT", "4041")
-SPARK_MASTER = os.getenv("SPARK_MASTER_URL", "spark://spark-master:7077")
-SPARK_MASTER_UI_URL = os.getenv("SPARK_MASTER_UI_URL", "http://spark-master:8080")
-SPARK_UI_URL = os.getenv("SPARK_UI_URL", "http://localhost:4040")
 _RUN_STATES: dict[str, dict[str, Any]] = {}
 _SPARK_ERROR: str | None = None
 _SPARK_LOCK = threading.RLock()
@@ -56,6 +44,18 @@ EVENT_SCHEMA = StructType(
         StructField("mode", StringType(), True),
     ]
 )
+KAFKA_BOOTSTRAP_SERVERS = os.getenv(
+    "KAFKA_BOOTSTRAP_SERVERS",
+    "kafka:9092",
+)
+KAFKA_TOPIC = os.getenv("KAFKA_TOPIC", "iapd-market-events")
+SPARK_APP_NAME = "Apache Big Data Lab"
+SPARK_BLOCK_MANAGER_PORT = os.getenv("SPARK_BLOCK_MANAGER_PORT", "4042")
+SPARK_DRIVER_HOST = os.getenv("SPARK_DRIVER_HOST", "spark-driver")
+SPARK_DRIVER_PORT = os.getenv("SPARK_DRIVER_PORT", "4041")
+SPARK_MASTER = os.getenv("SPARK_MASTER_URL", "spark://spark-master:7077")
+SPARK_MASTER_UI_URL = os.getenv("SPARK_MASTER_UI_URL", "http://spark-master:8080")
+SPARK_UI_URL = os.getenv("SPARK_UI_URL", "http://localhost:4040")
 
 def get_checkpoint(run_id: str | None) -> dict[str, Any] | None:
     """Leo el checkpoint estructurado de un RUN."""

@@ -9,7 +9,6 @@ from datetime import timezone
 from typing import Any
 
 _ACTIVE_SERVICE: Any = None
-HEARTBEAT_TIMEOUT_SECONDS = 900
 _KAFKA_MODULE: Any = None
 _MANAGER_LOCK = threading.RLock()
 _RUN_LOG_COUNTS: dict[str, int] = {}
@@ -17,6 +16,7 @@ _RUN_SEQUENCES: dict[str, int] = {}
 _SPARK_MODULE: Any = None
 _STREAMING_MODULE: Any = None
 _SUPERVISOR_THREAD: threading.Thread | None = None
+HEARTBEAT_TIMEOUT_SECONDS = 900
 
 def append_controller_log(
     run_id: str,
