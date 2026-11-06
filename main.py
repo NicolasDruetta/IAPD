@@ -5,7 +5,7 @@ import streamlit as st
 import sys
 import threading
 
-from datetime import datetime, timedelta, timezone, tzinfo
+from datetime import datetime, timezone, tzinfo
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -76,54 +76,17 @@ LOG_CONSOLE_COMPONENT = st.components.v2.component(
     ),
     isolate_styles=False,
     js="""
-    export default function ({ parentElement, data, setStateValue }) {
+    export default function ({ parentElement, data }) {
         const consoleElement = parentElement.querySelector("textarea");
-        const state = parentElement.__logConsoleState || {
-            appliedCursor: 0,
-            lastBatchId: null,
-            lastRequestedCursor: null,
-            runKey: null,
-        };
-        const sameRun = state.runKey === data.run_key;
-        if (!sameRun || data.reset) {
-            consoleElement.value = "";
-            state.appliedCursor = 0;
-            state.lastBatchId = null;
-            state.lastRequestedCursor = null;
-            state.runKey = data.run_key;
-        }
-        const lines = Array.isArray(data.lines) ? data.lines : [];
-        const cursorStart = Number(data.cursor_start || 0);
-        const cursorEnd = Number(data.cursor_end || cursorStart);
-        const isNewBatch = data.batch_id !== state.lastBatchId;
-        const scrollToBottom = () => {
+        const text = (Array.isArray(data.lines) ? data.lines : [])
+            .slice(-200).join("\\n");
+        if (consoleElement.value !== text) {
+            consoleElement.value = text;
             consoleElement.scrollTop = consoleElement.scrollHeight;
-        };
-        if (isNewBatch && cursorStart === state.appliedCursor) {
-            if (data.initial_load) {
-                consoleElement.value = lines.join("\\n");
-            } else if (!data.placeholder && lines.length > 0) {
-                const separator = consoleElement.value.length > 0 ? "\\n" : "";
-                const suffix = separator + lines.join("\\n");
-                consoleElement.value += suffix;
-            }
-            const visibleLines = consoleElement.value.split("\\n");
-            if (visibleLines.length > 200) {
-                consoleElement.value = visibleLines.slice(-200).join("\\n");
-            }
-            state.appliedCursor = cursorEnd;
-            state.lastBatchId = data.batch_id;
-            scrollToBottom();
-            requestAnimationFrame(scrollToBottom);
+            requestAnimationFrame(() => {
+                consoleElement.scrollTop = consoleElement.scrollHeight;
+            });
         }
-        if (
-            data.has_more
-            && state.lastRequestedCursor !== state.appliedCursor
-        ) {
-            state.lastRequestedCursor = state.appliedCursor;
-            setStateValue("need_more", state.appliedCursor);
-        }
-        parentElement.__logConsoleState = state;
         return () => {};
     }
     """,
@@ -239,94 +202,15 @@ def format_elapsed_time(
     minutes, seconds = divmod(remainder, 60)
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
-def get_activity_chart_rows(
-    spark_rows: list[dict[str, Any]],
-) -> tuple[list[dict[str, Any]], int]:
-    """Transformo la serie agregada por Spark a la escala visual."""
-
-    if not spark_rows:
-        return [], 1
-    rows_by_second: dict[str, dict[str, int]] = {}
-    for row in spark_rows:
-        timestamp = datetime.fromisoformat(
-            str(row["second"]).replace("Z", "+00:00")
-        )
-        if timestamp.tzinfo is None:
-            timestamp = timestamp.replace(tzinfo=timezone.utc)
-        second = timestamp.astimezone(PRESENTATION_TIMEZONE).isoformat()
-        second_counts = rows_by_second.setdefault(second, {})
-        event_type = str(row["event_type"])
-        second_counts[event_type] = second_counts.get(event_type, 0) + int(
-            row["events"]
-        )
-    first_second = datetime.fromisoformat(min(rows_by_second))
-    last_second = datetime.fromisoformat(max(rows_by_second))
-    elapsed_seconds = (last_second - first_second).total_seconds()
-    if elapsed_seconds <= 30:
-        interval_seconds = 1
-    elif elapsed_seconds <= 120:
-        interval_seconds = 5
-    elif elapsed_seconds <= 900:
-        interval_seconds = 30
-    elif elapsed_seconds <= 3600:
-        interval_seconds = 60
-    else:
-        interval_seconds = 300
-    grouped_counts: dict[str, dict[str, int]] = {}
-    for second, event_counts in rows_by_second.items():
-        timestamp = datetime.fromisoformat(second)
-        seconds_from_midnight = (
-            timestamp.hour * 3600
-            + timestamp.minute * 60
-            + timestamp.second
-        )
-        bucket_timestamp = timestamp - timedelta(
-            seconds=seconds_from_midnight % interval_seconds,
-        )
-        bucket = bucket_timestamp.isoformat()
-        bucket_counts = grouped_counts.setdefault(bucket, {})
-        for event_type, count in event_counts.items():
-            bucket_counts[event_type] = (
-                bucket_counts.get(event_type, 0) + count
-            )
-    return [
-        {
-            "event_type": event_type,
-            "events": count,
-            "second": second,
-        }
-        for second in sorted(grouped_counts)
-        for event_type, count in sorted(grouped_counts[second].items())
-    ], interval_seconds
 
 def get_console_state(console_id: str, run_id: str | None) -> dict[str, Any]:
-    """Obtengo el cursor visual independiente de cada consola y RUN."""
+    """Mantengo el contador visual independiente de cada consola y RUN."""
 
-    state_key = run_id or "empty"
-    states = st.session_state.console_states
-    state = states.setdefault(
-        console_id,
-        {
-            "cursor": 0,
-            "line_number": 0,
-            "persisted": False,
-            "run_key": state_key,
-            "signature": None,
-            "initialized": False,
-        },
-    )
-    if state["run_key"] != state_key:
+    key = run_id or "empty"
+    state = st.session_state.console_states.setdefault(console_id, {})
+    if state.get("run_key") != key:
         state.clear()
-        state.update(
-            {
-                "cursor": 0,
-                "line_number": 0,
-                "persisted": False,
-                "run_key": state_key,
-                "signature": None,
-                "initialized": False,
-            }
-        )
+        state.update({"run_key": key, "line_number": 0})
     return state
 
 def initialize_state(system_theme: dict[str, Any] | None = None) -> None:
@@ -364,8 +248,6 @@ def initialize_state(system_theme: dict[str, Any] | None = None) -> None:
         st.session_state.manual_stop_status = False
     if "console_states" not in st.session_state:
         st.session_state.console_states = {}
-    if "activity_chart_states" not in st.session_state:
-        st.session_state.activity_chart_states = {}
 
 def load_custom_css() -> None:
     """Cargo los estilos visuales administrados en el archivo del proyecto."""
@@ -392,7 +274,7 @@ def load_page_module(module_name: str) -> ModuleType:
             lambda: None,
         )()
         if active_service is None and module_name == "02_alpaca_stream":
-            controller_module = sys.modules.get("01_controller")
+            controller_module = sys.modules.get("01_python_controller")
             active_service = getattr(
                 controller_module,
                 "get_active_service",
@@ -442,7 +324,6 @@ def _has_active_spark_query(module: ModuleType) -> bool:
 def mark_start_pending() -> None:
     """Marco que el usuario acaba de solicitar el inicio."""
 
-    st.session_state.activity_chart_states.clear()
     st.session_state.manual_stop_status = False
     st.session_state.start_requested = True
     st.session_state.start_pending = True
@@ -503,25 +384,10 @@ def render_log_console(
 ) -> None:
     """Muestro y actualizo incrementalmente una consola de registros."""
 
-    run_key = st.session_state.console_states[console_id]["run_key"]
-    payload = {
-        "batch_id": f"{run_key}:{cursor_end}",
-        "cursor_end": cursor_end,
-        "cursor_start": cursor_start,
-        "follow": False,
-        "has_more": has_more,
-        "initial_load": initial_load,
-        "lines": lines,
-        "placeholder": placeholder,
-        "reset": (initial_load and cursor_start == 0) or resync,
-        "run_key": run_key,
-    }
     LOG_CONSOLE_COMPONENT(
-        data=payload,
-        default={"need_more": None},
+        data={"lines": lines},
         height=250,
         key=console_id,
-        on_need_more_change=lambda: None,
     )
 
 def get_console_buffer_view(
@@ -531,180 +397,14 @@ def get_console_buffer_view(
     console_state: dict[str, Any],
     clear_consoles: bool,
 ) -> tuple[list[str], int, int, bool, bool]:
-    """Obtengo la vista incremental desde el buffer visual acotado."""
+    """Leo solamente los 200 últimos registros del TXT de cada consola."""
 
-    cursor_start = int(console_state["cursor"])
-    initial_load = not console_state["initialized"]
     if clear_consoles or run_id is None or console_path is None:
-        console_state["initialized"] = True
-        if clear_consoles:
-            console_state["cursor"] = 0
-            console_state["line_number"] = 0
-        return [], 0 if clear_consoles else cursor_start, 0 if clear_consoles else cursor_start, initial_load, False
-    lines, cursor_end, total, resync = functions.read_console_buffer(
-        run_id,
-        console_name,
-        console_path,
-        cursor_start,
-        initial_load,
-    )
-    console_state["initialized"] = True
-    console_state["cursor"] = cursor_end
+        console_state["line_number"] = 0
+        return [], 0, 0, True, False
+    lines, _, total = functions.read_console_tail(console_path, 200)
     console_state["line_number"] = total
-    display_cursor_start = 0 if initial_load or resync else cursor_start
-    return lines, display_cursor_start, cursor_end, initial_load, resync
-
-def render_activity_chart(
-    rows: list[dict[str, Any]],
-    interval_seconds: int,
-) -> None:
-    """Muestro la actividad bursátil con escala temporal adaptativa."""
-
-    dark_mode = bool(st.session_state.get("dark_mode", False))
-    chart_border_color = "#3b404d" if dark_mode else "#dfe3eb"
-    chart_text_color = "#ffffff" if dark_mode else "#2f3342"
-    events_encoding = {
-        "field": "events",
-        "title": "Cantidad de eventos",
-        "type": "quantitative",
-    }
-    if not rows:
-        events_encoding["axis"] = {"values": [0, 1]}
-        events_encoding["scale"] = {"domain": [0, 1]}
-    chart_spec = {
-        "background": "transparent",
-        "data": {"values": rows},
-        "height": 360,
-        "config": {
-            "axis": {
-                "domainColor": chart_border_color,
-                "gridColor": chart_border_color,
-                "labelColor": chart_text_color,
-                "titleColor": chart_text_color,
-                "tickColor": chart_border_color,
-            },
-            "legend": {
-                "labelColor": chart_text_color,
-                "titleColor": chart_text_color,
-            },
-            "view": {"stroke": chart_border_color},
-        },
-        "mark": {"point": True, "type": "line"},
-        "encoding": {
-            "color": {
-                "field": "event_type",
-                "title": "Tipo",
-                "type": "nominal",
-            },
-            "x": {
-                "axis": {
-                    "format": (
-                        "%H:%M:%S"
-                        if interval_seconds < 60
-                        else "%H:%M"
-                    ),
-                    "labelAngle": -45,
-                    "labelOverlap": "greedy",
-                },
-                "field": "second",
-                "title": "Fecha y hora bursátil",
-                "type": "temporal",
-            },
-            "y": events_encoding,
-        },
-    }
-    st.vega_lite_chart(
-        spec=chart_spec,
-        use_container_width=True,
-    )
-
-def render_volume_chart(rows: list[dict[str, Any]]) -> None:
-    """Muestro el gráfico con el acumulado confirmado por Spark."""
-
-    chart_rows = [
-        {
-            "symbol": row["symbol"],
-            "volume": row["total_volume"],
-            "volume_label": f"{row['total_volume']:,.0f}",
-        }
-        for row in rows
-    ]
-    dark_mode = bool(st.session_state.get("dark_mode", False))
-    chart_border_color = "#3b404d" if dark_mode else "#dfe3eb"
-    chart_text_color = "#ffffff" if dark_mode else "#2f3342"
-    volume_encoding = {
-        "field": "volume",
-        "title": "Volumen negociado (acciones)",
-        "type": "quantitative",
-    }
-    if not chart_rows:
-        volume_encoding["axis"] = {"values": [0, 1]}
-        volume_encoding["scale"] = {"domain": [0, 1]}
-    chart_spec = {
-        "background": "transparent",
-        "data": {"values": chart_rows},
-        "height": 360,
-        "config": {
-            "axis": {
-                "domainColor": chart_border_color,
-                "gridColor": chart_border_color,
-                "labelColor": chart_text_color,
-                "titleColor": chart_text_color,
-                "tickColor": chart_border_color,
-            },
-            "text": {"color": chart_text_color},
-            "view": {"stroke": chart_border_color},
-        },
-        "layer": [
-            {
-                "mark": {"type": "bar", "cornerRadiusEnd": 4},
-                "encoding": {
-                    "y": {
-                        "field": "symbol",
-                        "type": "nominal",
-                        "sort": {
-                            "field": "volume",
-                            "order": "descending",
-                        },
-                        "title": "Acción",
-                    },
-                    "x": {
-                        **volume_encoding,
-                    },
-                },
-            },
-            {
-                "mark": {
-                    "type": "text",
-                    "align": "left",
-                    "color": chart_text_color,
-                    "dx": 4,
-                },
-                "encoding": {
-                    "y": {
-                        "field": "symbol",
-                        "type": "nominal",
-                        "sort": {
-                            "field": "volume",
-                            "order": "descending",
-                        },
-                    },
-                    "x": {
-                        "field": "volume",
-                        "type": "quantitative",
-                    },
-                    "text": {
-                        "field": "volume_label",
-                        "type": "nominal",
-                    },
-                },
-            },
-        ],
-    }
-    st.vega_lite_chart(
-        spec=chart_spec,
-        use_container_width=True,
-    )
+    return lines, 0, total, True, False
 
 st.set_page_config(
     page_title="Apache Big Data Lab",
@@ -764,7 +464,7 @@ st.divider()
 def render_streaming() -> None:
     """Muestro las consolas de Alpaca y el estado de Spark."""
 
-    controller_module = load_page_module("01_controller")
+    controller_module = load_page_module("01_python_controller")
     streaming_module = load_page_module("02_alpaca_stream")
     kafka_module = load_page_module("03_apache_kafka")
     spark_module = load_page_module("04_apache_spark")
@@ -793,7 +493,7 @@ def render_streaming() -> None:
         ]
         if tuple(manual_symbols) == MAGNIFICENT_7_SYMBOLS:
             default_option = SYMBOL_OPTIONS[1]
-    st.subheader("Símbolos bursátiles")
+    st.subheader("Símbolos bursátiles a analizar")
     symbols_col, actions_col = st.columns(
         [1, 1],
         gap="small",
@@ -919,8 +619,6 @@ def render_streaming() -> None:
         st.session_state.manual_stop_status = True
         st.session_state.start_requested = False
         clear_consoles = False
-        for console_state in st.session_state.console_states.values():
-            console_state["initialized"] = False
         run_id = snapshot.get("run_id")
         controller_module.stop_active_run("manual_stop")
         snapshot = controller_module.get_run_snapshot()
@@ -1244,7 +942,6 @@ def render_streaming() -> None:
             for line in kafka_records
         ]
         kafka_cursor_end = next_cursor
-        kafka_state["initialized"] = True
         is_placeholder = not kafka_lines and kafka_state["line_number"] == 0
         if is_placeholder:
             kafka_lines = ["Kafka | esperando eventos para publicar."]
@@ -1294,7 +991,6 @@ def render_streaming() -> None:
             )
         )
         spark_lines = [format_presentation_log_line(line) for line in spark_records]
-        spark_state["initialized"] = True
         is_placeholder = not spark_lines and spark_state["line_number"] == 0
         if is_placeholder:
             spark_lines = ["Spark | esperando eventos bursátiles."]
@@ -1341,6 +1037,7 @@ def render_streaming() -> None:
         st.session_state.start_requested = False
 
     st.divider()
+    st.subheader("5. Gráficos en vivo (Streamlit)")
     st.write("")
     
     if last_execution_notice:
@@ -1376,8 +1073,9 @@ def render_streaming() -> None:
         with data_col:
             st.caption("Cantidad de datos descargados")
             st.text(str(snapshot.get("event_count", 0)))
+    charts_module = load_page_module("05_streamlit_charts")
     top_volume = spark_result.get("top_volume", [])
-    activity_rows, activity_interval = get_activity_chart_rows(
+    activity_rows, activity_interval = charts_module.get_activity_chart_rows(
         spark_result.get("activity_rows", []),
     )
     volume_column, activity_column = st.columns(
@@ -1387,10 +1085,10 @@ def render_streaming() -> None:
     )
     with volume_column:
         st.subheader("Top 10 acciones por volumen negociado")
-        render_volume_chart(top_volume)
+        charts_module.render_volume_chart(top_volume)
     with activity_column:
         st.subheader("Actividad bursátil en el tiempo")
-        render_activity_chart(activity_rows, activity_interval)
+        charts_module.render_activity_chart(activity_rows, activity_interval)
 
 render_streaming_fragment = st.fragment(render_streaming, run_every="5s")
 render_streaming_fragment()

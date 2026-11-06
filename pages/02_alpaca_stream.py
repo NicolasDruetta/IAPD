@@ -214,7 +214,6 @@ class AlpacaStreamingService:
         self._api_key = api_key
         self._api_secret = api_secret
         self._run_id = run_id
-        functions.discard_console_buffers_except(run_id)
         self._run_stem = run_stem
         self._symbols = symbols
         self._universe_metadata = universe_metadata

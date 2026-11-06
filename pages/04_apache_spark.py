@@ -512,286 +512,107 @@ def read_spark_api_from_master(path: str) -> Any:
         return json.load(response)
 
 def process_batch(run_id: str, data_frame: DataFrame, batch_id: int) -> None:
-    """Transformo un micro-lote, persisto Parquet y actualizo el checkpoint."""
+    """Proceso un microbatch distribuido y persisto sus resultados."""
 
-    functions.append_console_log(
-        run_id,
-        "spark",
-        f"BATCH | run_id={run_id} | batch_id={batch_id} | estado=iniciado",
-    )
-    functions.append_console_log(
-        run_id,
-        "spark",
-        f"BATCH | run_id={run_id} | batch_id={batch_id} | operación=persist_input | estado=iniciada",
-    )
-    try:
-        input_frame = data_frame.persist()
-    except Exception as error:
-        functions.append_console_log(
-            run_id,
-            "spark",
-            f"ERROR | batch_id={batch_id} | operación=persist_input | error={error}",
-        )
-        raise
-    functions.append_console_log(
-        run_id,
-        "spark",
-        f"BATCH | run_id={run_id} | batch_id={batch_id} | operación=persist_input | estado=completada",
-    )
-    functions.append_console_log(
-        run_id,
-        "spark",
-        f"BATCH | run_id={run_id} | batch_id={batch_id} | operación=count_input | estado=iniciada",
-    )
+    input_frame = data_frame.persist()
+    processed_frame = None
     try:
         input_count = input_frame.count()
-    except Exception as error:
-        functions.append_console_log(
-            run_id,
-            "spark",
-            f"ERROR | batch_id={batch_id} | operación=count_input | error={error}",
+        if not input_count:
+            return
+        valid_frame = input_frame.where(
+            col("run_id").isNotNull()
+            & col("timestamp").isNotNull()
+            & col("symbol").isNotNull()
+            & col("event_type").isin("TRADE", "QUOTE")
         )
-        raise
-    functions.append_console_log(
-        run_id,
-        "spark",
-        f"BATCH | run_id={run_id} | batch_id={batch_id} | operación=count_input | estado=completada | registros={input_count}",
-    )
-    if input_count == 0:
-        input_frame.unpersist()
-        return
-    with _SPARK_LOCK:
-        state = _RUN_STATES[run_id]
-        state["input_events"] += input_count
-    functions.append_console_log(
-        run_id,
-        "spark",
-        f"ETL | Kafka | lote_recibido={batch_id} | tópico={KAFKA_TOPIC}",
-    )
-    valid_frame = input_frame.where(
-        col("run_id").isNotNull()
-        & col("timestamp").isNotNull()
-        & col("symbol").isNotNull()
-        & col("event_type").isin("TRADE", "QUOTE")
-    )
-    functions.append_console_log(
-        run_id,
-        "spark",
-        f"BATCH | run_id={run_id} | batch_id={batch_id} | operación=count_valid | estado=iniciada",
-    )
-    try:
         valid_count = valid_frame.count()
-    except Exception as error:
-        functions.append_console_log(
-            run_id,
-            "spark",
-            f"ERROR | batch_id={batch_id} | operación=count_valid | error={error}",
-        )
-        raise
-    functions.append_console_log(
-        run_id,
-        "spark",
-        f"BATCH | run_id={run_id} | batch_id={batch_id} | operación=count_valid | estado=completada | registros={valid_count}",
-    )
-    processed_frame = valid_frame.dropDuplicates(
-        [
-            "run_id",
-            "timestamp",
-            "symbol",
-            "event_type",
-            "price",
-            "size",
-            "bid_price",
-            "bid_size",
-            "ask_price",
-            "ask_size",
-        ]
-    ).persist()
-    functions.append_console_log(
-        run_id,
-        "spark",
-        f"BATCH | run_id={run_id} | batch_id={batch_id} | operación=count_processed | estado=iniciada",
-    )
-    try:
+        processed_frame = valid_frame.dropDuplicates([
+            "run_id", "timestamp", "symbol", "event_type", "price", "size",
+            "bid_price", "bid_size", "ask_price", "ask_size",
+        ]).persist()
         processed_count = processed_frame.count()
-    except Exception as error:
-        functions.append_console_log(
-            run_id,
-            "spark",
-            f"ERROR | batch_id={batch_id} | operación=count_processed | error={error}",
+        if not processed_count:
+            return
+        parquet_path = str(
+            DATA_DIRECTORY / "spark" / f"{run_id}_04_spark_data.parquet.parts"
         )
-        raise
-    functions.append_console_log(
-        run_id,
-        "spark",
-        f"BATCH | run_id={run_id} | batch_id={batch_id} | operación=count_processed | estado=completada | registros={processed_count}",
-    )
-    invalid_count = input_count - valid_count
-    duplicate_count = valid_count - processed_count
-    if processed_count == 0:
-        input_frame.unpersist()
-        processed_frame.unpersist()
-        functions.append_console_log(
-            run_id,
-            "spark",
-            f"DATAFRAME | batch_id={batch_id} | registros_entrada={input_count} | validos=0 | invalidos={invalid_count} | duplicados_eliminados={duplicate_count}",
-        )
-        return
-    parquet_path = str(
-        DATA_DIRECTORY / "spark" / f"{run_id}_04_spark_data.parquet.parts"
-    )
-    functions.append_console_log(
-        run_id,
-        "spark",
-        f"BATCH | run_id={run_id} | batch_id={batch_id} | operación=write_parquet | estado=iniciada",
-    )
-    try:
         processed_frame.write.mode("append").parquet(parquet_path)
-    except Exception as error:
-        functions.append_console_log(
-            run_id,
-            "spark",
-            f"ERROR | batch_id={batch_id} | operación=write_parquet | error={error}",
-        )
-        raise
-    functions.append_console_log(
-        run_id,
-        "spark",
-        f"BATCH | run_id={run_id} | batch_id={batch_id} | operación=write_parquet | estado=completada",
-    )
-    grouped = (
-        processed_frame.groupBy("symbol")
-        .agg(
+        grouped = processed_frame.groupBy("symbol").agg(
             count(when(col("event_type") == "TRADE", True)).alias("operations"),
             count(when(col("event_type") == "QUOTE", True)).alias("quotes"),
             sum_rows(when(col("event_type") == "TRADE", col("size"))).alias("total_volume"),
-        )
-        .orderBy("symbol")
-    )
-    functions.append_console_log(
-        run_id,
-        "spark",
-        f"BATCH | run_id={run_id} | batch_id={batch_id} | operación=collect_grouped | estado=iniciada",
-    )
-    try:
+        ).orderBy("symbol")
         result_rows = [row.asDict() for row in grouped.collect()]
-    except Exception as error:
-        functions.append_console_log(
-            run_id,
-            "spark",
-            f"ERROR | batch_id={batch_id} | operación=collect_grouped | error={error}",
-        )
-        raise
-    functions.append_console_log(
-        run_id,
-        "spark",
-        f"BATCH | run_id={run_id} | batch_id={batch_id} | operación=collect_grouped | estado=completada | filas={len(result_rows)}",
-    )
-    activity_grouped = (
-        processed_frame
-        .withColumn(
+        activity_frame = processed_frame.withColumn(
             "second",
-            date_trunc(
-                "second",
-                regexp_replace(
-                    col("timestamp"),
-                    r"(\.\d{6})\d+(Z)$",
-                    r"$1$2",
-                ).cast("timestamp"),
-            ),
-        )
-        .groupBy("second", "event_type")
-        .agg(count("*").alias("events"))
-        .orderBy("second", "event_type")
-    )
-    functions.append_console_log(
-        run_id,
-        "spark",
-        f"BATCH | run_id={run_id} | batch_id={batch_id} | operación=collect_activity | estado=iniciada",
-    )
-    try:
+            date_trunc("second", regexp_replace(
+                col("timestamp"), r"(\.\d{6})\d+(Z)$", r"$1$2"
+            ).cast("timestamp")),
+        ).where(col("second").isNotNull())
         activity_rows = [
-            {
-                "event_type": row["event_type"],
-                "events": int(row["events"]),
-                "second": row["second"].isoformat(),
-            }
-            for row in activity_grouped.collect()
+            {"event_type": row["event_type"], "events": int(row["events"]),
+             "second": row["second"].isoformat()}
+            for row in activity_frame.groupBy("second", "event_type")
+            .agg(count("*").alias("events"))
+            .orderBy("second", "event_type").collect()
         ]
+        with _SPARK_LOCK:
+            state = _RUN_STATES[run_id]
+            state["input_events"] += input_count
+            for row in result_rows:
+                symbol = str(row["symbol"])
+                state["trade_totals"][symbol] = (
+                    state["trade_totals"].get(symbol, 0.0)
+                    + float(row["total_volume"] or 0)
+                )
+            state["processed_events"] += processed_count
+            for event_type, field in (("TRADE", "operations"), ("QUOTE", "quotes")):
+                state["processed_events_by_type"][event_type] += sum(
+                    int(row[field] or 0) for row in result_rows
+                )
+            state["batch_number"] += 1
+            state["rows"] = result_rows
+            for row in activity_rows:
+                key = f"{row['second']}|{row['event_type']}"
+                previous = state["activity_rows"].get(key, {}).get("events", 0)
+                state["activity_rows"][key] = {**row, "events": previous + row["events"]}
+            state["status"] = "completado"
+            state["checkpoint"] = {
+                "input_events": state["input_events"],
+                "run_id": run_id,
+                "processed_events": state["processed_events"],
+                "batch_number": state["batch_number"],
+                "trade_totals": dict(state["trade_totals"]),
+                "processed_events_by_type": dict(state["processed_events_by_type"]),
+                "activity_rows": list(state["activity_rows"].values()),
+            }
+            checkpoint = dict(state["checkpoint"])
+            totals = dict(state["trade_totals"])
+        # Conservamos el registro canónico usado para recuperar gráficos después de F5.
+        info_path = DATA_DIRECTORY / "runs" / f"{run_id}_00_run_info.jsonl"
+        with info_path.open("a", encoding="utf-8") as info_file:
+            info_file.write(json.dumps(
+                {"record_type": "spark_checkpoint", **checkpoint}, ensure_ascii=False
+            ) + "\n")
+            info_file.flush()
+            os.fsync(info_file.fileno())
+        for message in (
+            f"DATAFRAME | batch_id={batch_id} | registros_entrada={input_count} | validos={valid_count} | invalidos={input_count - valid_count} | duplicados_eliminados={valid_count - processed_count}",
+            f"PARQUET | batch_id={batch_id} | ruta={parquet_path} | registros={processed_count}",
+            f"EDA | batch_id={batch_id} | simbolos={len(result_rows)} | operaciones={checkpoint['processed_events_by_type']['TRADE']} | cotizaciones={checkpoint['processed_events_by_type']['QUOTE']}",
+            f"EDA | batch_id={batch_id} | volumen_trade_por_accion={top_volume_rows(totals)}",
+        ):
+            functions.append_console_log(run_id, "spark", message)
     except Exception as error:
         functions.append_console_log(
-            run_id,
-            "spark",
-            f"ERROR | batch_id={batch_id} | actividad_temporal={error}",
+            run_id, "spark", f"ERROR | batch_id={batch_id} | procesamiento={error}"
         )
         raise
-    functions.append_console_log(
-        run_id,
-        "spark",
-        f"BATCH | run_id={run_id} | batch_id={batch_id} | operación=collect_activity | estado=completada | filas={len(activity_rows)}",
-    )
-    with _SPARK_LOCK:
-        state = _RUN_STATES[run_id]
-        for row in result_rows:
-            symbol = str(row["symbol"])
-            state["trade_totals"][symbol] = state["trade_totals"].get(symbol, 0.0) + float(row["total_volume"] or 0)
-        state["processed_events"] += processed_count
-        state["processed_events_by_type"]["TRADE"] += sum(
-            int(row["operations"] or 0) for row in result_rows
-        )
-        state["processed_events_by_type"]["QUOTE"] += sum(
-            int(row["quotes"] or 0) for row in result_rows
-        )
-        state["batch_number"] += 1
-        state["rows"] = result_rows
-        for row in activity_rows:
-            activity_key = f"{row['second']}|{row['event_type']}"
-            state["activity_rows"][activity_key] = {
-                "event_type": row["event_type"],
-                "events": state["activity_rows"].get(activity_key, {}).get(
-                    "events",
-                    0,
-                ) + row["events"],
-                "second": row["second"],
-            }
-        state["status"] = "completado"
-        top_rows = top_volume_rows(state["trade_totals"])
-        state["logs"] = [
-            f"DATAFRAME | batch_id={batch_id} | esquema={processed_frame.schema.simpleString()}",
-            f"DATAFRAME | batch_id={batch_id} | registros_entrada={input_count} | validos={valid_count} | invalidos={invalid_count} | duplicados_eliminados={duplicate_count}",
-            f"ETL | batch_id={batch_id} | registros_procesados={processed_count} | transformacion=limpieza_deduplicacion_agrupacion",
-            f"PARQUET | batch_id={batch_id} | ruta={parquet_path} | registros={processed_count}",
-            f"EDA | batch_id={batch_id} | simbolos={len(result_rows)} | operaciones={state['processed_events_by_type']['TRADE']} | cotizaciones={state['processed_events_by_type']['QUOTE']}",
-            f"EDA | batch_id={batch_id} | agrupacion_simbolo_tipo={result_rows[:10]}",
-            f"EDA | batch_id={batch_id} | volumen_trade_por_accion={top_rows}",
-        ]
-        state["checkpoint"] = {
-            "input_events": state["input_events"],
-            "run_id": run_id,
-            "processed_events": state["processed_events"],
-            "batch_number": state["batch_number"],
-            "trade_totals": dict(state["trade_totals"]),
-            "processed_events_by_type": dict(state["processed_events_by_type"]),
-            "activity_rows": list(state["activity_rows"].values()),
-        }
-        run_info_path = DATA_DIRECTORY / "runs" / f"{run_id}_00_run_info.jsonl"
-        with run_info_path.open("a", encoding="utf-8") as run_info_file:
-            run_info_file.write(
-                json.dumps(
-                    {
-                        "record_type": "spark_checkpoint",
-                        **state["checkpoint"],
-                    },
-                    ensure_ascii=False,
-                )
-                + "\n"
-            )
-            run_info_file.flush()
-            os.fsync(run_info_file.fileno())
-    input_frame.unpersist()
-    processed_frame.unpersist()
-    for line in state["logs"]:
-        functions.append_console_log(run_id, "spark", line)
+    finally:
+        input_frame.unpersist()
+        if processed_frame is not None:
+            processed_frame.unpersist()
 
 def consolidate_parquet(run_id: str) -> bool:
     """Consolido los archivos Parquet temporales en un único archivo final."""

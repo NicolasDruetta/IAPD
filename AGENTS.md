@@ -58,10 +58,11 @@ Streamlit. Las funcionalidades equivalentes se expresan mediante funciones
 convencionales y llamadas explícitas.
 
 Cada archivo de `pages/` contiene exclusivamente funciones relacionadas con su
-propia tecnología o funcionalidad. Las funciones comunes y reutilizables se
-ubican en `main.py`.
+propia tecnología o funcionalidad. Las funciones comunes de logs y archivos se ubican en `functions.py`.
+La presentación y los gráficos de Streamlit se ubican en `main.py` y
+`pages/05_streamlit_charts.py`, respectivamente.
 
-Los módulos de `pages/` reutilizan las funciones comunes definidas en `main.py`.
+Los módulos de procesamiento `01` a `04` no contienen interfaz Streamlit.
 El cargador del punto de entrada las proporciona al módulo especializado antes
 de ejecutarlo, sin ejecutar una segunda instancia del HTML ni de los elementos
 de Streamlit.
@@ -77,12 +78,12 @@ La documentación es breve, precisa y relacionada con la implementación.
 
 ## 7. Organización del código
 
-`main.py` centraliza el punto de entrada, el Home, la navegación, la interfaz
-de Streamlit, los controles, las tablas, los gráficos y las funciones
-compartidas.
+`main.py` centraliza el punto de entrada y la interfaz Streamlit.
+`pages/05_streamlit_charts.py` implementa exclusivamente los gráficos.
+`functions.py` centraliza la escritura y lectura compartida de logs.
 
-La carpeta `pages/` contiene el procesamiento específico de cada tecnología y
-no construye interfaces de Streamlit independientes.
+Los módulos `01` a `04` procesan datos sin interfaz. El módulo `05` contiene
+solo funciones de gráficos invocadas desde `main.py`.
 
 La carpeta `data/` contiene los datos de entrada y generados localmente,
 `outputs/` contiene los resultados generados y `assets/` contiene los recursos

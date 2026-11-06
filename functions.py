@@ -3,16 +3,10 @@ import os
 import re
 import threading
 
-from collections import deque
 from pathlib import Path
 
-_CONSOLE_BUFFER_LOCK = threading.RLock()
-_CONSOLE_BUFFERS: dict[tuple[str, str], deque[str]] = {}
-_CONSOLE_BUFFER_SEEDED: set[tuple[str, str]] = set()
-_CONSOLE_BUFFER_TOTALS: dict[tuple[str, str], int] = {}
 _CONSOLE_LOG_LOCK = threading.RLock()
 _CONSOLE_LOG_SEQUENCES: dict[tuple[str, str], int] = {}
-CONSOLE_BUFFER_SIZE = 200
 DATA_DIRECTORY = Path(__file__).parent / "data"
 
 def append_console_log(
@@ -46,114 +40,12 @@ def append_console_log(
             log_file.write(persisted_line + "\n")
             log_file.flush()
             os.fsync(log_file.fileno())
-        append_console_buffer(run_id, console_name, persisted_line)
-
-def append_console_buffer(
-    run_id: str,
-    console_name: str,
-    line: str,
-) -> None:
-    """Agrego un registro al buffer visual acotado del RUN."""
-
-    sequence = console_line_number(line)
-    key = (run_id, console_name)
-    with _CONSOLE_BUFFER_LOCK:
-        buffer = _CONSOLE_BUFFERS.setdefault(
-            key,
-            deque(maxlen=CONSOLE_BUFFER_SIZE),
-        )
-        if sequence and any(
-            console_line_number(existing) == sequence
-            for existing in buffer
-        ):
-            return
-        buffer.append(line)
-        if sequence:
-            _CONSOLE_BUFFER_TOTALS[key] = max(
-                sequence,
-                _CONSOLE_BUFFER_TOTALS.get(key, 0),
-            )
-        _CONSOLE_BUFFER_SEEDED.add(key)
 
 def console_line_number(line: str) -> int:
     """Obtengo la numeración persistida de una línea de consola."""
 
     match = re.match(r"\[#(\d+)\]", line)
     return int(match.group(1)) if match else 0
-
-def discard_console_buffers_except(run_id: str) -> None:
-    """Libero buffers visuales de RUN anteriores para acotar la memoria."""
-
-    with _CONSOLE_BUFFER_LOCK:
-        previous_keys = [
-            key
-            for key in _CONSOLE_BUFFERS
-            if key[0] != run_id
-        ]
-        for key in previous_keys:
-            _CONSOLE_BUFFERS.pop(key, None)
-            _CONSOLE_BUFFER_SEEDED.discard(key)
-            _CONSOLE_BUFFER_TOTALS.pop(key, None)
-
-def read_console_buffer(
-    run_id: str,
-    console_name: str,
-    path: Path,
-    cursor: int,
-    initial_load: bool,
-) -> tuple[list[str], int, int, bool]:
-    """Sincronizo el buffer y devuelvo los registros posteriores al cursor."""
-
-    key = (run_id, console_name)
-    tail_lines, _, _ = read_console_tail(path, CONSOLE_BUFFER_SIZE)
-    with _CONSOLE_BUFFER_LOCK:
-        buffer = _CONSOLE_BUFFERS.setdefault(
-            key,
-            deque(maxlen=CONSOLE_BUFFER_SIZE),
-        )
-        merged = {
-            console_line_number(line): line
-            for line in buffer
-            if console_line_number(line)
-        }
-        merged.update(
-            {
-                console_line_number(line): line
-                for line in tail_lines
-                if console_line_number(line)
-            }
-        )
-        buffer.clear()
-        buffer.extend(
-            line
-            for _, line in sorted(merged.items())[-CONSOLE_BUFFER_SIZE:]
-        )
-        _CONSOLE_BUFFER_TOTALS[key] = max(
-            _CONSOLE_BUFFER_TOTALS.get(key, 0),
-            *(merged or {0}),
-        )
-        _CONSOLE_BUFFER_SEEDED.add(key)
-    with _CONSOLE_BUFFER_LOCK:
-        buffer = _CONSOLE_BUFFERS.get(key, deque())
-        lines = list(buffer)
-        total = _CONSOLE_BUFFER_TOTALS.get(key, 0)
-    if not lines:
-        return [], cursor, total, False
-    numbered_lines = [
-        (console_line_number(line), line)
-        for line in lines
-        if console_line_number(line)
-    ]
-    numbered_lines.sort(key=lambda item: item[0])
-    last_sequence = numbered_lines[-1][0]
-    first_sequence = numbered_lines[0][0]
-    resync = bool(cursor and cursor < first_sequence - 1)
-    selected = (
-        numbered_lines
-        if initial_load or resync
-        else [item for item in numbered_lines if item[0] > cursor]
-    )
-    return [line for _, line in selected], last_sequence, total, resync
 
 def read_console_tail(
     path: Path,
