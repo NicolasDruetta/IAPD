@@ -203,8 +203,6 @@ class AlpacaStreamingService:
             [str, list[dict[str, Any]], threading.Event | None],
             None,
         ] | None = None,
-        confirm_kafka_publication_callback: Callable[[str], None]
-        | None = None,
         append_controller_log_callback: Callable[[str, str, Any], None]
         | None = None,
         append_run_record_callback: Callable[
@@ -224,9 +222,6 @@ class AlpacaStreamingService:
         self._replay_speed = replay_speed
         self._release_callback = release_callback
         self._publish_events_callback = publish_events_callback
-        self._confirm_kafka_publication_callback = (
-            confirm_kafka_publication_callback
-        )
         self._append_controller_log_callback = append_controller_log_callback
         self._append_run_record_callback = append_run_record_callback
         self._append_run_state_callback = append_run_state_callback
@@ -569,8 +564,6 @@ class AlpacaStreamingService:
                     self._stop_event,
                 )
                 self._kafka_published_count += len(stream_records)
-                if self._confirm_kafka_publication_callback is not None:
-                    self._confirm_kafka_publication_callback(self._run_id)
 
     def _replay_cached_file(self, historical_path: Path) -> None:
         """Reproduzco una caché completa usando lotes acotados."""

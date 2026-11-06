@@ -312,9 +312,6 @@ def start_run(
                 replay_speed,
                 release_callback=release_active_service,
                 publish_events_callback=_KAFKA_MODULE.publish_events,
-                confirm_kafka_publication_callback=(
-                    _SPARK_MODULE.confirm_kafka_publication
-                ),
                 append_controller_log_callback=append_controller_log,
                 append_run_record_callback=append_run_record,
                 append_run_state_callback=append_run_state,

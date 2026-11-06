@@ -240,77 +240,27 @@ def format_elapsed_time(
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 def get_activity_chart_rows(
-    controller_module: ModuleType,
-    run_id: str | None,
+    spark_rows: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], int]:
-    """Leo eventos nuevos y transformo los acumulados a la escala visual."""
+    """Transformo la serie agregada por Spark a la escala visual."""
 
-    if run_id is None:
+    if not spark_rows:
         return [], 1
-    states = st.session_state.activity_chart_states
-    state = states.setdefault(
-        run_id,
-        {
-            "counts": {},
-            "offset": 0,
-            "pending": "",
-            "volume_totals": {},
-        },
-    )
-    state.setdefault("volume_totals", {})
-    data_path = DATA_DIRECTORY / "runs" / f"{run_id}_02_alpaca_data.jsonl"
-    if not data_path.exists():
-        return [], 1
-    try:
-        if data_path.stat().st_size < state["offset"]:
-            state.update(
-                {
-                    "counts": {},
-                    "offset": 0,
-                    "pending": "",
-                    "volume_totals": {},
-                }
-            )
-        with data_path.open(encoding="utf-8") as data_file:
-            data_file.seek(state["offset"])
-            content = state["pending"] + data_file.read()
-            state["offset"] = data_file.tell()
-    except OSError:
-        return [], 1
-    lines = content.splitlines(keepends=True)
-    if lines and not lines[-1].endswith(("\n", "\r")):
-        state["pending"] = lines.pop()
-    else:
-        state["pending"] = ""
-    for line in lines:
-        try:
-            record = json.loads(line)
-            timestamp = datetime.fromisoformat(
-                str(record["timestamp"]).replace("Z", "+00:00")
-            )
-        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
-            continue
-        event_type = record.get("event_type")
-        if event_type not in {"QUOTE", "TRADE"}:
-            continue
-        if event_type == "TRADE":
-            symbol = str(record.get("symbol") or "")
-            if symbol:
-                volume_totals = state["volume_totals"]
-                volume_totals[symbol] = volume_totals.get(symbol, 0.0) + float(
-                    record.get("size") or 0
-                )
+    rows_by_second: dict[str, dict[str, int]] = {}
+    for row in spark_rows:
+        timestamp = datetime.fromisoformat(
+            str(row["second"]).replace("Z", "+00:00")
+        )
         if timestamp.tzinfo is None:
             timestamp = timestamp.replace(tzinfo=timezone.utc)
-        second = timestamp.astimezone(PRESENTATION_TIMEZONE).replace(
-            microsecond=0,
-        ).isoformat()
-        second_counts = state["counts"].setdefault(second, {})
-        second_counts[event_type] = second_counts.get(event_type, 0) + 1
-    if not state["counts"]:
-        return [], 1
-    first_second = datetime.fromisoformat(min(state["counts"]))
-    last_second = datetime.fromisoformat(max(state["counts"]))
+        second = timestamp.astimezone(PRESENTATION_TIMEZONE).isoformat()
+        second_counts = rows_by_second.setdefault(second, {})
+        event_type = str(row["event_type"])
+        second_counts[event_type] = second_counts.get(event_type, 0) + int(
+            row["events"]
+        )
+    first_second = datetime.fromisoformat(min(rows_by_second))
+    last_second = datetime.fromisoformat(max(rows_by_second))
     elapsed_seconds = (last_second - first_second).total_seconds()
     if elapsed_seconds <= 30:
         interval_seconds = 1
@@ -323,7 +273,7 @@ def get_activity_chart_rows(
     else:
         interval_seconds = 300
     grouped_counts: dict[str, dict[str, int]] = {}
-    for second, event_counts in state["counts"].items():
+    for second, event_counts in rows_by_second.items():
         timestamp = datetime.fromisoformat(second)
         seconds_from_midnight = (
             timestamp.hour * 3600
@@ -783,7 +733,7 @@ with st.container(
     title_col = st.container(width="stretch")
     theme_col = st.container(width="content")
 with icon_col:
-    st.image(str(icon_path), width=52)
+    st.image(str(icon_path), width=50)
 with title_col:
     st.title("Apache Big Data Lab")
 with theme_col:
@@ -806,7 +756,7 @@ with theme_col:
         st.session_state.theme_user_set = True
         st.rerun()
 st.subheader(
-    "Streaming y análisis de operaciones bursátiles con procesamiento distribuido en tiempo real."
+    "Streaming y análisis de operaciones bursátiles con procesamiento distribuido durante una rueda de mercado."
 )
 st.caption("Materia: IAPD. Autor: Nicolás Druetta. Año: 2026.")
 st.divider()
@@ -1102,7 +1052,7 @@ def render_streaming() -> None:
             )
             snapshot = controller_module.get_run_snapshot()
             run_id = None
-    elif run_id is not None:
+    elif run_id is not None and spark_module.has_active_query():
         spark_module.stop_streaming(
             run_id,
             finalize=snapshot.get("status") == "Completado",
@@ -1426,29 +1376,17 @@ def render_streaming() -> None:
         with data_col:
             st.caption("Cantidad de datos descargados")
             st.text(str(snapshot.get("event_count", 0)))
-    activity_rows, activity_interval = get_activity_chart_rows(
-        controller_module,
-        run_id,
-    )
     top_volume = spark_result.get("top_volume", [])
-    if not top_volume and run_id:
-        volume_totals = st.session_state.activity_chart_states[run_id][
-            "volume_totals"
-        ]
-        top_volume = [
-            {"symbol": symbol, "total_volume": volume}
-            for symbol, volume in sorted(
-                volume_totals.items(),
-                key=lambda item: (-item[1], item[0]),
-            )[:10]
-        ]
+    activity_rows, activity_interval = get_activity_chart_rows(
+        spark_result.get("activity_rows", []),
+    )
     volume_column, activity_column = st.columns(
         2,
         gap="small",
         vertical_alignment="top",
     )
     with volume_column:
-        st.subheader("Top 10 de acciones por volumen negociado")
+        st.subheader("Top 10 acciones por volumen negociado")
         render_volume_chart(top_volume)
     with activity_column:
         st.subheader("Actividad bursátil en el tiempo")

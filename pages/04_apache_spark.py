@@ -6,12 +6,21 @@ import shutil
 import threading
 import urllib.request
 
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from pyspark import SparkContext
 from pyspark.sql import DataFrame, SparkSession
-from pyspark.sql.functions import col, count, from_json, sum as sum_rows, when
+from pyspark.sql.functions import (
+    col,
+    count,
+    date_trunc,
+    from_json,
+    regexp_replace,
+    sum as sum_rows,
+    when,
+)
 from pyspark.sql.types import DoubleType, StringType, StructField, StructType
 
 KAFKA_BOOTSTRAP_SERVERS = os.getenv(
@@ -26,7 +35,6 @@ SPARK_DRIVER_PORT = os.getenv("SPARK_DRIVER_PORT", "4041")
 SPARK_MASTER = os.getenv("SPARK_MASTER_URL", "spark://spark-master:7077")
 SPARK_MASTER_UI_URL = os.getenv("SPARK_MASTER_UI_URL", "http://spark-master:8080")
 SPARK_UI_URL = os.getenv("SPARK_UI_URL", "http://localhost:4040")
-_KAFKA_CONFIRMED_RUNS: set[str] = set()
 _RUN_STATES: dict[str, dict[str, Any]] = {}
 _SPARK_ERROR: str | None = None
 _SPARK_LOCK = threading.RLock()
@@ -48,15 +56,6 @@ EVENT_SCHEMA = StructType(
         StructField("mode", StringType(), True),
     ]
 )
-
-def confirm_kafka_publication(run_id: str) -> None:
-    """Habilito la visibilidad Spark después del ACK de Kafka."""
-
-    with _SPARK_LOCK:
-        _KAFKA_CONFIRMED_RUNS.add(run_id)
-        state = _RUN_STATES.get(run_id)
-        if state is not None:
-            state["kafka_confirmed"].set()
 
 def get_checkpoint(run_id: str | None) -> dict[str, Any] | None:
     """Leo el checkpoint estructurado de un RUN."""
@@ -128,19 +127,76 @@ def get_snapshot(run_id: str | None = None) -> dict[str, Any]:
                 "logs": ["Spark | esperando eventos bursátiles."],
                 "rows": [],
                 "top_volume": top_volume,
+                "activity_rows": (checkpoint or {}).get("activity_rows", []),
                 "checkpoint": checkpoint,
             }
-    if not state["kafka_confirmed"].is_set():
-        top_volume = top_volume_rows(state["trade_totals"])
-        if not top_volume:
-            top_volume = get_persisted_top_volume(run_id)
-        return {
-            "status": "esperando_kafka",
-            "logs": [],
-            "rows": [],
-            "top_volume": top_volume,
-            "checkpoint": dict(state["checkpoint"]),
-        }
+    query = state.get("query")
+    persisted_checkpoint = get_checkpoint(run_id)
+    if persisted_checkpoint is not None:
+        persisted_processed_events = int(
+            persisted_checkpoint.get("processed_events", 0)
+        )
+        if (
+            persisted_processed_events > state["processed_events"]
+            or not state["trade_totals"]
+            or not state["activity_rows"]
+        ):
+            state["checkpoint"] = persisted_checkpoint
+            state["input_events"] = int(
+                persisted_checkpoint.get(
+                    "input_events",
+                    state["input_events"],
+                )
+            )
+            state["batch_number"] = int(
+                persisted_checkpoint.get(
+                    "batch_number",
+                    state["batch_number"],
+                )
+            )
+            state["processed_events"] = persisted_processed_events
+            state["processed_events_by_type"] = dict(
+                persisted_checkpoint.get(
+                    "processed_events_by_type",
+                    state["processed_events_by_type"],
+                )
+            )
+            state["trade_totals"] = dict(
+                persisted_checkpoint.get(
+                    "trade_totals",
+                    state["trade_totals"],
+                )
+            )
+            state["activity_rows"] = {
+                f"{row['second']}|{row['event_type']}": row
+                for row in persisted_checkpoint.get(
+                    "activity_rows",
+                    [],
+                )
+            }
+    if query is not None:
+        try:
+            query_active = bool(query.isActive)
+            query_error = None if query_active else query.exception()
+            query_status = (
+                "activa"
+                if query_active
+                else f"terminada:{query_error}"
+            )
+        except Exception as error:
+            query_active = False
+            query_status = f"error_consulta:{error}"
+            query_error = error
+        with _SPARK_LOCK:
+            if query_status != state["query_status_signature"]:
+                state["query_status_signature"] = query_status
+                functions.append_console_log(
+                    run_id,
+                    "spark",
+                    f"QUERY | run_id={run_id} | query_id={state['query_id']} | estado={query_status}",
+                )
+        if not query_active and query_error is not None:
+            state["status"] = "error"
     monitor_workers(run_id, state)
     with _SPARK_LOCK:
         top_volume = top_volume_rows(state["trade_totals"])
@@ -151,6 +207,7 @@ def get_snapshot(run_id: str | None = None) -> dict[str, Any]:
             "logs": list(state["logs"]),
             "rows": list(state["rows"]),
             "top_volume": top_volume,
+            "activity_rows": list(state["activity_rows"].values()),
             "checkpoint": dict(state["checkpoint"]),
         }
 
@@ -159,23 +216,23 @@ def get_spark_session() -> SparkSession | None:
 
     global _SPARK_ERROR, _SPARK_SESSION
     with _SPARK_LOCK:
-        if (
-            _SPARK_SESSION is None
-            and (
-                getattr(SparkContext, "_gateway", None) is not None
-                or SparkSession._instantiatedSession is not None
-                or SparkSession._activeSession is not None
-                or SparkContext._active_spark_context is not None
+        if _SPARK_SESSION is None:
+            existing_session = (
+                SparkSession._instantiatedSession
+                or SparkSession._activeSession
             )
-        ):
-            reset_spark_runtime()
+            if existing_session is not None:
+                _SPARK_SESSION = existing_session
         if _SPARK_SESSION is not None:
             try:
-                _SPARK_SESSION.sparkContext._jsc.sc().isStopped()
-            except Exception:
-                reset_spark_runtime()
-            else:
+                is_stopped = _SPARK_SESSION.sparkContext._jsc.sc().isStopped()
+            except Exception as error:
+                _SPARK_ERROR = f"No se pudo consultar Spark: {error}"
                 return _SPARK_SESSION
+            else:
+                if not is_stopped:
+                    return _SPARK_SESSION
+                reset_spark_runtime()
         try:
             builder = (
                 SparkSession.builder
@@ -206,7 +263,6 @@ def get_spark_session() -> SparkSession | None:
             _SPARK_SESSION = builder.getOrCreate()
             _SPARK_SESSION.sparkContext.setLogLevel("WARN")
         except Exception as error:
-            reset_spark_runtime()
             _SPARK_ERROR = f"No se pudo iniciar Spark: {error}"
         return _SPARK_SESSION
 
@@ -224,8 +280,7 @@ def has_active_query() -> bool:
             if query.isActive:
                 return True
         except Exception:
-            reset_spark_runtime()
-            continue
+            return False
     return False
 
 def reset_spark_runtime() -> None:
@@ -285,12 +340,27 @@ def monitor_workers(run_id: str, state: dict[str, Any]) -> None:
         executors = read_spark_api(
             f"/api/v1/applications/{application_id}/executors"
         )
-        jobs = read_spark_api(
-            f"/api/v1/applications/{application_id}/jobs"
-        )[:3]
-        stages = read_spark_api(
-            f"/api/v1/applications/{application_id}/stages"
-        )[:3]
+        query_started_at = state.get("query_started_at")
+        jobs = [
+            job
+            for job in read_spark_api(
+                f"/api/v1/applications/{application_id}/jobs"
+            )
+            if query_started_at is not None
+            and _is_current_spark_item(job, query_started_at)
+        ][:3]
+        job_stage_ids = {
+            str(stage_id)
+            for job in jobs
+            for stage_id in job.get("stageIds", [])
+        }
+        stages = [
+            stage
+            for stage in read_spark_api(
+                f"/api/v1/applications/{application_id}/stages"
+            )
+            if str(stage.get("stageId")) in job_stage_ids
+        ][:3]
         task_groups = []
         stage_workers: dict[str, set[str]] = {}
         for stage in stages:
@@ -407,6 +477,25 @@ def monitor_workers(run_id: str, state: dict[str, Any]) -> None:
     except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError, StopIteration):
         return
 
+def _is_current_spark_item(
+    item: dict[str, Any],
+    query_started_at: datetime,
+) -> bool:
+    """Determino si un Job o Stage comenzó con la query actual."""
+
+    submission_time = item.get("submissionTime")
+    if not submission_time:
+        return False
+    try:
+        submitted_at = datetime.fromisoformat(
+            str(submission_time).replace("GMT", "+00:00")
+        )
+    except ValueError:
+        return False
+    if submitted_at.tzinfo is None:
+        submitted_at = submitted_at.replace(tzinfo=timezone.utc)
+    return submitted_at >= query_started_at
+
 def read_spark_api(path: str) -> Any:
     """Leo un endpoint JSON del Spark Driver."""
 
@@ -425,19 +514,55 @@ def read_spark_api_from_master(path: str) -> Any:
 def process_batch(run_id: str, data_frame: DataFrame, batch_id: int) -> None:
     """Transformo un micro-lote, persisto Parquet y actualizo el checkpoint."""
 
-    input_frame = data_frame.persist()
-    input_count = input_frame.count()
+    functions.append_console_log(
+        run_id,
+        "spark",
+        f"BATCH | run_id={run_id} | batch_id={batch_id} | estado=iniciado",
+    )
+    functions.append_console_log(
+        run_id,
+        "spark",
+        f"BATCH | run_id={run_id} | batch_id={batch_id} | operación=persist_input | estado=iniciada",
+    )
+    try:
+        input_frame = data_frame.persist()
+    except Exception as error:
+        functions.append_console_log(
+            run_id,
+            "spark",
+            f"ERROR | batch_id={batch_id} | operación=persist_input | error={error}",
+        )
+        raise
+    functions.append_console_log(
+        run_id,
+        "spark",
+        f"BATCH | run_id={run_id} | batch_id={batch_id} | operación=persist_input | estado=completada",
+    )
+    functions.append_console_log(
+        run_id,
+        "spark",
+        f"BATCH | run_id={run_id} | batch_id={batch_id} | operación=count_input | estado=iniciada",
+    )
+    try:
+        input_count = input_frame.count()
+    except Exception as error:
+        functions.append_console_log(
+            run_id,
+            "spark",
+            f"ERROR | batch_id={batch_id} | operación=count_input | error={error}",
+        )
+        raise
+    functions.append_console_log(
+        run_id,
+        "spark",
+        f"BATCH | run_id={run_id} | batch_id={batch_id} | operación=count_input | estado=completada | registros={input_count}",
+    )
     if input_count == 0:
         input_frame.unpersist()
         return
     with _SPARK_LOCK:
         state = _RUN_STATES[run_id]
         state["input_events"] += input_count
-        kafka_confirmed = state["kafka_confirmed"]
-    if not kafka_confirmed.wait(timeout=30):
-        raise RuntimeError(
-            "Spark recibió un lote sin confirmación previa de publicación en Kafka."
-        )
     functions.append_console_log(
         run_id,
         "spark",
@@ -449,7 +574,25 @@ def process_batch(run_id: str, data_frame: DataFrame, batch_id: int) -> None:
         & col("symbol").isNotNull()
         & col("event_type").isin("TRADE", "QUOTE")
     )
-    valid_count = valid_frame.count()
+    functions.append_console_log(
+        run_id,
+        "spark",
+        f"BATCH | run_id={run_id} | batch_id={batch_id} | operación=count_valid | estado=iniciada",
+    )
+    try:
+        valid_count = valid_frame.count()
+    except Exception as error:
+        functions.append_console_log(
+            run_id,
+            "spark",
+            f"ERROR | batch_id={batch_id} | operación=count_valid | error={error}",
+        )
+        raise
+    functions.append_console_log(
+        run_id,
+        "spark",
+        f"BATCH | run_id={run_id} | batch_id={batch_id} | operación=count_valid | estado=completada | registros={valid_count}",
+    )
     processed_frame = valid_frame.dropDuplicates(
         [
             "run_id",
@@ -464,7 +607,25 @@ def process_batch(run_id: str, data_frame: DataFrame, batch_id: int) -> None:
             "ask_size",
         ]
     ).persist()
-    processed_count = processed_frame.count()
+    functions.append_console_log(
+        run_id,
+        "spark",
+        f"BATCH | run_id={run_id} | batch_id={batch_id} | operación=count_processed | estado=iniciada",
+    )
+    try:
+        processed_count = processed_frame.count()
+    except Exception as error:
+        functions.append_console_log(
+            run_id,
+            "spark",
+            f"ERROR | batch_id={batch_id} | operación=count_processed | error={error}",
+        )
+        raise
+    functions.append_console_log(
+        run_id,
+        "spark",
+        f"BATCH | run_id={run_id} | batch_id={batch_id} | operación=count_processed | estado=completada | registros={processed_count}",
+    )
     invalid_count = input_count - valid_count
     duplicate_count = valid_count - processed_count
     if processed_count == 0:
@@ -479,7 +640,25 @@ def process_batch(run_id: str, data_frame: DataFrame, batch_id: int) -> None:
     parquet_path = str(
         DATA_DIRECTORY / "spark" / f"{run_id}_04_spark_data.parquet.parts"
     )
-    processed_frame.write.mode("append").parquet(parquet_path)
+    functions.append_console_log(
+        run_id,
+        "spark",
+        f"BATCH | run_id={run_id} | batch_id={batch_id} | operación=write_parquet | estado=iniciada",
+    )
+    try:
+        processed_frame.write.mode("append").parquet(parquet_path)
+    except Exception as error:
+        functions.append_console_log(
+            run_id,
+            "spark",
+            f"ERROR | batch_id={batch_id} | operación=write_parquet | error={error}",
+        )
+        raise
+    functions.append_console_log(
+        run_id,
+        "spark",
+        f"BATCH | run_id={run_id} | batch_id={batch_id} | operación=write_parquet | estado=completada",
+    )
     grouped = (
         processed_frame.groupBy("symbol")
         .agg(
@@ -489,7 +668,68 @@ def process_batch(run_id: str, data_frame: DataFrame, batch_id: int) -> None:
         )
         .orderBy("symbol")
     )
-    result_rows = [row.asDict() for row in grouped.collect()]
+    functions.append_console_log(
+        run_id,
+        "spark",
+        f"BATCH | run_id={run_id} | batch_id={batch_id} | operación=collect_grouped | estado=iniciada",
+    )
+    try:
+        result_rows = [row.asDict() for row in grouped.collect()]
+    except Exception as error:
+        functions.append_console_log(
+            run_id,
+            "spark",
+            f"ERROR | batch_id={batch_id} | operación=collect_grouped | error={error}",
+        )
+        raise
+    functions.append_console_log(
+        run_id,
+        "spark",
+        f"BATCH | run_id={run_id} | batch_id={batch_id} | operación=collect_grouped | estado=completada | filas={len(result_rows)}",
+    )
+    activity_grouped = (
+        processed_frame
+        .withColumn(
+            "second",
+            date_trunc(
+                "second",
+                regexp_replace(
+                    col("timestamp"),
+                    r"(\.\d{6})\d+(Z)$",
+                    r"$1$2",
+                ).cast("timestamp"),
+            ),
+        )
+        .groupBy("second", "event_type")
+        .agg(count("*").alias("events"))
+        .orderBy("second", "event_type")
+    )
+    functions.append_console_log(
+        run_id,
+        "spark",
+        f"BATCH | run_id={run_id} | batch_id={batch_id} | operación=collect_activity | estado=iniciada",
+    )
+    try:
+        activity_rows = [
+            {
+                "event_type": row["event_type"],
+                "events": int(row["events"]),
+                "second": row["second"].isoformat(),
+            }
+            for row in activity_grouped.collect()
+        ]
+    except Exception as error:
+        functions.append_console_log(
+            run_id,
+            "spark",
+            f"ERROR | batch_id={batch_id} | actividad_temporal={error}",
+        )
+        raise
+    functions.append_console_log(
+        run_id,
+        "spark",
+        f"BATCH | run_id={run_id} | batch_id={batch_id} | operación=collect_activity | estado=completada | filas={len(activity_rows)}",
+    )
     with _SPARK_LOCK:
         state = _RUN_STATES[run_id]
         for row in result_rows:
@@ -504,6 +744,16 @@ def process_batch(run_id: str, data_frame: DataFrame, batch_id: int) -> None:
         )
         state["batch_number"] += 1
         state["rows"] = result_rows
+        for row in activity_rows:
+            activity_key = f"{row['second']}|{row['event_type']}"
+            state["activity_rows"][activity_key] = {
+                "event_type": row["event_type"],
+                "events": state["activity_rows"].get(activity_key, {}).get(
+                    "events",
+                    0,
+                ) + row["events"],
+                "second": row["second"],
+            }
         state["status"] = "completado"
         top_rows = top_volume_rows(state["trade_totals"])
         state["logs"] = [
@@ -522,7 +772,22 @@ def process_batch(run_id: str, data_frame: DataFrame, batch_id: int) -> None:
             "batch_number": state["batch_number"],
             "trade_totals": dict(state["trade_totals"]),
             "processed_events_by_type": dict(state["processed_events_by_type"]),
+            "activity_rows": list(state["activity_rows"].values()),
         }
+        run_info_path = DATA_DIRECTORY / "runs" / f"{run_id}_00_run_info.jsonl"
+        with run_info_path.open("a", encoding="utf-8") as run_info_file:
+            run_info_file.write(
+                json.dumps(
+                    {
+                        "record_type": "spark_checkpoint",
+                        **state["checkpoint"],
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+            run_info_file.flush()
+            os.fsync(run_info_file.fileno())
     input_frame.unpersist()
     processed_frame.unpersist()
     for line in state["logs"]:
@@ -582,6 +847,11 @@ def start_streaming(run_id: str, mode: str = "REPLAY") -> None:
             if existing["query"].isActive:
                 return
             query_error = existing["query"].exception()
+            functions.append_console_log(
+                run_id,
+                "spark",
+                f"ERROR | Structured Streaming | query={query_error}",
+            )
             raise RuntimeError(
                 f"La consulta Structured Streaming terminó: {query_error}"
             )
@@ -593,13 +863,13 @@ def start_streaming(run_id: str, mode: str = "REPLAY") -> None:
             "batch_number": 0,
             "trade_totals": {},
             "processed_events_by_type": {"TRADE": 0, "QUOTE": 0},
+            "activity_rows": [],
         }
         _RUN_STATES[run_id] = {
             "batch_number": int(checkpoint.get("batch_number", 0)),
             "checkpoint": checkpoint,
             "logs": [],
             "monitor_signature": "",
-            "kafka_confirmed": threading.Event(),
             "input_events": int(
                 checkpoint.get(
                     "input_events",
@@ -609,12 +879,17 @@ def start_streaming(run_id: str, mode: str = "REPLAY") -> None:
             "processed_events": int(checkpoint.get("processed_events", 0)),
             "processed_events_by_type": dict(checkpoint.get("processed_events_by_type", {})),
             "query": None,
+            "query_id": None,
+            "query_started_at": None,
+            "query_status_signature": "",
             "rows": [],
             "status": "iniciando",
+            "activity_rows": {
+                f"{row['second']}|{row['event_type']}": row
+                for row in checkpoint.get("activity_rows", [])
+            },
             "trade_totals": dict(checkpoint.get("trade_totals", {})),
         }
-        if run_id in _KAFKA_CONFIRMED_RUNS:
-            _RUN_STATES[run_id]["kafka_confirmed"].set()
     spark = get_spark_session()
     if spark is None:
         error_message = _SPARK_ERROR or "Spark no disponible."
@@ -626,6 +901,7 @@ def start_streaming(run_id: str, mode: str = "REPLAY") -> None:
         raise RuntimeError(error_message)
     (DATA_DIRECTORY / "spark").mkdir(parents=True, exist_ok=True)
     checkpoint_path = str(DATA_DIRECTORY / "spark" / f"{run_id}_04_spark_checkpoint")
+    query_started_at = datetime.now(timezone.utc)
     try:
         events = (
             spark.readStream.format("kafka")
@@ -653,6 +929,14 @@ def start_streaming(run_id: str, mode: str = "REPLAY") -> None:
     with _SPARK_LOCK:
         _STARTING_RUNS.discard(run_id)
         _RUN_STATES[run_id]["query"] = query
+        _RUN_STATES[run_id]["query_id"] = str(query.id)
+        _RUN_STATES[run_id]["query_started_at"] = query_started_at
+        _RUN_STATES[run_id]["query_status_signature"] = "activa"
+    functions.append_console_log(
+        run_id,
+        "spark",
+        f"QUERY | run_id={run_id} | query_id={query.id} | estado=iniciada",
+    )
 
 def stop_streaming(
     run_id: str | None,
@@ -664,6 +948,8 @@ def stop_streaming(
         return False
     with _SPARK_LOCK:
         state = _RUN_STATES.get(run_id)
+        if state is None:
+            return True
         query = state.get("query") if state else None
     if query is not None:
         try:
@@ -671,6 +957,10 @@ def stop_streaming(
                 query.stop()
         except Exception as error:
             functions.append_console_log(run_id, "spark", f"ERROR | STOP | cierre Spark: {error}")
+            if not has_active_query():
+                reset_spark_runtime()
+            with _SPARK_LOCK:
+                _RUN_STATES.pop(run_id, None)
             return False
     if finalize:
         try:
@@ -681,6 +971,10 @@ def stop_streaming(
                 "spark",
                 f"ERROR | consolidación Parquet: {error}",
             )
+            if not has_active_query():
+                reset_spark_runtime()
+            with _SPARK_LOCK:
+                _RUN_STATES.pop(run_id, None)
             return False
         if not consolidated:
             functions.append_console_log(
@@ -689,7 +983,15 @@ def stop_streaming(
                 "ERROR | consolidación Parquet no completada; "
                 "conservo temporales y checkpoint.",
             )
+        if not has_active_query():
+            reset_spark_runtime()
+        with _SPARK_LOCK:
+            _RUN_STATES.pop(run_id, None)
         return consolidated
+    if not has_active_query():
+        reset_spark_runtime()
+    with _SPARK_LOCK:
+        _RUN_STATES.pop(run_id, None)
     return True
 
 def top_volume_rows(totals: dict[str, float]) -> list[dict[str, Any]]:
