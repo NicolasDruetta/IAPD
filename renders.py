@@ -170,7 +170,7 @@ def render_config() -> None:
 
     st.write(f"**Símbolos bursátiles a analizar:**")
     symbols_col, actions_col = st.columns(
-        [1, 1],
+        [1, 2],
         gap="small",
         vertical_alignment="bottom",
     )
@@ -333,7 +333,7 @@ def render_config() -> None:
     elif status == "Error":
         status_text = "Finalizado con error."
     mode_col, run_col, status_col = st.columns(
-        [1, 1, 2],
+        [1, 1, 4],
         gap="small",
     )
     with mode_col:
