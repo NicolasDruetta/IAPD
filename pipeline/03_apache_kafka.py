@@ -1,10 +1,10 @@
 import atexit
-import functions
 import json
 import os
 import threading
 import time
 
+from app import functions
 from kafka import KafkaAdminClient, KafkaProducer
 from kafka.admin import NewTopic
 from kafka.errors import KafkaError

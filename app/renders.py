@@ -1,13 +1,11 @@
 import importlib.util
-import components
-import database
-import functions
 import json
 import math
 import streamlit as st
 import sys
 import threading
 
+from app import database, functions
 from datetime import datetime, timezone, tzinfo
 from pathlib import Path
 from types import ModuleType
@@ -15,7 +13,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 CONSOLE_TRANSFER_BATCH_SIZE = 256
-DATA_DIRECTORY = Path(__file__).parent / "data"
+DATA_DIRECTORY = Path(__file__).parent.parent / "data"
 PRESENTATION_TIMEZONE = ZoneInfo("America/Argentina/Cordoba")
 SYMBOL_OPTIONS = {
     "Todos los símbolos del S&P 500": {
@@ -35,6 +33,111 @@ SYMBOL_OPTIONS = {
         "ranking": "volume",
     },
 }
+
+EXECUTION_TIMER_COMPONENT = st.components.v2.component(
+    name="apache_big_data_lab.execution_timer",
+    html='<span class="execution-timer"></span>',
+    isolate_styles=False,
+    js="""
+    export default function ({ parentElement, data }) {
+        const timerElement = parentElement.querySelector(".execution-timer");
+        const state = parentElement.__executionTimerState || {
+            interval: null,
+            timerKey: null,
+        };
+        const formatElapsed = (startedAt, endedAt, active) => {
+            const started = Date.parse(startedAt || "");
+            if (Number.isNaN(started)) {
+                return "00:00:00";
+            }
+            const end = active ? Date.now() : Date.parse(endedAt || "");
+            const elapsed = Math.max(
+                0,
+                Math.floor(((Number.isNaN(end) ? Date.now() : end) - started) / 1000),
+            );
+            const hours = String(Math.floor(elapsed / 3600)).padStart(2, "0");
+            const minutes = String(Math.floor((elapsed % 3600) / 60)).padStart(2, "0");
+            const seconds = String(elapsed % 60).padStart(2, "0");
+            return `${hours}:${minutes}:${seconds}`;
+        };
+        const render = () => {
+            const elapsed = formatElapsed(
+                data.started_at,
+                data.ended_at,
+                data.active,
+            );
+            timerElement.textContent = data.active
+                ? data.prefix
+                    ? `${data.prefix} ${elapsed}.`
+                    : elapsed
+                : data.text;
+        };
+        if (state.timerKey !== data.timer_key) {
+            if (state.interval !== null) {
+                clearInterval(state.interval);
+            }
+            state.timerKey = data.timer_key;
+            state.interval = data.active ? setInterval(render, 1000) : null;
+        }
+        render();
+        parentElement.__executionTimerState = state;
+        return () => {};
+    }
+    """,
+)
+
+LOG_CONSOLE_COMPONENT = st.components.v2.component(
+    name="apache_big_data_lab.log_console",
+    html=(
+        '<textarea class="log-console" readonly '
+        'aria-label="Consola"></textarea>'
+    ),
+    isolate_styles=False,
+    js="""
+    export default function ({ parentElement, data }) {
+        const consoleElement = parentElement.querySelector("textarea");
+        const text = (Array.isArray(data.lines) ? data.lines : [])
+            .slice(-200).join("\\n");
+        if (consoleElement.value !== text) {
+            consoleElement.value = text;
+            consoleElement.scrollTop = consoleElement.scrollHeight;
+            requestAnimationFrame(() => {
+                consoleElement.scrollTop = consoleElement.scrollHeight;
+            });
+        }
+        return () => {};
+    }
+    """,
+)
+
+SYSTEM_THEME_COMPONENT = st.components.v2.component(
+    name="apache_big_data_lab.system_theme",
+    html='<span class="system-theme-detector"></span>',
+    isolate_styles=False,
+    js="""
+    export default function ({ parentElement, setStateValue }) {
+        const state = parentElement.__systemThemeState || {
+            mediaQuery: null,
+            reportedTheme: null,
+        };
+        if (state.mediaQuery === null) {
+            state.mediaQuery = window.matchMedia(
+                "(prefers-color-scheme: dark)",
+            );
+            state.mediaQuery.addEventListener("change", (event) => {
+                state.reportedTheme = event.matches;
+                setStateValue("dark", event.matches);
+            });
+        }
+        if (state.reportedTheme !== state.mediaQuery.matches) {
+            state.reportedTheme = state.mediaQuery.matches;
+            setStateValue("dark", state.reportedTheme);
+        }
+        parentElement.__systemThemeState = state;
+        return () => {};
+    }
+    """,
+)
 
 def get_console_state(console_id: str, run_id: str | None) -> dict[str, Any]:
     """Mantengo el contador visual independiente de cada consola y RUN."""
@@ -87,7 +190,7 @@ def initialize_state(system_theme: dict[str, Any] | None = None) -> None:
 def load_custom_css() -> None:
     """Cargo los estilos visuales administrados en el archivo del proyecto."""
 
-    css_path = Path(__file__).parent / "assets" / "custom.css"
+    css_path = Path(__file__).parent.parent / "assets" / "custom.css"
     css_content = css_path.read_text(encoding="utf-8")
     st.markdown(f"<style>{css_content}</style>", unsafe_allow_html=True)
 
@@ -126,7 +229,7 @@ def get_last_execution_notice(snapshot: dict[str, Any]) -> str | None:
 def render_header() -> None:
     """Muestro el encabezado general del laboratorio."""
 
-    icon_path = Path(__file__).parent / "assets" / "icon.png"
+    icon_path = Path(__file__).parent.parent / "assets" / "icon.png"
     theme_key = "theme-dark" if st.session_state.dark_mode else "theme-light"
     with st.container(key=theme_key):
         st.empty()
@@ -415,7 +518,7 @@ def render_config() -> None:
         with st.container(border=True):
             st.caption("Estado")
             if snapshot["is_active"] and not st.session_state.start_pending:
-                components.EXECUTION_TIMER_COMPONENT(
+                EXECUTION_TIMER_COMPONENT(
                     data={
                         "active": True,
                         "ended_at": snapshot["ended_at"],
@@ -442,7 +545,11 @@ def render_config() -> None:
     automatic_stop_message = automatic_stop_messages.get(
         automatic_stop_reason,
     )
-    if automatic_stop_message and automatic_stop_reason != "manual_stop":
+    if (
+        automatic_stop_message
+        and automatic_stop_reason != "manual_stop"
+        and not st.session_state.start_pending
+    ):
         st.error(automatic_stop_message)
     if last_execution_notice:
         st.info(last_execution_notice)
@@ -878,7 +985,7 @@ def render_info() -> None:
         with elapsed_col:
             st.caption("Tiempo de ejecución transcurrido")
             if snapshot["is_active"] and not st.session_state.start_pending:
-                components.EXECUTION_TIMER_COMPONENT(
+                EXECUTION_TIMER_COMPONENT(
                     data={
                         "active": True,
                         "ended_at": snapshot["ended_at"],
@@ -1061,7 +1168,7 @@ def render_log_console(
 ) -> None:
     """Muestro y actualizo incrementalmente una consola de registros."""
 
-    components.LOG_CONSOLE_COMPONENT(
+    LOG_CONSOLE_COMPONENT(
         data={"lines": lines},
         height=250,
         key=console_id,
@@ -1222,7 +1329,7 @@ def render_volume_chart(rows: list[dict[str, Any]]) -> None:
 def load_page_module(module_name: str) -> ModuleType:
     """Cargo un módulo de procesamiento sin construir su interfaz."""
 
-    module_path = Path(__file__).parent / "pipeline" / f"{module_name}.py"
+    module_path = Path(__file__).parent.parent / "pipeline" / f"{module_name}.py"
     source_mtime_ns = module_path.stat().st_mtime_ns
     cached_module = sys.modules.get(module_name)
     if cached_module is not None:
@@ -1290,6 +1397,7 @@ def mark_start_pending() -> None:
     st.session_state.manual_stop_status = False
     st.session_state.start_requested = True
     st.session_state.start_pending = True
+    st.rerun()
 
 def handle_start_error(
     error: Exception,

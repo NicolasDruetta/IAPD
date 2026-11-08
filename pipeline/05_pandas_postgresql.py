@@ -1,8 +1,7 @@
-import database
-
 import pandas as pd
 import psycopg
 
+from app import database, functions
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo

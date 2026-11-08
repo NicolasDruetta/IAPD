@@ -1,6 +1,6 @@
-import components
-import renders
 import streamlit as st
+
+from app import renders
 
 st.set_page_config(
     page_title="Apache Big Data Lab",
@@ -10,7 +10,7 @@ st.set_page_config(
 
 renders.load_custom_css()
 
-system_theme = components.SYSTEM_THEME_COMPONENT(
+system_theme = renders.SYSTEM_THEME_COMPONENT(
     data={},
     default={"dark": None},
     key="system-theme-detector",

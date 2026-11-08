@@ -193,26 +193,45 @@ orden cronológico ni los cálculos distribuidos.
 
 ```text
 NicolasDruetta_TP2/
-├── main.py
-├── README.md
-├── requirements.txt
-├── AGENTS.md
-├── compose.yaml
 ├── .dockerignore
-├── docker/
-│   └── Dockerfile
+├── AGENTS.md
+├── app/
+│   ├── database.py
+│   ├── functions.py
+│   └── renders.py
+├── assets/
+│   └── custom.css
+├── compose.override.yaml
+├── compose.yaml
+├── data/
+│   └── (archivos generados por RUN)
+├── Dockerfile
+├── EJECUTAR en Mac.command
+├── EJECUTAR en Windows.bat
+├── main.py
 ├── pipeline/
 │   ├── 01_python_controller.py
 │   ├── 02_alpaca_stream.py
 │   ├── 03_apache_kafka.py
 │   ├── 04_apache_spark.py
-│   ├── 05_pandas_postgresql.py
-├── data/
-│   └── (archivos generados por RUN)
-└── assets/
-    └── custom.css
+│   └── 05_pandas_postgresql.py
+├── README.md
+├── requirements.txt
 ```
 
+- `.dockerignore`: archivos excluidos del contexto de construcción.
+- `AGENTS.md`: convenciones técnicas de desarrollo.
+- `app/database.py`: conexiones y operaciones PostgreSQL.
+- `app/functions.py`: escritura, lectura y numeración compartida de logs.
+- `app/renders.py`: presentación nativa de las cinco consolas, preguntas y gráficos.
+- `assets/custom.css`: recurso visual centralizado del proyecto.
+- `compose.override.yaml`: configuración adicional de Compose.
+- `compose.yaml`: servicios Streamlit/Driver, Master, dos Workers, Kafka y
+  PostgreSQL con volumen persistente.
+- `data/`: archivos generados por cada RUN nuevo.
+- `Dockerfile`: imagen común con Python, Pandas, psycopg, PySpark y Java.
+- `EJECUTAR en Mac.command`: script de ejecución para macOS.
+- `EJECUTAR en Windows.bat`: script de ejecución para Windows.
 - `main.py`: punto de entrada de Streamlit, controles, tarjetas de estado,
   consolas y funciones comunes.
 - `pipeline/01_python_controller.py`: ciclo de vida, estados y supervisión del RUN.
@@ -222,17 +241,8 @@ NicolasDruetta_TP2/
 - `pipeline/04_apache_spark.py`: procesamiento específico de Spark distribuido.
 - `pipeline/05_pandas_postgresql.py`: estadísticas, correlaciones y persistencia
   de métricas y respuestas analíticas.
-- `database.py`: conexiones y operaciones PostgreSQL.
-- `functions.py`: escritura, lectura y numeración compartida de logs.
-- `renders.py`: presentación nativa de las cinco consolas, preguntas y gráficos.
-- `compose.yaml`: servicios Streamlit/Driver, Master, dos Workers, Kafka y
-  PostgreSQL con volumen persistente.
-- `Dockerfile`: imagen común con Python, Pandas, psycopg, PySpark y Java.
-- `.dockerignore`: archivos excluidos del contexto de construcción.
-- `data/`: archivos generados por cada RUN nuevo.
-- `assets/custom.css`: recurso visual centralizado del proyecto.
+- `README.md`: documentación del proyecto.
 - `requirements.txt`: dependencias Python declaradas.
-- `AGENTS.md`: convenciones técnicas de desarrollo.
 
 La carpeta `data/` se genera o completa localmente y permanece excluida del
 control de versiones.
@@ -419,7 +429,7 @@ docker compose up
 Los cambios en `main.py`, `pipeline/`, `assets/` y los recursos del proyecto se
 reflejan al guardar y actualizar el navegador. El Master y los Workers no se
 reconstruyen ni se reinician por esos cambios. La imagen solo debe
-reconstruirse cuando cambien `requirements.txt`, `docker/Dockerfile` u otra
+reconstruirse cuando cambien `requirements.txt`, `Dockerfile` u otra
 configuración de dependencias:
 
 ```bash

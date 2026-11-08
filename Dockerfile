@@ -33,15 +33,12 @@ RUN mkdir -p /opt/spark-ivy /opt/spark-jars \
     && find /opt/spark-ivy -type f -name '*.jar' \
         -exec cp {} /opt/spark-jars/ \;
 
-COPY main.py ./main.py
-COPY components.py ./components.py
-COPY database.py ./database.py
-COPY functions.py ./functions.py
-COPY renders.py ./renders.py
-COPY pipeline ./pipeline
-COPY assets ./assets
-COPY README.md ./README.md
 COPY AGENTS.md ./AGENTS.md
+COPY app ./app
+COPY assets ./assets
+COPY main.py ./main.py
+COPY pipeline ./pipeline
+COPY README.md ./README.md
 
 EXPOSE 8501 7077 8080 8081 8082
 

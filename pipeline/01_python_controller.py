@@ -1,10 +1,10 @@
 import atexit
-import functions
 import json
 import os
 import threading
 import time
 
+from app import functions
 from datetime import timezone
 from typing import Any
 

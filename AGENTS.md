@@ -68,10 +68,10 @@ convencionales y llamadas explícitas.
 
 Cada archivo de `pipeline/` contiene exclusivamente funciones relacionadas con su
 propia tecnología o funcionalidad. Las funciones comunes de logs y archivos se
-ubican en `functions.py`, y las operaciones PostgreSQL en `database.py`.
-La presentación de Streamlit se ubica en `main.py` y `renders.py`. El análisis
+ubican en `app/functions.py`, y las operaciones PostgreSQL en `app/database.py`.
+La presentación de Streamlit se ubica en `main.py` y `app/renders.py`. El análisis
 de Pandas y PostgreSQL se ubica en `pipeline/05_pandas_postgresql.py`, y las
-consultas de datos para preguntas y gráficos se ubican en `renders.py`.
+consultas de datos para preguntas y gráficos se ubican en `app/renders.py`.
 
 Los módulos de procesamiento `01` a `05` no contienen interfaz Streamlit.
 El cargador del punto de entrada las proporciona al módulo especializado antes
@@ -91,13 +91,13 @@ La documentación es breve, precisa y relacionada con la implementación.
 
 `main.py` centraliza el punto de entrada y la interfaz Streamlit.
 `pipeline/05_pandas_postgresql.py` implementa exclusivamente el análisis con
-Pandas y la preparación de preguntas y gráficos. `database.py` implementa las
+Pandas y la preparación de preguntas y gráficos. `app/database.py` implementa las
 conexiones y operaciones PostgreSQL mediante instrucciones SQL; no calcula
-datos. `renders.py` implementa la presentación, las consolas, sus logs y la
+datos. `app/renders.py` implementa la presentación, las consolas, sus logs y la
 visualización de resultados analíticos.
-`functions.py` centraliza la escritura y lectura compartida de logs.
+`app/functions.py` centraliza la escritura y lectura compartida de logs.
 
-Los módulos `01` a `05` procesan datos sin interfaz. `renders.py` consulta los
+Los módulos `01` a `05` procesan datos sin interfaz. `app/renders.py` consulta los
 datos analíticos para construir las preguntas y los gráficos.
 
 La carpeta `data/` contiene los datos de entrada y generados localmente,

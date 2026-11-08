@@ -1,5 +1,4 @@
 import certifi
-import functions
 import json
 import queue
 import re
@@ -10,6 +9,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from app import functions
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone

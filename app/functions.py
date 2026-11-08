@@ -6,7 +6,7 @@ from pathlib import Path
 
 _CONSOLE_LOG_LOCK = threading.RLock()
 _CONSOLE_LOG_SEQUENCES: dict[tuple[str, str], int] = {}
-DATA_DIRECTORY = Path(__file__).parent / "data"
+DATA_DIRECTORY = Path(__file__).parent.parent / "data"
 
 def append_console_log(
     run_id: str,
