@@ -1,5 +1,6 @@
 import importlib.util
 import components
+import database
 import functions
 import json
 import math
@@ -173,7 +174,6 @@ def render_config() -> None:
     kafka_module = load_page_module("03_apache_kafka")
     spark_module = load_page_module("04_apache_spark")
     load_page_module("05_pandas_postgresql")
-    charts_module = load_page_module("06_streamlit_charts")
     controller_module.configure_streaming_module(streaming_module)
     controller_module.configure_pipeline_modules(
         kafka_module,
@@ -925,14 +925,13 @@ def render_charts() -> None:
 def render_questions() -> None:
     """Muestro las preguntas de investigación y sus tablas."""
 
-    charts_module = load_page_module("06_streamlit_charts")
     analysis_run_id = st.session_state.alpaca_run_id
     if analysis_run_id is None:
         streaming_module = load_page_module("02_alpaca_stream")
         metadata = streaming_module.get_latest_metadata()
         analysis_run_id = metadata.get("run_id") if metadata else None
     
-    analysis_data = charts_module.get_market_analysis(analysis_run_id)
+    analysis_data = database.get_market_analysis(analysis_run_id)
     st.session_state.analysis_data = analysis_data
     answers = {
         str(answer["question_id"]): answer
@@ -1223,7 +1222,7 @@ def render_volume_chart(rows: list[dict[str, Any]]) -> None:
 def load_page_module(module_name: str) -> ModuleType:
     """Cargo un módulo de procesamiento sin construir su interfaz."""
 
-    module_path = Path(__file__).parent / "stages" / f"{module_name}.py"
+    module_path = Path(__file__).parent / "pipeline" / f"{module_name}.py"
     source_mtime_ns = module_path.stat().st_mtime_ns
     cached_module = sys.modules.get(module_name)
     if cached_module is not None:

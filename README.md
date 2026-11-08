@@ -201,13 +201,12 @@ NicolasDruetta_TP2/
 ├── .dockerignore
 ├── docker/
 │   └── Dockerfile
-├── stages/
+├── pipeline/
 │   ├── 01_python_controller.py
 │   ├── 02_alpaca_stream.py
 │   ├── 03_apache_kafka.py
 │   ├── 04_apache_spark.py
 │   ├── 05_pandas_postgresql.py
-│   └── 06_streamlit_charts.py
 ├── data/
 │   └── (archivos generados por RUN)
 └── assets/
@@ -216,15 +215,15 @@ NicolasDruetta_TP2/
 
 - `main.py`: punto de entrada de Streamlit, controles, tarjetas de estado,
   consolas y funciones comunes.
-- `stages/01_python_controller.py`: ciclo de vida, estados y supervisión del RUN.
-- `stages/02_alpaca_stream.py`: conexión LIVE, descarga histórica,
+- `pipeline/01_python_controller.py`: ciclo de vida, estados y supervisión del RUN.
+- `pipeline/02_alpaca_stream.py`: conexión LIVE, descarga histórica,
   reproducción REPLAY, ciclo de vida y persistencia de Alpaca.
-- `stages/03_apache_kafka.py`: publicación de eventos en Kafka.
-- `stages/04_apache_spark.py`: procesamiento específico de Spark distribuido.
-- `stages/05_pandas_postgresql.py`: estadísticas, correlaciones y persistencia
+- `pipeline/03_apache_kafka.py`: publicación de eventos en Kafka.
+- `pipeline/04_apache_spark.py`: procesamiento específico de Spark distribuido.
+- `pipeline/05_pandas_postgresql.py`: estadísticas, correlaciones y persistencia
   de métricas y respuestas analíticas.
-- `stages/06_streamlit_charts.py`: consultas PostgreSQL y entrega directa de
-  resultados ya preparados para los gráficos.
+- `database.py`: conexiones y operaciones PostgreSQL.
+- `functions.py`: escritura, lectura y numeración compartida de logs.
 - `renders.py`: presentación nativa de las cinco consolas, preguntas y gráficos.
 - `compose.yaml`: servicios Streamlit/Driver, Master, dos Workers, Kafka y
   PostgreSQL con volumen persistente.
@@ -417,7 +416,7 @@ Se inicia con:
 docker compose up
 ```
 
-Los cambios en `main.py`, `stages/`, `assets/` y los recursos del proyecto se
+Los cambios en `main.py`, `pipeline/`, `assets/` y los recursos del proyecto se
 reflejan al guardar y actualizar el navegador. El Master y los Workers no se
 reconstruyen ni se reinician por esos cambios. La imagen solo debe
 reconstruirse cuando cambien `requirements.txt`, `docker/Dockerfile` u otra

@@ -66,11 +66,12 @@ El proyecto no utiliza decoradores de Python, incluidos los decoradores de
 Streamlit. Las funcionalidades equivalentes se expresan mediante funciones
 convencionales y llamadas explícitas.
 
-Cada archivo de `stages/` contiene exclusivamente funciones relacionadas con su
-propia tecnología o funcionalidad. Las funciones comunes de logs y archivos se ubican en `functions.py`.
+Cada archivo de `pipeline/` contiene exclusivamente funciones relacionadas con su
+propia tecnología o funcionalidad. Las funciones comunes de logs y archivos se
+ubican en `functions.py`, y las operaciones PostgreSQL en `database.py`.
 La presentación de Streamlit se ubica en `main.py` y `renders.py`. El análisis
-de Pandas y PostgreSQL se ubica en `stages/05_pandas_postgresql.py`, y la
-consulta de datos para gráficos en `stages/06_streamlit_charts.py`.
+de Pandas y PostgreSQL se ubica en `pipeline/05_pandas_postgresql.py`, y las
+consultas de datos para preguntas y gráficos se ubican en `renders.py`.
 
 Los módulos de procesamiento `01` a `05` no contienen interfaz Streamlit.
 El cargador del punto de entrada las proporciona al módulo especializado antes
@@ -89,15 +90,15 @@ La documentación es breve, precisa y relacionada con la implementación.
 ## 7. Organización del código
 
 `main.py` centraliza el punto de entrada y la interfaz Streamlit.
-`stages/05_pandas_postgresql.py` implementa exclusivamente el análisis con
-Pandas, la preparación de preguntas y gráficos, y la persistencia en PostgreSQL.
-`stages/06_streamlit_charts.py` implementa exclusivamente la consulta de
-resultados analíticos y gráficos mediante instrucciones `SELECT`; no calcula ni
-transforma datos.
+`pipeline/05_pandas_postgresql.py` implementa exclusivamente el análisis con
+Pandas y la preparación de preguntas y gráficos. `database.py` implementa las
+conexiones y operaciones PostgreSQL mediante instrucciones SQL; no calcula
+datos. `renders.py` implementa la presentación, las consolas, sus logs y la
+visualización de resultados analíticos.
 `functions.py` centraliza la escritura y lectura compartida de logs.
 
-Los módulos `01` a `05` procesan datos sin interfaz. El módulo `06` devuelve
-datos para los gráficos y es invocado desde `renders.py`.
+Los módulos `01` a `05` procesan datos sin interfaz. `renders.py` consulta los
+datos analíticos para construir las preguntas y los gráficos.
 
 La carpeta `data/` contiene los datos de entrada y generados localmente,
 `outputs/` contiene los resultados generados y `assets/` contiene los recursos
@@ -105,7 +106,7 @@ visuales.
 
 Las funciones de nivel superior se ordenan alfabéticamente por nombre dentro
 de cada módulo. Esta regla se aplica a `main.py` y a todos los módulos de
-`stages/`, sin mezclar funciones entre archivos.
+`pipeline/`, sin mezclar funciones entre archivos.
 
 ## 8. Buenas prácticas de desarrollo
 
@@ -193,7 +194,7 @@ timestamps originales durante la presentación.
 
 ## 11. Numeración de módulos
 
-Los módulos de `stages/` utilizan una numeración progresiva que refleja el
+Los módulos de `pipeline/` utilizan una numeración progresiva que refleja el
 orden real de implementación. Cada nueva tecnología recibe el siguiente
 número disponible y no se crean archivos anticipadamente para etapas futuras.
 
@@ -231,7 +232,7 @@ Las rutas de archivos se construyen directamente con los nombres canónicos:
 `05_pandas_postgresql_log`.
 Los archivos generados utilizan
 `{run_id}_{numero}_{nombre_modulo}_{tipo}.{extension}`. El número y nombre
-deben corresponder al módulo responsable dentro de `stages/`. No se utilizan
+deben corresponder al módulo responsable dentro de `pipeline/`. No se utilizan
 diccionarios de nombres, alias abreviados ni nombres de archivo alternativos.
 
 Todas las URLs externas se declaran como constantes visibles al comienzo del

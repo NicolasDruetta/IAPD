@@ -1,17 +1,14 @@
-import functions
+import database
 
 import pandas as pd
 import psycopg
 
 from pathlib import Path
-from psycopg.types.json import Jsonb
 from typing import Any
 from zoneinfo import ZoneInfo
 
 DATA_DIRECTORY = Path(__file__).parent.parent / "data"
 FEED_NAME = "IEX"
-MARKET_ANSWERS_TABLE = "market_answers"
-MARKET_METRICS_TABLE = "market_metrics"
 PRESENTATION_TIMEZONE = ZoneInfo("America/Argentina/Cordoba")
 _ANALYSIS_STATES: dict[str, dict[str, Any]] = {}
 
@@ -48,9 +45,9 @@ def analyze_and_persist(
     metrics, answers = _build_analysis_results(metrics_frame, feed)
     top_volume, activity, activity_interval = prepare_chart_data(state)
     try:
-        with functions.get_postgresql_connection() as connection:
-            ensure_tables(connection)
-            persist_analysis(
+        with database.get_postgresql_connection() as connection:
+            database.ensure_tables(connection)
+            database.persist_analysis(
                 connection,
                 run_id,
                 metrics,
@@ -82,130 +79,6 @@ def analyze_and_persist(
             f"ERROR | análisis={error}",
         )
         return False
-
-def ensure_tables(connection: psycopg.Connection) -> None:
-    """Creo las dos tablas analíticas si todavía no existen."""
-
-    with connection.cursor() as cursor:
-        cursor.execute(
-            f"""
-            CREATE TABLE IF NOT EXISTS {MARKET_METRICS_TABLE} (
-                run_id TEXT NOT NULL,
-                symbol TEXT NOT NULL,
-                feed TEXT NOT NULL,
-                trade_count BIGINT NOT NULL,
-                return_count BIGINT NOT NULL,
-                volatility DOUBLE PRECISION,
-                spread_count BIGINT NOT NULL,
-                spread_mean DOUBLE PRECISION,
-                total_volume DOUBLE PRECISION,
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                PRIMARY KEY (run_id, symbol)
-            )
-            """,
-        )
-        cursor.execute(
-            f"""
-            CREATE TABLE IF NOT EXISTS {MARKET_ANSWERS_TABLE} (
-                run_id TEXT NOT NULL,
-                question_id TEXT NOT NULL,
-                feed TEXT NOT NULL,
-                correlation DOUBLE PRECISION,
-                symbol_count BIGINT NOT NULL,
-                top_volume JSONB,
-                activity_rows JSONB,
-                activity_interval INTEGER,
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                PRIMARY KEY (run_id, question_id)
-            )
-            """,
-        )
-        cursor.execute(
-            f"ALTER TABLE {MARKET_ANSWERS_TABLE} ADD COLUMN IF NOT EXISTS top_volume JSONB"
-        )
-        cursor.execute(
-            f"ALTER TABLE {MARKET_ANSWERS_TABLE} ADD COLUMN IF NOT EXISTS activity_rows JSONB"
-        )
-        cursor.execute(
-            f"ALTER TABLE {MARKET_ANSWERS_TABLE} ADD COLUMN IF NOT EXISTS activity_interval INTEGER"
-        )
-        cursor.execute(
-            f"ALTER TABLE {MARKET_ANSWERS_TABLE} DROP COLUMN IF EXISTS conclusion"
-        )
-
-def persist_analysis(
-    connection: psycopg.Connection,
-    run_id: str,
-    metrics: list[dict[str, Any]],
-    answers: list[dict[str, Any]],
-    top_volume: list[dict[str, Any]],
-    activity_rows: list[dict[str, Any]],
-    activity_interval: int,
-) -> None:
-    """Actualizo el RUN completo mediante UPSERT idempotente."""
-
-    with connection.cursor() as cursor:
-        cursor.executemany(
-            f"""
-            INSERT INTO {MARKET_METRICS_TABLE} (
-                run_id, symbol, feed, trade_count, return_count,
-                volatility, spread_count, spread_mean, total_volume
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (run_id, symbol) DO UPDATE SET
-                feed = EXCLUDED.feed,
-                trade_count = EXCLUDED.trade_count,
-                return_count = EXCLUDED.return_count,
-                volatility = EXCLUDED.volatility,
-                spread_count = EXCLUDED.spread_count,
-                spread_mean = EXCLUDED.spread_mean,
-                total_volume = EXCLUDED.total_volume,
-                updated_at = NOW()
-            """,
-            [
-                (
-                    run_id,
-                    metric["symbol"],
-                    metric["feed"],
-                    metric["trade_count"] or 0,
-                    metric["return_count"] or 0,
-                    metric["volatility"],
-                    metric["spread_count"] or 0,
-                    metric["spread_mean"],
-                    metric["total_volume"] or 0.0,
-                )
-                for metric in metrics
-            ],
-        )
-        cursor.executemany(
-            f"""
-            INSERT INTO {MARKET_ANSWERS_TABLE} (
-                run_id, question_id, feed, correlation, symbol_count,
-                top_volume, activity_rows, activity_interval
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (run_id, question_id) DO UPDATE SET
-                feed = EXCLUDED.feed,
-                correlation = EXCLUDED.correlation,
-                symbol_count = EXCLUDED.symbol_count,
-                top_volume = EXCLUDED.top_volume,
-                activity_rows = EXCLUDED.activity_rows,
-                activity_interval = EXCLUDED.activity_interval,
-                updated_at = NOW()
-            """,
-            [
-                (
-                    run_id,
-                    answer["question_id"],
-                    answer["feed"],
-                    answer["correlation"],
-                    answer["symbol_count"],
-                    Jsonb(top_volume) if answer["question_id"] == "volatility" else None,
-                    Jsonb(activity_rows) if answer["question_id"] == "volatility" else None,
-                    activity_interval if answer["question_id"] == "volatility" else None,
-                )
-                for answer in answers
-            ],
-        )
-    connection.commit()
 
 def prepare_chart_data(
     state: dict[str, Any],

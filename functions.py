@@ -1,6 +1,4 @@
-import json
 import os
-import psycopg
 import re
 import threading
 
@@ -9,11 +7,6 @@ from pathlib import Path
 _CONSOLE_LOG_LOCK = threading.RLock()
 _CONSOLE_LOG_SEQUENCES: dict[tuple[str, str], int] = {}
 DATA_DIRECTORY = Path(__file__).parent / "data"
-POSTGRES_DB = os.getenv("POSTGRES_DB", "apache_big_data_lab")
-POSTGRES_HOST = os.getenv("POSTGRES_HOST", "postgres")
-POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "apache_big_data_lab")
-POSTGRES_PORT = os.getenv("POSTGRES_PORT", "5432")
-POSTGRES_USER = os.getenv("POSTGRES_USER", "bigdata")
 
 def append_console_log(
     run_id: str,
@@ -48,17 +41,6 @@ def append_console_log(
             log_file.write(persisted_line + "\n")
             log_file.flush()
             os.fsync(log_file.fileno())
-
-def get_postgresql_connection() -> psycopg.Connection:
-    """Abro una conexión PostgreSQL con la configuración del contenedor."""
-
-    return psycopg.connect(
-        dbname=POSTGRES_DB,
-        host=POSTGRES_HOST,
-        password=POSTGRES_PASSWORD,
-        port=POSTGRES_PORT,
-        user=POSTGRES_USER,
-    )
 
 def console_line_number(line: str) -> int:
     """Obtengo la numeración persistida de una línea de consola."""

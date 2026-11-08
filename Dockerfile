@@ -35,9 +35,10 @@ RUN mkdir -p /opt/spark-ivy /opt/spark-jars \
 
 COPY main.py ./main.py
 COPY components.py ./components.py
+COPY database.py ./database.py
 COPY functions.py ./functions.py
 COPY renders.py ./renders.py
-COPY stages ./stages
+COPY pipeline ./pipeline
 COPY assets ./assets
 COPY README.md ./README.md
 COPY AGENTS.md ./AGENTS.md
