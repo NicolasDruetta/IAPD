@@ -167,8 +167,8 @@ def render_config() -> None:
             ),
             default_option,
         )
-    st.subheader("CONFIG")
-    st.caption("Símbolos bursátiles a analizar")
+
+    st.write(f"**Símbolos bursátiles a analizar:**")
     symbols_col, actions_col = st.columns(
         [1, 1],
         gap="small",
@@ -407,7 +407,6 @@ def render_consoles() -> None:
     )
     run_id = None if st.session_state.start_pending else snapshot["run_id"]
 
-    st.subheader("CONSOLAS")
     execution_column, alpaca_column, kafka_column = st.columns(
         3,
         gap="small",
@@ -415,7 +414,7 @@ def render_consoles() -> None:
         wrap=True,
     )
     with execution_column:
-        st.subheader("1. Log del controlador (Python)")
+        st.subheader("1. Log de controlador (Python)")
         execution_state = get_console_state(
             "execution-log-console",
             run_id,
@@ -507,7 +506,7 @@ def render_consoles() -> None:
             resync=resync,
         )
     with alpaca_column:
-        st.subheader("2. Log de descarga de datos (Alpaca)")
+        st.subheader("2. Log de descarga (Alpaca)")
         alpaca_state = get_console_state(
             "alpaca-log-console",
             run_id,
@@ -769,7 +768,7 @@ def render_info() -> None:
             if presentation_market_timestamp != "-"
             else "-"
         )
-    st.write(f"**INFO**")
+
     with st.container(border=True):
         date_col, time_col, elapsed_col, data_col = st.columns(
             [1, 1, 1, 1],
@@ -814,7 +813,6 @@ def render_charts() -> None:
         },
     )
 
-    st.subheader("GRÁFICOS")
     top_volume = analysis_data.get("top_volume", [])
     activity_rows = analysis_data.get("activity_rows", [])
     activity_interval = analysis_data.get("activity_interval", 1)
@@ -824,10 +822,10 @@ def render_charts() -> None:
         vertical_alignment="top",
     )
     with volume_column:
-        st.write(f"**1. Top 10 acciones por volumen negociado**")
+        st.write(f"**1. Top 10 acciones por volumen negociado.**")
         render_volume_chart(top_volume)
     with activity_column:
-        st.write(f"**2. Actividad bursátil en el tiempo**")
+        st.write(f"**2. Actividad bursátil durante la sesión de mercado.**")
         render_activity_chart(activity_rows, activity_interval)
 
 def render_questions() -> None:
@@ -839,7 +837,7 @@ def render_questions() -> None:
         streaming_module = load_page_module("02_alpaca_stream")
         metadata = streaming_module.get_latest_metadata()
         analysis_run_id = metadata.get("run_id") if metadata else None
-    st.subheader("PREGUNTAS DE INVESTIGACIÓN")
+    
     analysis_data = charts_module.get_market_analysis(analysis_run_id)
     st.session_state.analysis_data = analysis_data
     answers = {
