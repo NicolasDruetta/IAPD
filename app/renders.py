@@ -34,6 +34,21 @@ SYMBOL_OPTIONS = {
     },
 }
 
+CONSOLE_ARROW_COMPONENT = st.components.v2.component(
+    name="apache_big_data_lab.console_arrow",
+    html=(
+        '<span class="console-arrow-track">'
+        '<span class="console-arrow" '
+        'aria-hidden="true">→</span></span>'
+    ),
+    isolate_styles=False,
+    js="""
+    export default function () {
+        return () => {};
+    }
+    """,
+)
+
 EXECUTION_TIMER_COMPONENT = st.components.v2.component(
     name="apache_big_data_lab.execution_timer",
     html='<span class="execution-timer"></span>',
@@ -81,6 +96,39 @@ EXECUTION_TIMER_COMPONENT = st.components.v2.component(
         }
         render();
         parentElement.__executionTimerState = state;
+        return () => {};
+    }
+    """,
+)
+
+LIVE_INDICATOR_COMPONENT = st.components.v2.component(
+    name="apache_big_data_lab.live_indicator",
+    html=(
+        '<span class="live-indicator-anchor" aria-hidden="true"></span>'
+    ),
+    isolate_styles=False,
+    js="""
+    export default function ({ data }) {
+        const headings = Array.from(
+            document.querySelectorAll("h1, h2, h3, h4, h5, h6"),
+        );
+        const heading = headings.find(
+            (element) => element.textContent.trim() === data.title,
+        );
+        if (heading === undefined) {
+            return () => {};
+        }
+        const indicator = heading.querySelector(":scope > .live-indicator");
+        if (data.active && indicator === null) {
+            const liveIndicator = document.createElement("span");
+            liveIndicator.className = "live-indicator";
+            liveIndicator.innerHTML =
+                '<span class="live-dot" aria-hidden="true"></span>' +
+                '<span>LIVE</span>';
+            heading.appendChild(liveIndicator);
+        } else if (!data.active && indicator !== null) {
+            indicator.remove();
+        }
         return () => {};
     }
     """,
@@ -225,6 +273,21 @@ def get_last_execution_notice(snapshot: dict[str, Any]) -> str | None:
     ):
         completion_text = "Detenido manualmente."
     return f"Datos de la **última ejecución:** {last_execution_text}. **Duración:** {elapsed_text}. **{completion_text}** | **Fecha de mercado:** {history_market_date}. | **RUN ID:** {history_run_id}."
+
+def render_live_indicator(title: str, key: str) -> None:
+    """Muestro LIVE únicamente durante una ejecución activa."""
+
+    controller_module = load_page_module("01_python_controller")
+    snapshot = controller_module.get_run_snapshot()
+    is_active = bool(
+        snapshot.get("is_active")
+        and not st.session_state.start_pending
+        and not st.session_state.stop_pending
+    )
+    LIVE_INDICATOR_COMPONENT(
+        data={"active": is_active, "title": title},
+        key=key,
+    )
 
 def render_header() -> None:
     """Muestro el encabezado general del laboratorio."""
@@ -544,12 +607,16 @@ def render_config() -> None:
             else:
                 st.text(status_text)
 
-    if snapshot["error"] and not st.session_state.start_pending:
+    if (
+        snapshot["error"]
+        and not snapshot["is_active"]
+        and not st.session_state.start_pending
+    ):
         st.error("**Error:** " + (" ".join(str(snapshot["error"]).split())))
 
     last_execution_notice = get_last_execution_notice(snapshot)
     automatic_stop_messages = {
-        "heartbeat_timeout": "La ejecución se detuvo automáticamente porque la interfaz dejó de enviar señales de actividad durante 15 minutos.",
+        "heartbeat_timeout": f"La ejecución se detuvo automáticamente porque la interfaz dejó de enviar señales de actividad durante {controller_module.HEARTBEAT_TIMEOUT_MINUTES} minutos.",
         "process_restart": "La ejecución se detuvo automáticamente porque se reinició el proceso de la aplicación.",
         "process_shutdown": "La ejecución se detuvo automáticamente porque se cerró el proceso de la aplicación.",
     }
@@ -560,6 +627,7 @@ def render_config() -> None:
     if (
         automatic_stop_message
         and automatic_stop_reason != "manual_stop"
+        and not snapshot["is_active"]
         and not st.session_state.start_pending
     ):
         st.error(automatic_stop_message)
@@ -629,418 +697,488 @@ def _get_consoles_context() -> tuple[Any, ...]:
         path is None or not path.exists()
         for path in paths
     )
-    return clear_consoles, run_id, *paths, downloads_disabled
+    is_active = bool(
+        snapshot["is_active"]
+        and not st.session_state.start_pending
+        and not st.session_state.stop_pending
+    )
+    return clear_consoles, run_id, *paths, downloads_disabled, is_active
 
 def render_consoles_part1() -> None:
     """Muestro las primeras cuatro consolas del pipeline."""
 
-    (
-        clear_consoles,
-        run_id,
-        execution_path,
-        alpaca_path,
-        kafka_path,
-        spark_path,
-        _pandas_path,
-        _postgresql_path,
-        downloads_disabled,
-    ) = _get_consoles_context()
+    with st.container(key="consoles-part1"):
+        (
+            clear_consoles,
+            run_id,
+            execution_path,
+            alpaca_path,
+            kafka_path,
+            spark_path,
+            _pandas_path,
+            _postgresql_path,
+            downloads_disabled,
+            is_active,
+        ) = _get_consoles_context()
 
-    execution_column, alpaca_column = st.columns(
-        2,
-        gap="small",
-        vertical_alignment="top",
-        wrap=True,
-    )
-    with execution_column:
-        st.subheader("1. Log de controlador (Python)")
-        execution_state = get_console_state(
-            "execution-log-console",
-            run_id,
+        execution_column, alpaca_column = st.columns(
+            2,
+            gap="small",
+            vertical_alignment="top",
+            wrap=True,
         )
-        log_lines, cursor_start, next_cursor, initial_load, resync = (
-            get_console_buffer_view(
+        with execution_column:
+            with st.container(
+                horizontal=True,
+                vertical_alignment="center",
+                gap="small",
+            ):
+                st.subheader("1. Log del controlador (Python)", width="content")
+                if is_active:
+                    CONSOLE_ARROW_COMPONENT(
+                        key="console-arrow-controller",
+                        width="stretch",
+                    )
+            execution_state = get_console_state(
+                "execution-log-console",
                 run_id,
-                "controller",
-                execution_path,
-                execution_state,
-                clear_consoles,
             )
-        )
-        log_display_lines = [
-            format_presentation_log_line(line)
-            for line in log_lines
-        ]
-        is_placeholder = (
-            not log_display_lines
-            and execution_state["line_number"] == 0
-        )
-        if is_placeholder:
+            log_lines, cursor_start, next_cursor, initial_load, resync = (
+                get_console_buffer_view(
+                    run_id,
+                    "controller",
+                    execution_path,
+                    execution_state,
+                    clear_consoles,
+                )
+            )
             log_display_lines = [
-                "Log del controlador | esperando actividad."
+                format_presentation_log_line(line)
+                for line in log_lines
             ]
-        with st.container(
-            horizontal=True,
-            horizontal_alignment="distribute",
-            vertical_alignment="center",
-        ):
-            st.caption(
-                f"Eventos recibidos: {execution_state['line_number']}"
+            is_placeholder = (
+                not log_display_lines
+                and execution_state["line_number"] == 0
             )
-            st.download_button(
-                "↓",
-                data=execution_path.read_bytes()
-                if execution_path is not None and execution_path.exists()
-                else b"",
-                file_name=(
-                    execution_path.name
-                    if execution_path is not None
-                    else "01_python_controller_log.txt"
-                ),
-                mime="text/plain",
-                key=f"download-execution-log-console-{run_id or 'no-run'}",
-                help="Descargar log completo",
-                disabled=downloads_disabled,
-                type="secondary",
-                width=36,
+            if is_placeholder:
+                log_display_lines = [
+                    "Log del controlador | esperando actividad."
+                ]
+            with st.container(
+                horizontal=True,
+                horizontal_alignment="distribute",
+                vertical_alignment="center",
+            ):
+                st.caption(
+                    f"Eventos recibidos: {execution_state['line_number']}"
+                )
+                st.download_button(
+                    "↓",
+                    data=execution_path.read_bytes()
+                    if execution_path is not None and execution_path.exists()
+                    else b"",
+                    file_name=(
+                        execution_path.name
+                        if execution_path is not None
+                        else "01_python_controller_log.txt"
+                    ),
+                    mime="text/plain",
+                    key=f"download-execution-log-console-{run_id or 'no-run'}",
+                    help="Descargar log completo",
+                    disabled=downloads_disabled,
+                    type="secondary",
+                    width=36,
+                )
+            render_log_console(
+                log_display_lines,
+                "execution-log-console",
+                cursor_end=next_cursor,
+                cursor_start=cursor_start,
+                has_more=False,
+                initial_load=initial_load,
+                placeholder=is_placeholder,
+                resync=resync,
             )
-        render_log_console(
-            log_display_lines,
-            "execution-log-console",
-            cursor_end=next_cursor,
-            cursor_start=cursor_start,
-            has_more=False,
-            initial_load=initial_load,
-            placeholder=is_placeholder,
-            resync=resync,
-        )
-    with alpaca_column:
-        st.subheader("2. Log de descarga (Alpaca)")
-        alpaca_state = get_console_state(
-            "alpaca-log-console",
-            run_id,
-        )
-        events, cursor_start, next_cursor, initial_load, resync = (
-            get_console_buffer_view(
+        with alpaca_column:
+            with st.container(
+                horizontal=True,
+                vertical_alignment="center",
+                gap="small",
+            ):
+                st.subheader("2. Log de descarga (Alpaca)", width="content")
+                if is_active:
+                    CONSOLE_ARROW_COMPONENT(
+                        key="console-arrow-alpaca",
+                        width="stretch",
+                    )
+            alpaca_state = get_console_state(
+                "alpaca-log-console",
                 run_id,
-                "alpaca",
-                alpaca_path,
-                alpaca_state,
-                clear_consoles,
             )
-        )
-        event_lines = [
-            format_presentation_log_line(line)
-            for line in events
-        ]
-        has_event_lines = bool(event_lines)
-        is_placeholder = (
-            not event_lines
-            and alpaca_state["line_number"] == 0
-        )
-        if is_placeholder:
+            events, cursor_start, next_cursor, initial_load, resync = (
+                get_console_buffer_view(
+                    run_id,
+                    "alpaca",
+                    alpaca_path,
+                    alpaca_state,
+                    clear_consoles,
+                )
+            )
             event_lines = [
-                "Alpaca | esperando cotizaciones u operaciones."
+                format_presentation_log_line(line)
+                for line in events
             ]
-        with st.container(
-            horizontal=True,
-            horizontal_alignment="distribute",
-            vertical_alignment="center",
-        ):
-            st.caption(f"Datos descargados: {alpaca_state['line_number']}")
-            st.download_button(
-                "↓",
-                data=alpaca_path.read_bytes()
-                if alpaca_path is not None and alpaca_path.exists()
-                else b"",
-                file_name=(
-                    alpaca_path.name
-                    if alpaca_path is not None
-                    else "02_alpaca_stream_log.txt"
-                ),
-                mime="text/plain",
-                key=f"download-alpaca-log-console-{run_id or 'no-run'}",
-                help="Descargar log completo",
-                disabled=downloads_disabled,
-                type="secondary",
-                width=36,
+            has_event_lines = bool(event_lines)
+            is_placeholder = (
+                not event_lines
+                and alpaca_state["line_number"] == 0
             )
-        render_log_console(
-            event_lines,
-            "alpaca-log-console",
-            cursor_end=next_cursor,
-            cursor_start=cursor_start,
-            has_more=False,
-            initial_load=initial_load,
-            placeholder=is_placeholder,
-            resync=resync,
-        )
-    kafka_column, spark_column = st.columns(
-        2,
-        gap="small",
-        vertical_alignment="top",
-        wrap=True,
-    )
-    with kafka_column:
-        st.subheader("3. Log de publicación (Kafka)")
-        kafka_state = get_console_state("kafka-log-console", run_id)
-        kafka_records, cursor_start, next_cursor, initial_load, resync = (
-            get_console_buffer_view(
-                run_id,
-                "kafka",
-                kafka_path,
-                kafka_state,
-                clear_consoles,
+            if is_placeholder:
+                event_lines = [
+                    "Alpaca | esperando cotizaciones u operaciones."
+                ]
+            with st.container(
+                horizontal=True,
+                horizontal_alignment="distribute",
+                vertical_alignment="center",
+            ):
+                st.caption(f"Datos descargados: {alpaca_state['line_number']}")
+                st.download_button(
+                    "↓",
+                    data=alpaca_path.read_bytes()
+                    if alpaca_path is not None and alpaca_path.exists()
+                    else b"",
+                    file_name=(
+                        alpaca_path.name
+                        if alpaca_path is not None
+                        else "02_alpaca_stream_log.txt"
+                    ),
+                    mime="text/plain",
+                    key=f"download-alpaca-log-console-{run_id or 'no-run'}",
+                    help="Descargar log completo",
+                    disabled=downloads_disabled,
+                    type="secondary",
+                    width=36,
+                )
+            render_log_console(
+                event_lines,
+                "alpaca-log-console",
+                cursor_end=next_cursor,
+                cursor_start=cursor_start,
+                has_more=False,
+                initial_load=initial_load,
+                placeholder=is_placeholder,
+                resync=resync,
             )
+        kafka_column, spark_column = st.columns(
+            2,
+            gap="small",
+            vertical_alignment="top",
+            wrap=True,
         )
-        kafka_lines = [
-            format_presentation_log_line(line)
-            for line in kafka_records
-        ]
-        kafka_cursor_end = next_cursor
-        is_placeholder = not kafka_lines and kafka_state["line_number"] == 0
-        if is_placeholder:
-            kafka_lines = ["Kafka | esperando eventos para publicar."]
-        with st.container(
-            horizontal=True,
-            horizontal_alignment="distribute",
-            vertical_alignment="center",
-        ):
-            st.caption(f"Registros publicados: {kafka_state['line_number']}")
-            st.download_button(
-                "↓",
-                data=kafka_path.read_bytes()
-                if kafka_path is not None and kafka_path.exists()
-                else b"",
-                file_name=(
-                    kafka_path.name
-                    if kafka_path is not None
-                    else "03_apache_kafka_log.txt"
-                ),
-                mime="text/plain",
-                key=f"download-kafka-log-console-{run_id or 'no-run'}",
-                help="Descargar log completo",
-                disabled=downloads_disabled,
-                type="secondary",
-                width=36,
+        with kafka_column:
+            with st.container(
+                horizontal=True,
+                vertical_alignment="center",
+                gap="small",
+            ):
+                st.subheader("3. Log de publicación (Kafka)", width="content")
+                if is_active:
+                    CONSOLE_ARROW_COMPONENT(
+                        key="console-arrow-kafka",
+                        width="stretch",
+                    )
+            kafka_state = get_console_state("kafka-log-console", run_id)
+            kafka_records, cursor_start, next_cursor, initial_load, resync = (
+                get_console_buffer_view(
+                    run_id,
+                    "kafka",
+                    kafka_path,
+                    kafka_state,
+                    clear_consoles,
+                )
             )
-        render_log_console(
-            kafka_lines,
-            "kafka-log-console",
-            cursor_end=kafka_cursor_end,
-            cursor_start=cursor_start,
-            has_more=False,
-            initial_load=initial_load,
-            placeholder=is_placeholder,
-            resync=resync,
-        )
-    with spark_column:
-        st.subheader("4. Log de procesamiento (Spark)")
-        spark_state = get_console_state("spark-log-console", run_id)
-        spark_records, cursor_start, next_cursor, initial_load, resync = (
-            get_console_buffer_view(
-                run_id,
-                "spark",
-                spark_path,
-                spark_state,
-                clear_consoles,
+            kafka_lines = [
+                format_presentation_log_line(line)
+                for line in kafka_records
+            ]
+            kafka_cursor_end = next_cursor
+            is_placeholder = not kafka_lines and kafka_state["line_number"] == 0
+            if is_placeholder:
+                kafka_lines = ["Kafka | esperando eventos para publicar."]
+            with st.container(
+                horizontal=True,
+                horizontal_alignment="distribute",
+                vertical_alignment="center",
+            ):
+                st.caption(f"Registros publicados: {kafka_state['line_number']}")
+                st.download_button(
+                    "↓",
+                    data=kafka_path.read_bytes()
+                    if kafka_path is not None and kafka_path.exists()
+                    else b"",
+                    file_name=(
+                        kafka_path.name
+                        if kafka_path is not None
+                        else "03_apache_kafka_log.txt"
+                    ),
+                    mime="text/plain",
+                    key=f"download-kafka-log-console-{run_id or 'no-run'}",
+                    help="Descargar log completo",
+                    disabled=downloads_disabled,
+                    type="secondary",
+                    width=36,
+                )
+            render_log_console(
+                kafka_lines,
+                "kafka-log-console",
+                cursor_end=kafka_cursor_end,
+                cursor_start=cursor_start,
+                has_more=False,
+                initial_load=initial_load,
+                placeholder=is_placeholder,
+                resync=resync,
             )
-        )
-        spark_lines = [format_presentation_log_line(line) for line in spark_records]
-        is_placeholder = not spark_lines and spark_state["line_number"] == 0
-        if is_placeholder:
-            spark_lines = ["Spark | esperando eventos bursátiles."]
-        with st.container(
-            horizontal=True,
-            horizontal_alignment="distribute",
-            vertical_alignment="center",
-        ):
-            st.caption(f"Registros procesados: {spark_state['line_number']}")
-            st.download_button(
-                "↓",
-                data=spark_path.read_bytes()
-                if spark_path is not None and spark_path.exists()
-                else b"",
-                file_name=(
-                    spark_path.name
-                    if spark_path is not None
-                    else "04_apache_spark_log.txt"
-                ),
-                mime="text/plain",
-                key=f"download-spark-log-console-{run_id or 'no-run'}",
-                help="Descargar log completo",
-                disabled=downloads_disabled,
-                type="secondary",
-                width=36,
+        with spark_column:
+            with st.container(
+                horizontal=True,
+                vertical_alignment="center",
+                gap="small",
+            ):
+                st.subheader("4. Log de procesamiento (Spark)", width="content")
+                if is_active:
+                    CONSOLE_ARROW_COMPONENT(
+                        key="console-arrow-spark",
+                        width="stretch",
+                    )
+            spark_state = get_console_state("spark-log-console", run_id)
+            spark_records, cursor_start, next_cursor, initial_load, resync = (
+                get_console_buffer_view(
+                    run_id,
+                    "spark",
+                    spark_path,
+                    spark_state,
+                    clear_consoles,
+                )
             )
-        render_log_console(
-            spark_lines,
-            "spark-log-console",
-            cursor_end=next_cursor,
-            cursor_start=cursor_start,
-            has_more=False,
-            initial_load=initial_load,
-            placeholder=is_placeholder,
-            resync=resync,
-        )
-        st.caption(
-            "**[Spark Master ↗](http://localhost:8080/)** &nbsp;-&nbsp; "
-            "**[Worker 1 ↗](http://localhost:8081/)** &nbsp;-&nbsp; "
-            "**[Worker 2 ↗](http://localhost:8082/)** &nbsp;-&nbsp; "
-            "**[Spark Jobs ↗](http://localhost:4040/)** "
-        )
+            spark_lines = [format_presentation_log_line(line) for line in spark_records]
+            is_placeholder = not spark_lines and spark_state["line_number"] == 0
+            if is_placeholder:
+                spark_lines = ["Spark | esperando eventos bursátiles."]
+            with st.container(
+                horizontal=True,
+                horizontal_alignment="distribute",
+                vertical_alignment="center",
+            ):
+                st.caption(f"Registros procesados: {spark_state['line_number']}")
+                st.download_button(
+                    "↓",
+                    data=spark_path.read_bytes()
+                    if spark_path is not None and spark_path.exists()
+                    else b"",
+                    file_name=(
+                        spark_path.name
+                        if spark_path is not None
+                        else "04_apache_spark_log.txt"
+                    ),
+                    mime="text/plain",
+                    key=f"download-spark-log-console-{run_id or 'no-run'}",
+                    help="Descargar log completo",
+                    disabled=downloads_disabled,
+                    type="secondary",
+                    width=36,
+                )
+            render_log_console(
+                spark_lines,
+                "spark-log-console",
+                cursor_end=next_cursor,
+                cursor_start=cursor_start,
+                has_more=False,
+                initial_load=initial_load,
+                placeholder=is_placeholder,
+                resync=resync,
+            )
+            st.caption(
+                "**[Spark Master ↗](http://localhost:8080/)** &nbsp;-&nbsp; "
+                "**[Worker 1 ↗](http://localhost:8081/)** &nbsp;-&nbsp; "
+                "**[Worker 2 ↗](http://localhost:8082/)** &nbsp;-&nbsp; "
+                "**[Spark Jobs ↗](http://localhost:4040/)** "
+            )
 
 def render_consoles_part2() -> None:
     """Muestro las consolas de análisis y persistencia del pipeline."""
 
-    (
-        clear_consoles,
-        run_id,
-        execution_path,
-        alpaca_path,
-        kafka_path,
-        spark_path,
-        pandas_path,
-        postgresql_path,
-        downloads_disabled,
-    ) = _get_consoles_context()
-    pandas_column, postgresql_column = st.columns(
-        2,
-        gap="small",
-        vertical_alignment="top",
-        wrap=True,
-    )
-    with pandas_column:
-        st.subheader("5. Log de análisis (Pandas)")
-        pandas_download_disabled = (
-            pandas_path is None or not pandas_path.exists()
-        )
-        pandas_state = get_console_state(
-            "pandas-log-console",
+    with st.container(key="consoles-part2"):
+        (
+            clear_consoles,
             run_id,
+            execution_path,
+            alpaca_path,
+            kafka_path,
+            spark_path,
+            pandas_path,
+            postgresql_path,
+            downloads_disabled,
+            is_active,
+        ) = _get_consoles_context()
+        pandas_column, postgresql_column = st.columns(
+            2,
+            gap="small",
+            vertical_alignment="top",
+            wrap=True,
         )
-        pandas_records, cursor_start, next_cursor, initial_load, resync = (
-            get_console_buffer_view(
+        with pandas_column:
+            with st.container(
+                horizontal=True,
+                vertical_alignment="center",
+                gap="small",
+            ):
+                st.subheader("5. Log de análisis (Pandas)", width="content")
+                if is_active:
+                    CONSOLE_ARROW_COMPONENT(
+                        key="console-arrow-pandas",
+                        width="stretch",
+                    )
+            pandas_download_disabled = (
+                pandas_path is None or not pandas_path.exists()
+            )
+            pandas_state = get_console_state(
+                "pandas-log-console",
                 run_id,
-                "pandas",
-                pandas_path,
-                pandas_state,
-                clear_consoles,
             )
-        )
-        pandas_lines = [
-            format_presentation_log_line(line)
-            for line in pandas_records
-        ]
-        is_placeholder = not pandas_lines and pandas_state["line_number"] == 0
-        if is_placeholder:
-            pandas_lines = ["Pandas | esperando agregados de Spark."]
-        with st.container(
-            horizontal=True,
-            horizontal_alignment="distribute",
-            vertical_alignment="center",
-        ):
-            st.caption(
-                f"Registros analíticos: {pandas_state['line_number']}"
+            pandas_records, cursor_start, next_cursor, initial_load, resync = (
+                get_console_buffer_view(
+                    run_id,
+                    "pandas",
+                    pandas_path,
+                    pandas_state,
+                    clear_consoles,
+                )
             )
-            st.download_button(
-                "↓",
-                data=pandas_path.read_bytes()
-                if pandas_path is not None and pandas_path.exists()
-                else b"",
-                file_name=(
-                    pandas_path.name
-                    if pandas_path is not None
-                    else "05_pandas_log.txt"
-                ),
-                mime="text/plain",
-                key=f"download-pandas-log-console-{run_id or 'no-run'}",
-                help="Descargar log completo",
-                disabled=pandas_download_disabled,
-                type="secondary",
-                width=36,
-            )
-        render_log_console(
-            pandas_lines,
-            "pandas-log-console",
-            cursor_end=next_cursor,
-            cursor_start=cursor_start,
-            has_more=False,
-            initial_load=initial_load,
-            placeholder=is_placeholder,
-            resync=resync,
-        )
-    with postgresql_column:
-        st.subheader("6. Log de persistencia (PostgreSQL)")
-        postgresql_download_disabled = (
-            postgresql_path is None or not postgresql_path.exists()
-        )
-        postgresql_state = get_console_state(
-            "postgresql-log-console",
-            run_id,
-        )
-        postgresql_records, cursor_start, next_cursor, initial_load, resync = (
-            get_console_buffer_view(
-                run_id,
-                "postgresql",
-                postgresql_path,
-                postgresql_state,
-                clear_consoles,
-            )
-        )
-        postgresql_lines = [
-            format_presentation_log_line(line)
-            for line in postgresql_records
-        ]
-        is_placeholder = (
-            not postgresql_lines
-            and postgresql_state["line_number"] == 0
-        )
-        if is_placeholder:
-            postgresql_lines = [
-                "PostgreSQL | esperando persistencia de resultados."
+            pandas_lines = [
+                format_presentation_log_line(line)
+                for line in pandas_records
             ]
-        with st.container(
-            horizontal=True,
-            horizontal_alignment="distribute",
-            vertical_alignment="center",
-        ):
-            st.caption(
-                f"Registros persistidos: {postgresql_state['line_number']}"
+            is_placeholder = not pandas_lines and pandas_state["line_number"] == 0
+            if is_placeholder:
+                pandas_lines = ["Pandas | esperando agregados de Spark."]
+            with st.container(
+                horizontal=True,
+                horizontal_alignment="distribute",
+                vertical_alignment="center",
+            ):
+                st.caption(
+                    f"Registros analíticos: {pandas_state['line_number']}"
+                )
+                st.download_button(
+                    "↓",
+                    data=pandas_path.read_bytes()
+                    if pandas_path is not None and pandas_path.exists()
+                    else b"",
+                    file_name=(
+                        pandas_path.name
+                        if pandas_path is not None
+                        else "05_pandas_log.txt"
+                    ),
+                    mime="text/plain",
+                    key=f"download-pandas-log-console-{run_id or 'no-run'}",
+                    help="Descargar log completo",
+                    disabled=pandas_download_disabled,
+                    type="secondary",
+                    width=36,
+                )
+            render_log_console(
+                pandas_lines,
+                "pandas-log-console",
+                cursor_end=next_cursor,
+                cursor_start=cursor_start,
+                has_more=False,
+                initial_load=initial_load,
+                placeholder=is_placeholder,
+                resync=resync,
             )
-            st.download_button(
-                "↓",
-                data=postgresql_path.read_bytes()
-                if postgresql_path is not None and postgresql_path.exists()
-                else b"",
-                file_name=(
-                    postgresql_path.name
-                    if postgresql_path is not None
-                    else "06_postgresql_log.txt"
-                ),
-                mime="text/plain",
-                key=f"download-postgresql-log-console-{run_id or 'no-run'}",
-                help="Descargar log completo",
-                disabled=postgresql_download_disabled,
-                type="secondary",
-                width=36,
+        with postgresql_column:
+            with st.container(
+                horizontal=True,
+                vertical_alignment="center",
+                gap="small",
+            ):
+                st.subheader("6. Log de persistencia (PostgreSQL)", width="content")
+                if is_active:
+                    CONSOLE_ARROW_COMPONENT(
+                        key="console-arrow-postgresql",
+                        width="stretch",
+                    )
+            postgresql_download_disabled = (
+                postgresql_path is None or not postgresql_path.exists()
             )
-        render_log_console(
-            postgresql_lines,
-            "postgresql-log-console",
-            cursor_end=next_cursor,
-            cursor_start=cursor_start,
-            has_more=False,
-            initial_load=initial_load,
-            placeholder=is_placeholder,
-            resync=resync,
-        )
-    if clear_consoles:
-        st.session_state.start_requested = False
+            postgresql_state = get_console_state(
+                "postgresql-log-console",
+                run_id,
+            )
+            postgresql_records, cursor_start, next_cursor, initial_load, resync = (
+                get_console_buffer_view(
+                    run_id,
+                    "postgresql",
+                    postgresql_path,
+                    postgresql_state,
+                    clear_consoles,
+                )
+            )
+            postgresql_lines = [
+                format_presentation_log_line(line)
+                for line in postgresql_records
+            ]
+            is_placeholder = (
+                not postgresql_lines
+                and postgresql_state["line_number"] == 0
+            )
+            if is_placeholder:
+                postgresql_lines = [
+                    "PostgreSQL | esperando persistencia de resultados."
+                ]
+            with st.container(
+                horizontal=True,
+                horizontal_alignment="distribute",
+                vertical_alignment="center",
+            ):
+                st.caption(
+                    f"Registros persistidos: {postgresql_state['line_number']}"
+                )
+                st.download_button(
+                    "↓",
+                    data=postgresql_path.read_bytes()
+                    if postgresql_path is not None and postgresql_path.exists()
+                    else b"",
+                    file_name=(
+                        postgresql_path.name
+                        if postgresql_path is not None
+                        else "06_postgresql_log.txt"
+                    ),
+                    mime="text/plain",
+                    key=f"download-postgresql-log-console-{run_id or 'no-run'}",
+                    help="Descargar log completo",
+                    disabled=postgresql_download_disabled,
+                    type="secondary",
+                    width=36,
+                )
+            render_log_console(
+                postgresql_lines,
+                "postgresql-log-console",
+                cursor_end=next_cursor,
+                cursor_start=cursor_start,
+                has_more=False,
+                initial_load=initial_load,
+                placeholder=is_placeholder,
+                resync=resync,
+            )
+        if clear_consoles:
+            st.session_state.start_requested = False
 
 def render_info() -> None:
     """Muestro la información de la última ejecución."""
 
+    render_live_indicator("INFORMACIÓN", "live-info")
     controller_module = load_page_module("01_python_controller")
     streaming_module = load_page_module("02_alpaca_stream")
     controller_module.configure_streaming_module(streaming_module)
@@ -1103,6 +1241,7 @@ def render_info() -> None:
 def render_charts() -> None:
     """Muestro los gráficos de la última ejecución."""
 
+    render_live_indicator("GRÁFICOS", "live-charts")
     if st.session_state.start_requested or st.session_state.start_pending:
         analysis_data = {
             "activity_interval": 1,
@@ -1137,6 +1276,10 @@ def render_charts() -> None:
 def render_questions() -> None:
     """Muestro las preguntas de investigación y sus tablas."""
 
+    render_live_indicator(
+        "PREGUNTAS DE INVESTIGACIÓN",
+        "live-questions",
+    )
     if st.session_state.start_requested or st.session_state.start_pending:
         analysis_data = {
             "answers": [],

@@ -105,6 +105,52 @@ textarea {
 
 /* Clases Custom y de Streamlit. */
 
+.console-arrow {
+    animation: console-arrow-slide 2.5s linear infinite;
+    color: currentColor;
+    display: inline-block;
+    font-size: 22px;
+    left: 0;
+    line-height: 1;
+    position: absolute;
+    top: 50%;
+    white-space: nowrap;
+    --arrow-travel: 100%;
+}
+
+.console-arrow-track {
+    display: block;
+    height: 24px;
+    overflow: hidden;
+    position: relative;
+    width: 100%;
+}
+
+.live-dot {
+    animation: live-dot-pulse 1.5s ease-in-out infinite;
+    background: #dc3545;
+    border-radius: 50%;
+    display: inline-block;
+    height: 0.5rem;
+    width: 0.5rem;
+}
+
+.live-indicator {
+    align-items: center;
+    color: #dc3545;
+    display: inline-flex;
+    font-size: 0.75rem;
+    font-weight: 700;
+    gap: 0.35rem;
+    line-height: 1;
+    position: relative;
+    top: -5px;
+}
+
+.live-indicator-anchor {
+    display: none;
+}
+
 .log-console {
     background: var(--console-background);
     border: 1px solid var(--border-color);
@@ -175,6 +221,18 @@ textarea {
 .st-key-console-title-execution-log-console,
 .st-key-console-title-spark-log-console {
     min-height: calc(2 * 1.75rem + 1.5rem);
+}
+
+.st-key-consoles-part1 {
+    background-color: rgba(33, 195, 84, 0.05) !important;
+    border-radius: 0.5rem;
+    padding: 1rem;
+}
+
+.st-key-consoles-part2 {
+    background-color: rgba(0, 134, 255, 0.05) !important;
+    border-radius: 0.5rem;
+    padding: 1rem;
 }
 
 .st-key-start-button button,
@@ -301,6 +359,10 @@ textarea {
     border-color: var(--border-color) !important;
 }
 
+.stApp:has(.st-key-theme-dark) .st-key-consoles-part1 a {
+    color: #66b3ff !important;
+}
+
 .stApp:has(.st-key-theme-dark) button {
     background: var(--card-background) !important;
     border-color: var(--border-color) !important;
@@ -391,22 +453,22 @@ body:has(.st-key-theme-dark) > div:last-of-type * {
 .stApp:has(.st-key-theme-dark) .dvn-scroller.stDataFrameGlideDataEditor {
     --gdg-bg-cell: #171a22 !important;
     --gdg-bg-cell-medium: #1d212b !important;
+    --gdg-bg-group-header: #1d212b !important;
+    --gdg-bg-group-header-hovered: #292e39 !important;
     --gdg-bg-header: #1d212b !important;
     --gdg-bg-header-has-focus: #292e39 !important;
     --gdg-bg-header-hovered: #292e39 !important;
-    --gdg-bg-group-header: #1d212b !important;
-    --gdg-bg-group-header-hovered: #292e39 !important;
     --gdg-bg-icon-header: #f1f3f8 !important;
     --gdg-border-color: #3b404d !important;
     --gdg-fg-icon-header: #ffffff !important;
     --gdg-horizontal-border-color: #3b404d !important;
-    --gdg-text-header: #ffffff !important;
-    --gdg-text-group-header: #ffffff !important;
-    --gdg-text-header-selected: #ffffff !important;
+    --gdg-text-bubble: #ffffff !important;
     --gdg-text-dark: #ffffff !important;
+    --gdg-text-group-header: #ffffff !important;
+    --gdg-text-header: #ffffff !important;
+    --gdg-text-header-selected: #ffffff !important;
     --gdg-text-light: #ffffff !important;
     --gdg-text-medium: #b6bdca !important;
-    --gdg-text-bubble: #ffffff !important;
 }
 
 .stApp:has(.st-key-theme-dark) .stDataFrame canvas,
@@ -429,5 +491,51 @@ body:has(.st-key-theme-dark) > div:last-of-type * {
 @media (max-width: 767.98px) {
     .stHorizontalBlock > .stColumn {
         flex: 1 1 100% !important;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .console-arrow {
+        animation: none;
+        opacity: 1;
+        transform: translateY(-50%);
+    }
+
+    .live-dot {
+        animation: none;
+    }
+}
+
+/* Key Frames. */
+
+@keyframes console-arrow-slide {
+    0% {
+        opacity: 0;
+        transform: translateY(-50%) translateX(-100%);
+    }
+
+    5% {
+        opacity: 1;
+    }
+
+    95% {
+        opacity: 1;
+    }
+
+    100% {
+        left: var(--arrow-travel);
+        opacity: 0;
+        transform: translateY(-50%);
+    }
+}
+
+@keyframes live-dot-pulse {
+    0%,
+    100% {
+        opacity: 1;
+    }
+
+    50% {
+        opacity: 0.25;
     }
 }

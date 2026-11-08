@@ -16,7 +16,7 @@ _RUN_SEQUENCES: dict[str, int] = {}
 _SPARK_MODULE: Any = None
 _STREAMING_MODULE: Any = None
 _SUPERVISOR_THREAD: threading.Thread | None = None
-HEARTBEAT_TIMEOUT_SECONDS = 900
+HEARTBEAT_TIMEOUT_MINUTES = 15
 
 def append_controller_log(
     run_id: str,
@@ -353,7 +353,7 @@ def _supervise_heartbeat(service: Any) -> None:
         time.sleep(1)
         if (
             service.is_active()
-            and service.heartbeat_elapsed() > HEARTBEAT_TIMEOUT_SECONDS
+            and service.heartbeat_elapsed() > HEARTBEAT_TIMEOUT_MINUTES * 60
         ):
             service.stop("heartbeat_timeout")
             return

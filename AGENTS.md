@@ -128,7 +128,10 @@ otros atributos `data-*` como mecanismo de estilizado.
 controles del tema, etiquetas HTML, identificadores específicos y clases
 personalizadas o de Streamlit. Las reglas nuevas se incorporan en la sección
 que corresponde a su responsabilidad. Dentro de cada bloque de selectores,
-las clases se ordenan alfabéticamente.
+las clases se ordenan alfabéticamente. Dentro de cada bloque CSS, las
+propiedades también se ordenan alfabéticamente: primero las propiedades
+normales, luego las propiedades con prefijo simple como `-webkit-` y
+finalmente las variables CSS con prefijo `--`.
 
 Los controles interactivos utilizan los estilos nativos de Streamlit por
 defecto. No se crean clases ni reglas CSS específicas para botones, descargas
