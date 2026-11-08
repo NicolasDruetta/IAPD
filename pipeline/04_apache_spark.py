@@ -38,7 +38,6 @@ EVENT_SCHEMA = StructType(
         StructField("bid_size", DoubleType(), True),
         StructField("ask_price", DoubleType(), True),
         StructField("ask_size", DoubleType(), True),
-        StructField("mode", StringType(), True),
     ]
 )
 KAFKA_BOOTSTRAP_SERVERS = os.getenv(
@@ -462,6 +461,11 @@ def process_batch(run_id: str, data_frame: DataFrame, batch_id: int) -> None:
         input_count = input_frame.count()
         if not input_count:
             return
+        functions.append_console_log(
+            run_id,
+            "spark",
+            f"EXTRACT | batch_id={batch_id} | eventos={input_count} | origen=Kafka",
+        )
         valid_frame = input_frame.where(
             col("run_id").isNotNull()
             & col("timestamp").isNotNull()
@@ -486,7 +490,7 @@ def process_batch(run_id: str, data_frame: DataFrame, batch_id: int) -> None:
                 str(temporary_path)
             )
             os.replace(temporary_path, batch_path)
-        analysis_module = sys.modules.get("05_pandas_postgresql")
+        analysis_module = sys.modules.get("06_postgresql")
         if analysis_module is not None:
             analysis_module.analyze_and_persist(run_id)
         trade_count = processed_frame.where(
@@ -616,7 +620,7 @@ def consolidate_parquet(run_id: str) -> bool:
         )
         raise
 
-def start_streaming(run_id: str, mode: str = "REPLAY") -> None:
+def start_streaming(run_id: str) -> None:
     """Inicio Structured Streaming Kafka para un RUN sin duplicar queries."""
 
     with _SPARK_LOCK:
@@ -732,8 +736,18 @@ def stop_streaming(
                 )
                 return False
         except Exception as error:
-            functions.append_console_log(run_id, "spark", f"ERROR | STOP | cierre Spark: {error}")
-            return False
+            error_text = str(error)
+            if "stopped SparkContext" not in error_text:
+                functions.append_console_log(
+                    run_id,
+                    "spark",
+                    f"ERROR | STOP | cierre Spark: {error}",
+                )
+                return False
+            with _SPARK_LOCK:
+                state = _RUN_STATES.get(run_id)
+                if state is not None:
+                    state["query"] = None
     if finalize:
         try:
             consolidated = consolidate_parquet(run_id)

@@ -70,10 +70,11 @@ Cada archivo de `pipeline/` contiene exclusivamente funciones relacionadas con s
 propia tecnología o funcionalidad. Las funciones comunes de logs y archivos se
 ubican en `app/functions.py`, y las operaciones PostgreSQL en `app/database.py`.
 La presentación de Streamlit se ubica en `main.py` y `app/renders.py`. El análisis
-de Pandas y PostgreSQL se ubica en `pipeline/05_pandas_postgresql.py`, y las
+de Pandas se ubica en `pipeline/05_pandas.py`; la persistencia de PostgreSQL se
+ubica en `pipeline/06_postgresql.py`, y las
 consultas de datos para preguntas y gráficos se ubican en `app/renders.py`.
 
-Los módulos de procesamiento `01` a `05` no contienen interfaz Streamlit.
+Los módulos de procesamiento `01` a `06` no contienen interfaz Streamlit.
 El cargador del punto de entrada las proporciona al módulo especializado antes
 de ejecutarlo, sin ejecutar una segunda instancia del HTML ni de los elementos
 de Streamlit.
@@ -90,14 +91,14 @@ La documentación es breve, precisa y relacionada con la implementación.
 ## 7. Organización del código
 
 `main.py` centraliza el punto de entrada y la interfaz Streamlit.
-`pipeline/05_pandas_postgresql.py` implementa exclusivamente el análisis con
-Pandas y la preparación de preguntas y gráficos. `app/database.py` implementa las
-conexiones y operaciones PostgreSQL mediante instrucciones SQL; no calcula
+`pipeline/05_pandas.py` implementa exclusivamente el análisis con Pandas y la
+preparación de resultados. `pipeline/06_postgresql.py` coordina la persistencia.
+`app/database.py` implementa las conexiones y operaciones PostgreSQL mediante instrucciones SQL; no calcula
 datos. `app/renders.py` implementa la presentación, las consolas, sus logs y la
 visualización de resultados analíticos.
 `app/functions.py` centraliza la escritura y lectura compartida de logs.
 
-Los módulos `01` a `05` procesan datos sin interfaz. `app/renders.py` consulta los
+Los módulos `01` a `06` procesan datos sin interfaz. `app/renders.py` consulta los
 datos analíticos para construir las preguntas y los gráficos.
 
 La carpeta `data/` contiene los datos de entrada y generados localmente,
@@ -208,13 +209,15 @@ Dentro de `/app/data/` cada RUN nuevo utiliza directamente el identificador
 `{run_id}_03_apache_kafka_log.txt`,
 `{run_id}_04_apache_spark_data.parquet`,
 `{run_id}_04_apache_spark_log.txt` y
-`{run_id}_05_pandas_postgresql_log.txt`.
-Los cinco logs canónicos son
+`{run_id}_05_pandas_log.txt`,
+`{run_id}_06_postgresql_log.txt`.
+Los seis logs canónicos son
 `{run_id}_01_python_controller_log.txt`,
 `{run_id}_02_alpaca_stream_log.txt`,
 `{run_id}_03_apache_kafka_log.txt`,
 `{run_id}_04_apache_spark_log.txt` y
-`{run_id}_05_pandas_postgresql_log.txt`.
+`{run_id}_05_pandas_log.txt`,
+`{run_id}_06_postgresql_log.txt`.
 Structured Streaming conserva durante el RUN sus partes
 Parquet y checkpoint temporales dentro de `spark/`, con el mismo identificador;
 al finalizar
@@ -229,7 +232,8 @@ Las rutas de archivos se construyen directamente con los nombres canónicos:
 `03_apache_kafka_log`,
 `04_apache_spark_data`,
 `04_apache_spark_log` y
-`05_pandas_postgresql_log`.
+`05_pandas_log` y
+`06_postgresql_log`.
 Los archivos generados utilizan
 `{run_id}_{numero}_{nombre_modulo}_{tipo}.{extension}`. El número y nombre
 deben corresponder al módulo responsable dentro de `pipeline/`. No se utilizan

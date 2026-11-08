@@ -1,7 +1,7 @@
+import math
 import pandas as pd
-import psycopg
 
-from app import database, functions
+from app import functions
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -11,16 +11,16 @@ FEED_NAME = "IEX"
 PRESENTATION_TIMEZONE = ZoneInfo("America/Argentina/Cordoba")
 _ANALYSIS_STATES: dict[str, dict[str, Any]] = {}
 
-def analyze_and_persist(
+def analyze(
     run_id: str,
     feed: str = FEED_NAME,
-) -> bool:
-    """Leo solo los lotes Parquet nuevos y guardo sus resultados acumulados."""
+) -> dict[str, Any] | None:
+    """Leo lotes Parquet nuevos y preparo resultados acumulados."""
 
     parquet_path = DATA_DIRECTORY / "spark" / f"{run_id}_04_apache_spark_data.parquet.parts"
     batch_paths = sorted(parquet_path.glob("batch_*")) if parquet_path.is_dir() else []
     if not batch_paths:
-        return False
+        return None
     state = _ANALYSIS_STATES.get(run_id)
     if state is None:
         frame = pd.read_parquet(parquet_path)
@@ -31,7 +31,7 @@ def analyze_and_persist(
         known_batches = state["batches"]
         new_paths = [path for path in batch_paths if path.name not in known_batches]
         if not new_paths:
-            return True
+            return None
         frame = pd.concat(
             [pd.read_parquet(path) for path in new_paths],
             ignore_index=True,
@@ -40,44 +40,34 @@ def analyze_and_persist(
         known_batches.update(path.name for path in new_paths)
     metrics_frame = _build_metrics_frame(state)
     if metrics_frame.empty:
-        return False
+        return None
     metrics, answers = _build_analysis_results(metrics_frame, feed)
     top_volume, activity, activity_interval = prepare_chart_data(state)
     try:
-        with database.get_postgresql_connection() as connection:
-            database.ensure_tables(connection)
-            database.persist_analysis(
-                connection,
-                run_id,
-                metrics,
-                answers,
-                top_volume,
-                activity,
-                activity_interval,
-            )
         functions.append_console_log(
             run_id,
-            "pandas_postgresql",
+            "pandas",
             f"PARQUET | lotes={len(state['batches'])} | nuevos={len(frame)}",
         )
         functions.append_console_log(
             run_id,
-            "pandas_postgresql",
+            "pandas",
             f"PANDAS | correlaciones_calculadas={len(answers)} | feed={feed}",
         )
+        return {
+            "activity": activity,
+            "activity_interval": activity_interval,
+            "answers": answers,
+            "metrics": metrics,
+            "top_volume": top_volume,
+        }
+    except (OSError, TypeError, ValueError) as error:
         functions.append_console_log(
             run_id,
-            "pandas_postgresql",
-            f"POSTGRES | metricas_guardadas={len(metrics)} | respuestas_persistidas={len(answers)}",
-        )
-        return True
-    except (OSError, TypeError, ValueError, psycopg.Error) as error:
-        functions.append_console_log(
-            run_id,
-            "pandas_postgresql",
+            "pandas",
             f"ERROR | análisis={error}",
         )
-        return False
+        return None
 
 def prepare_chart_data(
     state: dict[str, Any],

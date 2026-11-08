@@ -114,7 +114,6 @@ def publish_events(
 
     if not events:
         return
-    mode = str(events[0].get("mode") or "-")
     producer = None
     partitions: list[int] = []
     attempt = 0
@@ -212,7 +211,7 @@ def publish_events(
             functions.append_console_log(
                 run_id,
                 "kafka",
-                f"KAFKA | run={run_id} | modo={mode} | error_publicacion={error}",
+                f"KAFKA | run={run_id} | error_publicacion={error}",
             )
             raise
     partition_counts = {partition: 0 for partition in partitions}
@@ -242,7 +241,7 @@ def publish_events(
             connection_line = None
         else:
             _RUN_CONNECTIONS.add(run_id)
-            connection_line = f"KAFKA | {mode} | broker={KAFKA_BOOTSTRAP_SERVERS} | topic={KAFKA_TOPIC} | particiones={len(partitions)}"
+            connection_line = f"KAFKA | broker={KAFKA_BOOTSTRAP_SERVERS} | topic={KAFKA_TOPIC} | particiones={len(partitions)}"
     if connection_line is not None:
         functions.append_console_log(run_id, "kafka", connection_line)
     if should_log:

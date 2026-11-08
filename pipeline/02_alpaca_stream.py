@@ -118,7 +118,6 @@ class AlpacaEvent:
         event_type: str,
         price: float | None,
         size: float | None,
-        mode: str = "REPLAY",
         console_sequence: int | None = None,
         bid_price: float | None = None,
         bid_size: float | None = None,
@@ -136,7 +135,6 @@ class AlpacaEvent:
         self.ask_price = ask_price
         self.ask_size = ask_size
         self.raw = dict(raw or {})
-        self.mode = mode
         self.console_sequence = console_sequence
 
     def to_display_line(self) -> str:
@@ -182,7 +180,6 @@ class AlpacaEvent:
             "bid_size": self.bid_size,
             "ask_price": self.ask_price,
             "ask_size": self.ask_size,
-            "mode": self.mode,
             "raw": dict(self.raw),
         }
 
@@ -273,27 +270,24 @@ class AlpacaStreamingService:
                 "run_started",
                 {
                     "symbols": list(self._symbols),
-                    "mode": "REPLAY",
                     "feed": self._feed,
                     "replay_speed": self._replay_speed,
                     "started_at": self._started_at,
                     "universe": self._universe_metadata,
                 },
             )
-            self._add_log("REPLAY | RUN iniciado")
+            self._add_log("DATA | RUN iniciado")
             if self._universe_metadata.get("selection") == "sp500":
                 self._add_log(
-                    "{mode} | S&P 500 | componentes={components} | disponibles={available} | no_disponibles={missing}"
+                    "DATA | S&P 500 | componentes={components} | disponibles={available} | no_disponibles={missing}"
                     .format(
-                        mode="REPLAY",
                         components=self._universe_metadata["component_count"],
                         available=self._universe_metadata["available_count"],
                         missing=self._universe_metadata["unavailable_count"],
                     )
                 )
                 self._add_log(
-                    "{mode} | S&P 500 | fuente={source} | actualizada={updated} | consultada={fetched}".format(
-                        mode="REPLAY",
+                    "DATA | S&P 500 | fuente={source} | actualizada={updated} | consultada={fetched}".format(
                         source=self._universe_metadata["source"],
                         updated=self._universe_metadata["source_updated_at"],
                         fetched=self._universe_metadata["fetched_at"],
@@ -311,7 +305,7 @@ class AlpacaStreamingService:
                 name=f"alpaca-stream-{self._run_id}",
             )
             self._stream_thread.start()
-            self._add_log("REPLAY | worker de supervisión iniciado")
+            self._add_log("DATA | worker de supervisión iniciado")
             self._append_run_state_callback(self)
         return True
 
@@ -349,7 +343,7 @@ class AlpacaStreamingService:
             self._end_reason = end_reason
             self._stop_event.set()
             self._pipeline_ready.set()
-            self._add_log(f"REPLAY | detención solicitada: {end_reason}")
+            self._add_log(f"DATA | detención solicitada: {end_reason}")
             self._append_run_state_callback(self)
 
     def fail(self, error: str) -> None:
@@ -372,7 +366,7 @@ class AlpacaStreamingService:
         }
 
     def is_running(self) -> bool:
-        """Indico si el hilo de REPLAY todavía está activo."""
+        """Indico si el hilo de datos todavía está activo."""
 
         return bool(self._stream_thread and self._stream_thread.is_alive())
 
@@ -384,7 +378,6 @@ class AlpacaStreamingService:
                 "run_id": self._run_id,
                 "symbols": list(self._symbols),
                 "universe": self._universe_metadata,
-                "mode": "REPLAY",
                 "replay_speed": self._replay_speed,
                 "status": self._status,
                 "error": self._error,
@@ -404,7 +397,7 @@ class AlpacaStreamingService:
         """Ejecuto la descarga y reproducción histórica en un hilo propio."""
 
         try:
-            self._add_log("REPLAY | worker de datos iniciado")
+            self._add_log("DATA | worker de datos iniciado")
             self._run_replay()
         except Exception as error:
             if not self._stop_event.is_set():
@@ -420,7 +413,7 @@ class AlpacaStreamingService:
     def _run_replay(self) -> None:
         """Descargo y reproduzco eventos históricos de forma progresiva."""
 
-        self._add_log("REPLAY | buscando histórico local o remoto")
+        self._add_log("DATA | buscando histórico local o remoto")
         batch_queue: queue.Queue[list[AlpacaEvent] | None] = queue.Queue(
             maxsize=4
         )
@@ -435,7 +428,7 @@ class AlpacaStreamingService:
                     return
                 except queue.Full:
                     continue
-            raise InterruptedError("Descarga REPLAY detenida.")
+            raise InterruptedError("Descarga histórica detenida.")
 
         def download() -> None:
             """Descargo en segundo plano mientras consumo lotes."""
@@ -483,7 +476,7 @@ class AlpacaStreamingService:
         with self._lock:
             self._historical_date = historical_date
             self._add_log(
-                f"REPLAY | histórico listo: {historical_date} | eventos_en_memoria"
+                f"DATA | histórico listo: {historical_date} | eventos_en_memoria"
             )
             self._append_run_record_callback(
                 self._run_id,
@@ -543,14 +536,14 @@ class AlpacaStreamingService:
                 functions.append_console_log(
                     self._run_id,
                     "alpaca",
-                    event_from_record(record, mode="REPLAY").to_display_line(),
+                    event_from_record(record).to_display_line(),
                 )
             trade_count = sum(
                 event.event_type == "TRADE" for event in events
             )
             quote_count = len(events) - trade_count
             self._add_log(
-                f"REPLAY | lote emitido={self._replay_batch_number} | operaciones={trade_count} | cotizaciones={quote_count} | total_emitidos={self._event_count}"
+                f"DATA | lote emitido={self._replay_batch_number} | operaciones={trade_count} | cotizaciones={quote_count} | total_emitidos={self._event_count}"
             )
             self._append_run_state_callback(self)
             if self._publish_events_callback is not None:
@@ -579,7 +572,7 @@ class AlpacaStreamingService:
             self._ended_at = get_utc_timestamp()
             self._stop_event.set()
             self._add_log(
-                f"REPLAY | finalizado: {status} | causa={end_reason}"
+                f"DATA | finalizado: {status} | causa={end_reason}"
             )
             self._append_run_record_callback(
                 self._run_id,
@@ -638,7 +631,7 @@ def download_historical_dataset(
 
     if ALL_MARKET_SYMBOL in symbols:
         raise RuntimeError(
-            "El universo automático debe resolverse como S&P 500 antes de iniciar REPLAY."
+            "El universo automático debe resolverse como S&P 500 antes de iniciar la descarga histórica."
         )
     market_symbols = symbols
     symbol_groups = [
@@ -649,7 +642,7 @@ def download_historical_dataset(
         return 0, False
     if progress_callback is not None:
         progress_callback(
-            f"REPLAY | grupos de símbolos={len(symbol_groups)} | símbolos consultados={len(market_symbols)}"
+            f"DATA | grupos de símbolos={len(symbol_groups)} | símbolos consultados={len(market_symbols)}"
         )
     event_count = 0
     ssl_context = ssl.create_default_context(cafile=certifi.where())
@@ -662,7 +655,7 @@ def download_historical_dataset(
 
         for attempt in range(HTTP_MAX_RETRIES):
             if stop_event is not None and stop_event.is_set():
-                raise InterruptedError("Descarga REPLAY detenida.")
+                        raise InterruptedError("Descarga histórica detenida.")
             url = f"{api_url}?{urllib.parse.urlencode(query)}"
             request = urllib.request.Request(
                 url,
@@ -695,7 +688,7 @@ def download_historical_dataset(
                 if stop_event is not None:
                     if stop_event.wait(min(delay, 60)):
                         raise InterruptedError(
-                            "Descarga REPLAY detenida."
+                            "Descarga histórica detenida."
                         )
                 else:
                     time.sleep(min(delay, 60))
@@ -764,7 +757,6 @@ def download_historical_dataset(
                             if event_type == "QUOTE" else None,
                             "ask_size": source_event.get("as")
                             if event_type == "QUOTE" else None,
-                            "mode": "REPLAY",
                             "source": "alpaca_historical",
                             "raw": source_event,
                         }
@@ -814,7 +806,7 @@ def download_historical_dataset(
         batch: list[AlpacaEvent] = []
         for _, record in ordered_records:
             if event_callback is not None:
-                batch.append(event_from_record(record, mode="REPLAY"))
+                batch.append(event_from_record(record))
                 if len(batch) == REPLAY_BATCH_SIZE:
                     event_callback(batch)
                     batch = []
@@ -824,11 +816,11 @@ def download_historical_dataset(
     day_end = session_end
     if progress_callback is not None:
         progress_callback(
-            f"REPLAY | sesión={date_text} | apertura={format_presentation_timestamp(session_start)} | cierre={format_presentation_timestamp(session_end)}"
+            f"DATA | sesión={date_text} | apertura={format_presentation_timestamp(session_start)} | cierre={format_presentation_timestamp(session_end)}"
         )
     while window_start < day_end:
         if stop_event is not None and stop_event.is_set():
-            raise InterruptedError("Descarga REPLAY detenida.")
+            raise InterruptedError("Descarga histórica detenida.")
         window_end = min(
             window_start + timedelta(minutes=REPLAY_WINDOW_MINUTES),
             day_end,
@@ -869,7 +861,7 @@ def download_historical_dataset(
                 completed_groups += 1
                 if progress_callback is not None:
                     progress_callback(
-                        f"REPLAY | ventana={format_presentation_timestamp(window_start)}-{format_presentation_timestamp(window_end)} | grupos={completed_groups}/{len(symbol_groups)} | respuestas={window_responses} | páginas_con_operaciones={window_responses_with_trades} | páginas_con_cotizaciones={window_responses_with_quotes} | descargados={window_downloaded}"
+            f"DATA | ventana={format_presentation_timestamp(window_start)}-{format_presentation_timestamp(window_end)} | grupos={completed_groups}/{len(symbol_groups)} | respuestas={window_responses} | páginas_con_operaciones={window_responses_with_trades} | páginas_con_cotizaciones={window_responses_with_quotes} | descargados={window_downloaded}"
                     )
         group_records.sort(key=lambda item: item[0])
         merged_count, pending_batch = merge_window(group_records)
@@ -878,7 +870,7 @@ def download_historical_dataset(
             event_callback(pending_batch)
         if progress_callback is not None:
             progress_callback(
-                f"REPLAY | ventana={format_presentation_timestamp(window_start)}-{format_presentation_timestamp(window_end)} | respuestas={window_responses} | páginas_con_operaciones={window_responses_with_trades} | páginas_con_cotizaciones={window_responses_with_quotes} | descargados={window_downloaded} | emitidos_acumulados={event_count}"
+                f"DATA | ventana={format_presentation_timestamp(window_start)}-{format_presentation_timestamp(window_end)} | respuestas={window_responses} | páginas_con_operaciones={window_responses_with_trades} | páginas_con_cotizaciones={window_responses_with_quotes} | descargados={window_downloaded} | emitidos_acumulados={event_count}"
             )
         window_start = window_end
     if event_count == 0:
@@ -893,7 +885,6 @@ def ensure_data_directory() -> None:
 
 def event_from_record(
     record: dict[str, Any],
-    mode: str | None = None,
 ) -> AlpacaEvent:
     """Reconstruyo un evento persistido para mostrarlo en la consola."""
 
@@ -903,7 +894,6 @@ def event_from_record(
         event_type=str(record.get("event_type", "-")),
         price=to_number(record.get("price")),
         size=to_number(record.get("size")),
-        mode=mode or str(record.get("mode", "REPLAY")),
         console_sequence=(
             int(record["console_sequence"])
             if record.get("console_sequence") is not None
@@ -940,7 +930,7 @@ def get_historical_dataset(
         historical_date_callback(date_text)
     if progress_callback is not None:
         progress_callback(
-            f"REPLAY | sesión bursátil seleccionada={date_text} | apertura={format_presentation_timestamp(session_start)} | cierre={format_presentation_timestamp(session_end)}"
+            f"DATA | sesión bursátil seleccionada={date_text} | apertura={format_presentation_timestamp(session_start)} | cierre={format_presentation_timestamp(session_end)}"
         )
     event_count, _ = download_historical_dataset(
         api_key,
@@ -1328,7 +1318,6 @@ def read_streaming_state(path: Path) -> dict[str, Any] | None:
         "run_id": path.stem,
         "symbols": [],
         "universe": {"selection": "manual", "symbols": []},
-        "mode": "REPLAY",
         "replay_speed": 1.0,
         "status": "Incompleto",
         "error": None,
@@ -1341,11 +1330,12 @@ def read_streaming_state(path: Path) -> dict[str, Any] | None:
         "ended_at": None,
         "last_heartbeat": None,
         "end_reason": None,
-        "run_info_file": path.name,
+        "info_controller_file": path.name,
         "log_handler_file": None,
         "log_alpaca_file": None,
         "log_spark_file": None,
-        "log_pandas_postgresql_file": None,
+        "log_pandas_file": None,
+        "log_postgresql_file": None,
         "is_active": False,
         "sequence": 0,
         "logs": [],
@@ -1371,15 +1361,15 @@ def read_streaming_state(path: Path) -> dict[str, Any] | None:
                     started = True
                     for key in (
                         "symbols",
-                        "mode",
                         "replay_speed",
                         "started_at",
-                        "run_info_file",
+                        "info_controller_file",
                         "log_controller_file",
                         "log_handler_file",
                         "log_alpaca_file",
                         "log_spark_file",
-                        "log_pandas_postgresql_file",
+                        "log_pandas_file",
+                        "log_postgresql_file",
                         "universe",
                     ):
                         if key in record:

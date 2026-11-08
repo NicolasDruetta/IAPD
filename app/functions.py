@@ -23,8 +23,10 @@ def append_console_log(
         file_name = "03_apache_kafka_log.txt"
     elif console_name == "spark":
         file_name = "04_apache_spark_log.txt"
-    elif console_name == "pandas_postgresql":
-        file_name = "05_pandas_postgresql_log.txt"
+    elif console_name == "pandas":
+        file_name = "05_pandas_log.txt"
+    elif console_name == "postgresql":
+        file_name = "06_postgresql_log.txt"
     else:
         raise ValueError(f"Consola no válida: {console_name}")
     key = (run_id, console_name)

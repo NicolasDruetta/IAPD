@@ -387,6 +387,33 @@ body:has(.st-key-theme-dark) > div:last-of-type * {
     -webkit-text-fill-color: #495057 !important;
 }
 
+.stApp:has(.st-key-theme-dark) .stDataFrameGlideDataEditor,
+.stApp:has(.st-key-theme-dark) .dvn-scroller.stDataFrameGlideDataEditor {
+    --gdg-bg-cell: #171a22 !important;
+    --gdg-bg-cell-medium: #1d212b !important;
+    --gdg-bg-header: #1d212b !important;
+    --gdg-bg-header-has-focus: #292e39 !important;
+    --gdg-bg-header-hovered: #292e39 !important;
+    --gdg-bg-group-header: #1d212b !important;
+    --gdg-bg-group-header-hovered: #292e39 !important;
+    --gdg-bg-icon-header: #f1f3f8 !important;
+    --gdg-border-color: #3b404d !important;
+    --gdg-fg-icon-header: #ffffff !important;
+    --gdg-horizontal-border-color: #3b404d !important;
+    --gdg-text-header: #ffffff !important;
+    --gdg-text-group-header: #ffffff !important;
+    --gdg-text-header-selected: #ffffff !important;
+    --gdg-text-dark: #ffffff !important;
+    --gdg-text-light: #ffffff !important;
+    --gdg-text-medium: #b6bdca !important;
+    --gdg-text-bubble: #ffffff !important;
+}
+
+.stApp:has(.st-key-theme-dark) .stDataFrame canvas,
+.stApp:has(.st-key-theme-dark) [role="grid"] canvas {
+    filter: invert(0.9) hue-rotate(180deg) !important;
+}
+
 /* Media Queries. */
 
 @media (max-width: 991.98px) {

@@ -213,7 +213,7 @@ def get_last_execution_notice(snapshot: dict[str, Any]) -> str | None:
         snapshot.get("started_at"),
         snapshot.get("ended_at"),
     )
-    history_mode = snapshot.get("mode") or "-"
+    history_market_date = snapshot.get("historical_date") or "-"
     history_run_id = snapshot.get("run_id") or "-"
     completion_text = {
         "Completado": "Finalizado correctamente.",
@@ -224,7 +224,7 @@ def get_last_execution_notice(snapshot: dict[str, Any]) -> str | None:
         and snapshot.get("end_reason") == "manual_stop"
     ):
         completion_text = "Detenido manualmente."
-    return f"Datos de la **última ejecución:** {last_execution_text}. **Duración:** {elapsed_text}. **{completion_text}** | **Modo:** {history_mode}. | **RUN:** {history_run_id}."
+    return f"Datos de la **última ejecución:** {last_execution_text}. **Duración:** {elapsed_text}. **{completion_text}** | **Fecha de mercado:** {history_market_date}. | **RUN ID:** {history_run_id}."
 
 def render_header() -> None:
     """Muestro el encabezado general del laboratorio."""
@@ -276,7 +276,8 @@ def render_config() -> None:
     streaming_module = load_page_module("02_alpaca_stream")
     kafka_module = load_page_module("03_apache_kafka")
     spark_module = load_page_module("04_apache_spark")
-    load_page_module("05_pandas_postgresql")
+    load_page_module("05_pandas")
+    load_page_module("06_postgresql")
     controller_module.configure_streaming_module(streaming_module)
     controller_module.configure_pipeline_modules(
         kafka_module,
@@ -335,22 +336,24 @@ def render_config() -> None:
             vertical_alignment="bottom",
             gap="small",
         ):
-            start_clicked = st.button(
-                "⟳ Iniciando..."
-                if st.session_state.start_pending
-                else (
-                    "⟳ Ejecutando streaming..."
-                    if snapshot["is_active"]
-                    else "▶ Iniciar streaming"
-                ),
-                disabled=bool(
-                    snapshot["is_active"]
-                    or st.session_state.start_pending
-                ),
-                key="start-button",
-                on_click=mark_start_pending,
-                width="content",
-            )
+            start_clicked = False
+            if not st.session_state.stop_pending:
+                start_clicked = st.button(
+                    "⟳ Iniciando..."
+                    if st.session_state.start_pending
+                    else (
+                        "⟳ Ejecutando streaming..."
+                        if snapshot["is_active"]
+                        else "▶ Iniciar streaming"
+                    ),
+                    disabled=bool(
+                        snapshot["is_active"]
+                        or st.session_state.start_pending
+                    ),
+                    key="start-button",
+                    on_click=mark_start_pending,
+                    width="content",
+                )
             if (
                 snapshot["is_active"]
                 and not st.session_state.start_pending
@@ -416,7 +419,6 @@ def render_config() -> None:
                         kafka_module.ensure_topic()
                         spark_module.start_streaming(
                             run_id,
-                            service.get_snapshot()["mode"],
                         )
                         service.release_pipeline()
                         st.session_state.start_pending = False
@@ -464,7 +466,13 @@ def render_config() -> None:
     if (
         st.session_state.stop_pending
         and stop_operation is not None
-        and stop_operation["done"]
+        and (
+            stop_operation["done"]
+            or (
+                not snapshot["is_active"]
+                and not spark_module.has_active_query()
+            )
+        )
     ):
         st.session_state.stop_pending = False
         st.session_state.stop_operation = None
@@ -483,7 +491,11 @@ def render_config() -> None:
         presentation_market_timestamp = format_presentation_timestamp(
             market_timestamp,
         )
-        market_date = snapshot.get("historical_date") or "-"
+        market_date = (
+            snapshot.get("historical_date") or "-"
+            if snapshot["is_active"]
+            else "-"
+        )
         market_time = (
             presentation_market_timestamp.split(" ", 1)[1]
             if presentation_market_timestamp != "-"
@@ -501,11 +513,11 @@ def render_config() -> None:
         status_text = f"Ejecutando... {elapsed_text}."
     elif status == "Error":
         status_text = "Finalizado con error."
-    mode_col, run_col, status_col = st.columns(
+    market_date_col, run_col, status_col = st.columns(
         [1, 1, 2],
         gap="small",
     )
-    with mode_col:
+    with market_date_col:
         with st.container(border=True):
             st.caption("Fecha de mercado")
             st.text(market_date)
@@ -562,7 +574,7 @@ def render_config() -> None:
     ):
         try:
             kafka_module.ensure_topic()
-            spark_module.start_streaming(run_id, snapshot["mode"])
+            spark_module.start_streaming(run_id)
             controller_module.release_active_pipeline(run_id)
         except Exception as error:
             handle_start_error(
@@ -579,14 +591,15 @@ def render_config() -> None:
             finalize=snapshot.get("status") == "Completado",
         )
 
-def render_consoles() -> None:
-    """Muestro las cinco consolas del pipeline."""
+def _get_consoles_context() -> tuple[Any, ...]:
+    """Obtengo el contexto compartido para las seis consolas."""
 
     controller_module = load_page_module("01_python_controller")
     streaming_module = load_page_module("02_alpaca_stream")
     kafka_module = load_page_module("03_apache_kafka")
     spark_module = load_page_module("04_apache_spark")
-    load_page_module("05_pandas_postgresql")
+    load_page_module("05_pandas")
+    load_page_module("06_postgresql")
     controller_module.configure_streaming_module(streaming_module)
     controller_module.configure_pipeline_modules(
         kafka_module,
@@ -598,6 +611,40 @@ def render_consoles() -> None:
         or st.session_state.start_pending
     )
     run_id = None if st.session_state.start_pending else snapshot["run_id"]
+    if (
+        run_id is not None
+        and snapshot["is_active"]
+        and not st.session_state.stop_pending
+    ):
+        controller_module.register_heartbeat(run_id)
+    paths = (
+        DATA_DIRECTORY / "runs" / f"{run_id}_01_python_controller_log.txt",
+        DATA_DIRECTORY / "runs" / f"{run_id}_02_alpaca_stream_log.txt",
+        DATA_DIRECTORY / "runs" / f"{run_id}_03_apache_kafka_log.txt",
+        DATA_DIRECTORY / "runs" / f"{run_id}_04_apache_spark_log.txt",
+        DATA_DIRECTORY / "runs" / f"{run_id}_05_pandas_log.txt",
+        DATA_DIRECTORY / "runs" / f"{run_id}_06_postgresql_log.txt",
+    ) if run_id else (None,) * 6
+    downloads_disabled = any(
+        path is None or not path.exists()
+        for path in paths
+    )
+    return clear_consoles, run_id, *paths, downloads_disabled
+
+def render_consoles_part1() -> None:
+    """Muestro las primeras cuatro consolas del pipeline."""
+
+    (
+        clear_consoles,
+        run_id,
+        execution_path,
+        alpaca_path,
+        kafka_path,
+        spark_path,
+        _pandas_path,
+        _postgresql_path,
+        downloads_disabled,
+    ) = _get_consoles_context()
 
     execution_column, alpaca_column = st.columns(
         2,
@@ -610,36 +657,6 @@ def render_consoles() -> None:
         execution_state = get_console_state(
             "execution-log-console",
             run_id,
-        )
-        execution_path = (
-            DATA_DIRECTORY / "runs" / f"{run_id}_01_python_controller_log.txt"
-            if run_id else None
-        )
-        alpaca_path = (
-            DATA_DIRECTORY / "runs" / f"{run_id}_02_alpaca_stream_log.txt"
-            if run_id else None
-        )
-        kafka_path = (
-            DATA_DIRECTORY / "runs" / f"{run_id}_03_apache_kafka_log.txt"
-            if run_id else None
-        )
-        spark_path = (
-            DATA_DIRECTORY / "runs" / f"{run_id}_04_apache_spark_log.txt"
-            if run_id else None
-        )
-        pandas_postgresql_path = (
-            DATA_DIRECTORY / "runs" / f"{run_id}_05_pandas_postgresql_log.txt"
-            if run_id else None
-        )
-        downloads_disabled = any(
-            path is None or not path.exists()
-            for path in (
-                execution_path,
-                alpaca_path,
-                kafka_path,
-                spark_path,
-                pandas_postgresql_path,
-            )
         )
         log_lines, cursor_start, next_cursor, initial_load, resync = (
             get_console_buffer_view(
@@ -872,35 +889,116 @@ def render_consoles() -> None:
             "**[Worker 2 ↗](http://localhost:8082/)** &nbsp;-&nbsp; "
             "**[Spark Jobs ↗](http://localhost:4040/)** "
         )
-    pandas_postgresql_column = st.columns(
+
+def render_consoles_part2() -> None:
+    """Muestro las consolas de análisis y persistencia del pipeline."""
+
+    (
+        clear_consoles,
+        run_id,
+        execution_path,
+        alpaca_path,
+        kafka_path,
+        spark_path,
+        pandas_path,
+        postgresql_path,
+        downloads_disabled,
+    ) = _get_consoles_context()
+    pandas_column, postgresql_column = st.columns(
         2,
         gap="small",
         vertical_alignment="top",
         wrap=True,
-    )[0]
-    with pandas_postgresql_column:
-        st.subheader("5. Log de análisis (Pandas + PostgreSQL)")
-        pandas_postgresql_state = get_console_state(
-            "pandas-postgresql-log-console",
+    )
+    with pandas_column:
+        st.subheader("5. Log de análisis (Pandas)")
+        pandas_download_disabled = (
+            pandas_path is None or not pandas_path.exists()
+        )
+        pandas_state = get_console_state(
+            "pandas-log-console",
             run_id,
         )
-        pandas_postgresql_records, cursor_start, next_cursor, initial_load, resync = (
+        pandas_records, cursor_start, next_cursor, initial_load, resync = (
             get_console_buffer_view(
                 run_id,
-                "pandas_postgresql",
-                pandas_postgresql_path,
-                pandas_postgresql_state,
+                "pandas",
+                pandas_path,
+                pandas_state,
                 clear_consoles,
             )
         )
-        pandas_postgresql_lines = [
+        pandas_lines = [
             format_presentation_log_line(line)
-            for line in pandas_postgresql_records
+            for line in pandas_records
         ]
-        is_placeholder = not pandas_postgresql_lines and pandas_postgresql_state["line_number"] == 0
+        is_placeholder = not pandas_lines and pandas_state["line_number"] == 0
         if is_placeholder:
-            pandas_postgresql_lines = [
-                "Pandas + PostgreSQL | esperando agregados de Spark."
+            pandas_lines = ["Pandas | esperando agregados de Spark."]
+        with st.container(
+            horizontal=True,
+            horizontal_alignment="distribute",
+            vertical_alignment="center",
+        ):
+            st.caption(
+                f"Registros analíticos: {pandas_state['line_number']}"
+            )
+            st.download_button(
+                "↓",
+                data=pandas_path.read_bytes()
+                if pandas_path is not None and pandas_path.exists()
+                else b"",
+                file_name=(
+                    pandas_path.name
+                    if pandas_path is not None
+                    else "05_pandas_log.txt"
+                ),
+                mime="text/plain",
+                key=f"download-pandas-log-console-{run_id or 'no-run'}",
+                help="Descargar log completo",
+                disabled=pandas_download_disabled,
+                type="secondary",
+                width=36,
+            )
+        render_log_console(
+            pandas_lines,
+            "pandas-log-console",
+            cursor_end=next_cursor,
+            cursor_start=cursor_start,
+            has_more=False,
+            initial_load=initial_load,
+            placeholder=is_placeholder,
+            resync=resync,
+        )
+    with postgresql_column:
+        st.subheader("6. Log de persistencia (PostgreSQL)")
+        postgresql_download_disabled = (
+            postgresql_path is None or not postgresql_path.exists()
+        )
+        postgresql_state = get_console_state(
+            "postgresql-log-console",
+            run_id,
+        )
+        postgresql_records, cursor_start, next_cursor, initial_load, resync = (
+            get_console_buffer_view(
+                run_id,
+                "postgresql",
+                postgresql_path,
+                postgresql_state,
+                clear_consoles,
+            )
+        )
+        postgresql_lines = [
+            format_presentation_log_line(line)
+            for line in postgresql_records
+        ]
+        is_placeholder = (
+            not postgresql_lines
+            and postgresql_state["line_number"] == 0
+        )
+        if is_placeholder:
+            postgresql_lines = [
+                "PostgreSQL | esperando persistencia de resultados."
             ]
         with st.container(
             horizontal=True,
@@ -908,28 +1006,28 @@ def render_consoles() -> None:
             vertical_alignment="center",
         ):
             st.caption(
-                f"Registros analíticos: {pandas_postgresql_state['line_number']}"
+                f"Registros persistidos: {postgresql_state['line_number']}"
             )
             st.download_button(
                 "↓",
-                data=pandas_postgresql_path.read_bytes()
-                if pandas_postgresql_path is not None and pandas_postgresql_path.exists()
+                data=postgresql_path.read_bytes()
+                if postgresql_path is not None and postgresql_path.exists()
                 else b"",
                 file_name=(
-                    pandas_postgresql_path.name
-                    if pandas_postgresql_path is not None
-                    else "05_pandas_postgresql_log.txt"
+                    postgresql_path.name
+                    if postgresql_path is not None
+                    else "06_postgresql_log.txt"
                 ),
                 mime="text/plain",
-                key=f"download-pandas-postgresql-log-console-{run_id or 'no-run'}",
+                key=f"download-postgresql-log-console-{run_id or 'no-run'}",
                 help="Descargar log completo",
-                disabled=downloads_disabled,
+                disabled=postgresql_download_disabled,
                 type="secondary",
                 width=36,
             )
         render_log_console(
-            pandas_postgresql_lines,
-            "pandas-postgresql-log-console",
+            postgresql_lines,
+            "postgresql-log-console",
             cursor_end=next_cursor,
             cursor_start=cursor_start,
             has_more=False,
@@ -1005,14 +1103,21 @@ def render_info() -> None:
 def render_charts() -> None:
     """Muestro los gráficos de la última ejecución."""
 
-    analysis_data = st.session_state.get(
-        "analysis_data",
-        {
+    if st.session_state.start_requested or st.session_state.start_pending:
+        analysis_data = {
             "activity_interval": 1,
             "activity_rows": [],
             "top_volume": [],
-        },
-    )
+        }
+    else:
+        analysis_data = st.session_state.get(
+            "analysis_data",
+            {
+                "activity_interval": 1,
+                "activity_rows": [],
+                "top_volume": [],
+            },
+        )
 
     top_volume = analysis_data.get("top_volume", [])
     activity_rows = analysis_data.get("activity_rows", [])
@@ -1032,13 +1137,18 @@ def render_charts() -> None:
 def render_questions() -> None:
     """Muestro las preguntas de investigación y sus tablas."""
 
-    analysis_run_id = st.session_state.alpaca_run_id
-    if analysis_run_id is None:
-        streaming_module = load_page_module("02_alpaca_stream")
-        metadata = streaming_module.get_latest_metadata()
-        analysis_run_id = metadata.get("run_id") if metadata else None
-    
-    analysis_data = database.get_market_analysis(analysis_run_id)
+    if st.session_state.start_requested or st.session_state.start_pending:
+        analysis_data = {
+            "answers": [],
+            "metrics": [],
+        }
+    else:
+        analysis_run_id = st.session_state.alpaca_run_id
+        if analysis_run_id is None:
+            streaming_module = load_page_module("02_alpaca_stream")
+            metadata = streaming_module.get_latest_metadata()
+            analysis_run_id = metadata.get("run_id") if metadata else None
+        analysis_data = database.get_market_analysis(analysis_run_id)
     st.session_state.analysis_data = analysis_data
     answers = {
         str(answer["question_id"]): answer
@@ -1151,7 +1261,8 @@ def render_questions() -> None:
         st.write(f"**Interpretación:** {spread_conclusion}")
 
 render_config = st.fragment(render_config, run_every="5s")
-render_consoles = st.fragment(render_consoles, run_every="5s")
+render_consoles_part1 = st.fragment(render_consoles_part1, run_every="5s")
+render_consoles_part2 = st.fragment(render_consoles_part2, run_every="5s")
 render_info = st.fragment(render_info, run_every="5s")
 render_questions = st.fragment(render_questions, run_every="5s")
 render_charts = st.fragment(render_charts, run_every="5s")

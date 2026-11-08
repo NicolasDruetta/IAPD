@@ -41,9 +41,7 @@ mediante herramientas de paralelismo, streaming y Big Data.
 - **Python 3.15:** lenguaje principal del proyecto.
 - **Streamlit:** interfaz de usuario y actualización periódica de la
   aplicación.
-- **Alpaca Market Data:** estado del mercado, cotizaciones y operaciones LIVE y
-  datos históricos REPLAY.
-- **WebSocket:** recepción de cotizaciones y operaciones durante el modo LIVE.
+- **Alpaca Market Data:** cotizaciones y operaciones históricas.
 - **Apache Kafka:** publicación de eventos en un tópico Kafka.
 - **Apache Structured Streaming:** consumo del tópico Kafka mediante Spark.
 - **Apache Parquet:** almacenamiento de los resultados procesados por Spark.
@@ -79,27 +77,9 @@ Controller → Alpaca (Market Data) → Memoria → Kafka → Streaming (Kafka T
 La carpeta `data/` no se distribuye mediante Git y no contiene un dataset
 obligatorio para ejecutar el proyecto.
 
-Los datos se obtienen directamente desde Alpaca Market Data:
-
-- **LIVE:** recibe cotizaciones y operaciones bursátiles reales mediante
-  WebSocket cuando el mercado presenta actividad.
-- **REPLAY:** consulta las APIs históricas de Alpaca, descarga cotizaciones y
-  operaciones reales y las reproduce progresivamente cuando corresponde
-  utilizar datos históricos.
-
-Al presionar «Iniciar streaming», la aplicación consulta el estado oficial del
-mercado proporcionado por Alpaca. Si informa que el mercado está abierto, se
-inicia LIVE mediante WebSocket. Si informa que está cerrado, se inicia REPLAY.
-La decisión contempla fines de semana, feriados y cierres especiales mediante
-el estado operativo de Alpaca; no depende de la ausencia temporal de
-  eventos bursátiles recibidos.
-
-El modo seleccionado queda asociado al RUN y no cambia mientras la ejecución
-está activa. Al refrescar Streamlit, la aplicación recupera el RUN existente y
-no vuelve a consultar el mercado ni crea otra conexión.
-
-REPLAY no depende de archivos históricos incluidos en el repositorio. Cada RUN
-nuevo genera los logs, la información del RUN y el Parquet directamente en
+Los datos se obtienen directamente desde las APIs históricas de Alpaca y se
+reproducen progresivamente. Cada RUN nuevo genera los logs, la información del
+RUN y el Parquet directamente en
 `data/`, usando la
 hora de `America/Argentina/Cordoba` y el identificador `YYYYMMDD_HHMMSS`:
 
@@ -111,7 +91,8 @@ data/
 ├── YYYYMMDD_HHMMSS_03_apache_kafka_log.txt
 ├── YYYYMMDD_HHMMSS_04_apache_spark_data.parquet
 ├── YYYYMMDD_HHMMSS_04_apache_spark_log.txt
-└── YYYYMMDD_HHMMSS_05_pandas_postgresql_log.txt
+├── YYYYMMDD_HHMMSS_05_pandas_log.txt
+└── YYYYMMDD_HHMMSS_06_postgresql_log.txt
 ```
 
 `_01_python_controller_info.jsonl` contiene la información estructurada de control, recuperación
@@ -140,12 +121,12 @@ disponibles y los no disponibles. Por eso el listado no cambia durante la
 ejecución. Los símbolos ingresados manualmente se mantienen sin esta
 restricción y no se filtran al S&P 500.
 
-REPLAY utiliza además la última sesión bursátil regular completa y disponible
+La aplicación utiliza la última sesión bursátil regular completa y disponible
 según el calendario oficial de Alpaca. La fecha se selecciona a partir de las
 sesiones informadas por ese calendario, por lo que contempla fines de semana,
 feriados y cierres anticipados. La apertura y el cierre oficiales se
 interpretan en `America/New_York` y se convierten a UTC antes de consultar la
-API histórica. Por lo tanto, REPLAY se limita a la sesión regular de esa fecha
+API histórica. Por lo tanto, la consulta se limita a la sesión regular de esa fecha
 y no consulta las horas previas a la apertura.
 
 La descarga se divide en ventanas temporales de 15 minutos, ajustadas a la
@@ -162,7 +143,7 @@ eliminan al finalizar cada merge, al detenerse el RUN o ante un error, y nunca
 aparecen dentro del volumen `lab-data`. Un histórico incompleto no se considera
 caché válida.
 
-Durante REPLAY, el log informa la selección de la sesión, el universo de
+El log informa la selección de la sesión, el universo de
 símbolos, el avance de grupos completados, las respuestas HTTP, las páginas
 con operaciones, las operaciones descargadas, la consolidación de cada
 ventana y los lotes emitidos. El progreso se actualiza por grupos y lotes,
@@ -214,7 +195,8 @@ NicolasDruetta_TP2/
 │   ├── 02_alpaca_stream.py
 │   ├── 03_apache_kafka.py
 │   ├── 04_apache_spark.py
-│   └── 05_pandas_postgresql.py
+│   ├── 05_pandas.py
+│   └── 06_postgresql.py
 ├── README.md
 ├── requirements.txt
 ```
@@ -223,7 +205,7 @@ NicolasDruetta_TP2/
 - `AGENTS.md`: convenciones técnicas de desarrollo.
 - `app/database.py`: conexiones y operaciones PostgreSQL.
 - `app/functions.py`: escritura, lectura y numeración compartida de logs.
-- `app/renders.py`: presentación nativa de las cinco consolas, preguntas y gráficos.
+- `app/renders.py`: presentación nativa de las seis consolas, preguntas y gráficos.
 - `assets/custom.css`: recurso visual centralizado del proyecto.
 - `compose.override.yaml`: configuración adicional de Compose.
 - `compose.yaml`: servicios Streamlit/Driver, Master, dos Workers, Kafka y
@@ -235,12 +217,14 @@ NicolasDruetta_TP2/
 - `main.py`: punto de entrada de Streamlit, controles, tarjetas de estado,
   consolas y funciones comunes.
 - `pipeline/01_python_controller.py`: ciclo de vida, estados y supervisión del RUN.
-- `pipeline/02_alpaca_stream.py`: conexión LIVE, descarga histórica,
-  reproducción REPLAY, ciclo de vida y persistencia de Alpaca.
+- `pipeline/02_alpaca_stream.py`: descarga histórica, ciclo de vida y
+  persistencia de Alpaca.
 - `pipeline/03_apache_kafka.py`: publicación de eventos en Kafka.
 - `pipeline/04_apache_spark.py`: procesamiento específico de Spark distribuido.
-- `pipeline/05_pandas_postgresql.py`: estadísticas, correlaciones y persistencia
-  de métricas y respuestas analíticas.
+- `pipeline/05_pandas.py`: lectura incremental de Parquet, estadísticas,
+  correlaciones y preparación de resultados analíticos.
+- `pipeline/06_postgresql.py`: persistencia de métricas y respuestas numéricas
+  en PostgreSQL.
 - `README.md`: documentación del proyecto.
 - `requirements.txt`: dependencias Python declaradas.
 
@@ -272,7 +256,7 @@ resueltos quedan persistidos en la información estructurada del RUN.
 La fila de controles utiliza una distribución de seis unidades para símbolos y
 seis unidades para acciones. Dentro del área de acciones, iniciar, detener y
 el espacio de reserva se distribuyen en proporciones `2, 2, 2`. Las tarjetas
-de estado se presentan en el orden `RUN`, `Modo`, `Eventos recibidos` y
+de estado se presentan en el orden `RUN ID`, `Fecha de mercado`, `Eventos recibidos` y
 `Estado`, con proporciones `2, 2, 2, 6`.
 
 El botón de iniciar se identifica visualmente con color verde y un icono de
@@ -285,17 +269,17 @@ La tarjeta de estado informa el estado actual, el tiempo transcurrido y, cuando
 corresponde, la fecha y hora de la última ejecución. El RUN identifica la
 ejecución activa o la última ejecución disponible.
 
-La interfaz presenta cinco consolas:
+La interfaz presenta seis consolas:
 
 1. **Log del controlador:** ciclo de vida, conexión, descarga, workers, heartbeat
    y cierre.
-2. **Obtención de cotizaciones y operaciones bursátiles:** datos actuales en
-   LIVE o datos históricos en REPLAY.
+2. **Obtención de cotizaciones y operaciones bursátiles:** datos históricos
+   reproducidos progresivamente.
 3. **Publicación de eventos:** confirmaciones reales de Kafka.
 4. **Procesamiento distribuido de cotizaciones y operaciones bursátiles:**
    estado y resultados de Spark.
-5. **Pandas + PostgreSQL:** agregados recibidos, correlaciones y escrituras
-   confirmadas.
+5. **Pandas:** agregados recibidos y correlaciones calculadas.
+6. **PostgreSQL:** escrituras numéricas confirmadas.
 
 Las consolas se actualizan junto con el estado del RUN y mantienen una
 presentación uniforme. En pantallas reducidas, las columnas se reorganizan
@@ -441,12 +425,11 @@ docker compose up --build
 ### Implementado
 
 - Aplicación Streamlit con `main.py` como punto de entrada.
-- Integración LIVE y REPLAY con Alpaca Market Data.
-- Consulta del estado oficial del mercado para seleccionar el modo.
+- Integración con Alpaca Market Data histórica.
 - Selección de la última sesión regular completa mediante el calendario oficial
   de Alpaca, con conversión explícita de `America/New_York` a UTC.
 - Descarga automática de datos históricos.
-- REPLAY incremental por ventanas temporales, con cuatro solicitudes HTTP
+- Descarga incremental por ventanas temporales, con cuatro solicitudes HTTP
   concurrentes como máximo y reintentos acotados para HTTP 429.
 - Emisión progresiva y merge cronológico global sin cargar el día completo en
   memoria.

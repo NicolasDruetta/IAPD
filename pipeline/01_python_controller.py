@@ -65,19 +65,20 @@ def append_run_record(
         if record_type == "run_started":
             record.update(
                 {
-                    "run_info_file": f"{run_id}_01_python_controller_info.jsonl",
+                    "info_controller_file": f"{run_id}_01_python_controller_info.jsonl",
                     "log_controller_file": f"{run_id}_01_python_controller_log.txt",
                     "log_alpaca_file": f"{run_id}_02_alpaca_stream_log.txt",
                     "log_spark_file": f"{run_id}_04_apache_spark_log.txt",
-                    "kafka_log_file": f"{run_id}_03_apache_kafka_log.txt",
-                    "log_pandas_postgresql_file": f"{run_id}_05_pandas_postgresql_log.txt",
+                    "log_kafka_file": f"{run_id}_03_apache_kafka_log.txt",
+                    "log_pandas_file": f"{run_id}_05_pandas_log.txt",
+                    "log_postgresql_file": f"{run_id}_06_postgresql_log.txt",
                 }
             )
         run_info_path.parent.mkdir(parents=True, exist_ok=True)
-        with run_info_path.open("a", encoding="utf-8") as run_info_file:
-            run_info_file.write(json.dumps(record, ensure_ascii=False) + "\n")
-            run_info_file.flush()
-            os.fsync(run_info_file.fileno())
+        with run_info_path.open("a", encoding="utf-8") as info_controller_file:
+            info_controller_file.write(json.dumps(record, ensure_ascii=False) + "\n")
+            info_controller_file.flush()
+            os.fsync(info_controller_file.fileno())
 
 def append_run_state(service: Any) -> None:
     """Persisto el estado actual del RUN administrado por el Controller."""
@@ -127,18 +128,18 @@ def get_run_snapshot() -> dict[str, Any]:
         snapshot["log_count"] = _RUN_LOG_COUNTS.get(run_id, 0)
         snapshot.update(
             {
-                "run_info_file": f"{run_id}_01_python_controller_info.jsonl",
+                "info_controller_file": f"{run_id}_01_python_controller_info.jsonl",
                 "log_controller_file": f"{run_id}_01_python_controller_log.txt",
                 "log_alpaca_file": f"{run_id}_02_alpaca_stream_log.txt",
                 "log_spark_file": f"{run_id}_04_apache_spark_log.txt",
-                "kafka_log_file": f"{run_id}_03_apache_kafka_log.txt",
-                "log_pandas_postgresql_file": f"{run_id}_05_pandas_postgresql_log.txt",
+                "log_kafka_file": f"{run_id}_03_apache_kafka_log.txt",
+                "log_pandas_file": f"{run_id}_05_pandas_log.txt",
+                "log_postgresql_file": f"{run_id}_06_postgresql_log.txt",
             }
         )
         return snapshot
     metadata = streaming_module.get_latest_metadata()
     if metadata is not None:
-        metadata.setdefault("mode", "REPLAY")
         metadata.setdefault("universe", {"selection": "manual"})
         metadata.setdefault("replay_speed", 1.0)
         metadata.setdefault("replay_position", 0)
@@ -150,7 +151,6 @@ def get_run_snapshot() -> dict[str, Any]:
         "run_id": None,
         "symbols": [],
         "universe": {"selection": "manual", "symbols": []},
-        "mode": "REPLAY",
         "replay_speed": 1.0,
         "status": "Listo para ejecutar",
         "error": None,
@@ -178,7 +178,7 @@ def mark_interrupted_run() -> dict[str, Any] | None:
     metadata["end_reason"] = "process_restart"
     metadata["ended_at"] = streaming_module.get_utc_timestamp()
     run_id = metadata.get("run_id")
-    if isinstance(run_id, str) and isinstance(metadata.get("run_info_file"), str):
+    if isinstance(run_id, str) and isinstance(metadata.get("info_controller_file"), str):
         sequence = int(metadata.get("sequence", 0))
         _RUN_SEQUENCES[run_id] = sequence
         append_run_record(
