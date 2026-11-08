@@ -24,7 +24,7 @@ def get_market_analysis(run_id: str | None) -> dict[str, Any]:
                 )
                 metrics = cursor.fetchall()
                 cursor.execute(
-                    "SELECT question_id, feed, correlation, symbol_count, conclusion, top_volume, activity_rows, activity_interval FROM market_answers WHERE run_id = %s",
+                    "SELECT question_id, feed, correlation, symbol_count, top_volume, activity_rows, activity_interval FROM market_answers WHERE run_id = %s",
                     (run_id,),
                 )
                 answers = cursor.fetchall()

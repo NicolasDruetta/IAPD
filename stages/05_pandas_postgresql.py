@@ -1,5 +1,4 @@
 import functions
-import math
 
 import pandas as pd
 import psycopg
@@ -113,7 +112,6 @@ def ensure_tables(connection: psycopg.Connection) -> None:
                 feed TEXT NOT NULL,
                 correlation DOUBLE PRECISION,
                 symbol_count BIGINT NOT NULL,
-                conclusion TEXT NOT NULL,
                 top_volume JSONB,
                 activity_rows JSONB,
                 activity_interval INTEGER,
@@ -130,6 +128,9 @@ def ensure_tables(connection: psycopg.Connection) -> None:
         )
         cursor.execute(
             f"ALTER TABLE {MARKET_ANSWERS_TABLE} ADD COLUMN IF NOT EXISTS activity_interval INTEGER"
+        )
+        cursor.execute(
+            f"ALTER TABLE {MARKET_ANSWERS_TABLE} DROP COLUMN IF EXISTS conclusion"
         )
 
 def persist_analysis(
@@ -179,13 +180,12 @@ def persist_analysis(
             f"""
             INSERT INTO {MARKET_ANSWERS_TABLE} (
                 run_id, question_id, feed, correlation, symbol_count,
-                conclusion, top_volume, activity_rows, activity_interval
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                top_volume, activity_rows, activity_interval
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (run_id, question_id) DO UPDATE SET
                 feed = EXCLUDED.feed,
                 correlation = EXCLUDED.correlation,
                 symbol_count = EXCLUDED.symbol_count,
-                conclusion = EXCLUDED.conclusion,
                 top_volume = EXCLUDED.top_volume,
                 activity_rows = EXCLUDED.activity_rows,
                 activity_interval = EXCLUDED.activity_interval,
@@ -198,7 +198,6 @@ def persist_analysis(
                     answer["feed"],
                     answer["correlation"],
                     answer["symbol_count"],
-                    answer["conclusion"],
                     Jsonb(top_volume) if answer["question_id"] == "volatility" else None,
                     Jsonb(activity_rows) if answer["question_id"] == "volatility" else None,
                     activity_interval if answer["question_id"] == "volatility" else None,
@@ -298,13 +297,11 @@ def _build_analysis_results(
         _build_answer(
             metrics_frame,
             "volatility",
-            "Las acciones con más operaciones presentan mayor volatilidad.",
             feed,
         ),
         _build_answer(
             metrics_frame,
             "spread_mean",
-            "Las acciones más negociadas tienen menor spread entre compra y venta.",
             feed,
         ),
     ]
@@ -313,7 +310,6 @@ def _build_analysis_results(
 def _build_answer(
     frame: pd.DataFrame,
     metric_column: str,
-    question: str,
     feed: str,
 ) -> dict[str, Any]:
     """Construyo una respuesta sin interpretar datos insuficientes."""
@@ -331,16 +327,7 @@ def _build_answer(
         and eligible[metric_column].nunique() > 1
     ):
         correlation = float(eligible["trade_count"].corr(eligible[metric_column]))
-    if correlation is None or math.isnan(correlation):
-        conclusion = f"{question} Datos insuficientes. No implica causalidad. Feed observado: {feed}."
-    elif correlation > 0:
-        conclusion = f"{question} Asociación positiva observada; no implica causalidad. Feed observado: {feed}."
-    elif correlation < 0:
-        conclusion = f"{question} Asociación negativa observada; no implica causalidad. Feed observado: {feed}."
-    else:
-        conclusion = f"{question} No se observa asociación lineal. No implica causalidad. Feed observado: {feed}."
     return {
-        "conclusion": conclusion,
         "correlation": correlation,
         "feed": feed,
         "question_id": "volatility" if metric_column == "volatility" else "spread",

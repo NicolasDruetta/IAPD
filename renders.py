@@ -2,6 +2,7 @@ import importlib.util
 import components
 import functions
 import json
+import math
 import streamlit as st
 import sys
 import threading
@@ -75,6 +76,8 @@ def initialize_state(system_theme: dict[str, Any] | None = None) -> None:
         st.session_state.start_operation = None
     if "stop_pending" not in st.session_state:
         st.session_state.stop_pending = False
+    if "stop_operation" not in st.session_state:
+        st.session_state.stop_operation = None
     if "manual_stop_status" not in st.session_state:
         st.session_state.manual_stop_status = False
     if "console_states" not in st.session_state:
@@ -86,6 +89,38 @@ def load_custom_css() -> None:
     css_path = Path(__file__).parent / "assets" / "custom.css"
     css_content = css_path.read_text(encoding="utf-8")
     st.markdown(f"<style>{css_content}</style>", unsafe_allow_html=True)
+
+def get_last_execution_notice(snapshot: dict[str, Any]) -> str | None:
+    """Construyo el aviso visible de la última ejecución terminada."""
+
+    if (
+        not snapshot.get("run_id")
+        or snapshot.get("is_active")
+        or st.session_state.start_pending
+    ):
+        return None
+    last_execution_at = snapshot.get("ended_at") or snapshot.get("started_at")
+    last_execution_text = (
+        format_presentation_timestamp(last_execution_at)
+        if last_execution_at
+        else "-"
+    )
+    elapsed_text = format_elapsed_time(
+        snapshot.get("started_at"),
+        snapshot.get("ended_at"),
+    )
+    history_mode = snapshot.get("mode") or "-"
+    history_run_id = snapshot.get("run_id") or "-"
+    completion_text = {
+        "Completado": "Finalizado correctamente.",
+        "Error": "Finalizado con error.",
+    }.get(snapshot.get("status"), f"{snapshot.get('status')}.")
+    if (
+        snapshot.get("status") == "Detenido"
+        and snapshot.get("end_reason") == "manual_stop"
+    ):
+        completion_text = "Detenido manualmente."
+    return f"Datos de la **última ejecución:** {last_execution_text}. **Duración:** {elapsed_text}. **{completion_text}** | **Modo:** {history_mode}. | **RUN:** {history_run_id}."
 
 def render_header() -> None:
     """Muestro el encabezado general del laboratorio."""
@@ -170,7 +205,7 @@ def render_config() -> None:
 
     st.write(f"**Símbolos bursátiles a analizar:**")
     symbols_col, actions_col = st.columns(
-        [1, 2],
+        [1, 1],
         gap="small",
         vertical_alignment="bottom",
     )
@@ -293,15 +328,44 @@ def render_config() -> None:
                         )
                         snapshot = controller_module.get_run_snapshot()
 
-    if stop_clicked or st.session_state.stop_pending:
-        st.session_state.stop_pending = False
+    if stop_clicked or (
+        st.session_state.stop_pending
+        and st.session_state.stop_operation is None
+    ):
         st.session_state.manual_stop_status = True
         st.session_state.start_requested = False
         clear_consoles = False
         run_id = snapshot.get("run_id")
-        controller_module.stop_active_run("manual_stop")
+        operation = {
+            "done": False,
+            "error": None,
+            "spark_result": None,
+        }
+        stop_thread = threading.Thread(
+            target=stop_run_in_background,
+            args=(
+                operation,
+                controller_module,
+                spark_module,
+                run_id,
+            ),
+            daemon=True,
+            name="stop-streaming-run",
+        )
+        operation["thread"] = stop_thread
+        st.session_state.stop_operation = operation
+        st.session_state.stop_pending = True
+        stop_thread.start()
+
+    stop_operation = st.session_state.stop_operation
+    if (
+        st.session_state.stop_pending
+        and stop_operation is not None
+        and stop_operation["done"]
+    ):
+        st.session_state.stop_pending = False
+        st.session_state.stop_operation = None
         snapshot = controller_module.get_run_snapshot()
-        spark_module.stop_streaming(run_id, finalize=True)
 
     if st.session_state.start_pending:
         elapsed_text = "-"
@@ -324,7 +388,9 @@ def render_config() -> None:
         )
     status = snapshot["status"]
     status_text = "Listo para ejecutar."
-    if st.session_state.manual_stop_status:
+    if st.session_state.stop_pending:
+        status_text = "Deteniendo..."
+    elif st.session_state.manual_stop_status:
         status_text = "Detenido manualmente."
     elif st.session_state.start_pending:
         status_text = "Iniciando..."
@@ -333,7 +399,7 @@ def render_config() -> None:
     elif status == "Error":
         status_text = "Finalizado con error."
     mode_col, run_col, status_col = st.columns(
-        [1, 1, 4],
+        [1, 1, 2],
         gap="small",
     )
     with mode_col:
@@ -366,8 +432,27 @@ def render_config() -> None:
     if snapshot["error"] and not st.session_state.start_pending:
         st.error("**Error:** " + (" ".join(str(snapshot["error"]).split())))
 
+    last_execution_notice = get_last_execution_notice(snapshot)
+    automatic_stop_messages = {
+        "heartbeat_timeout": "La ejecución se detuvo automáticamente porque la interfaz dejó de enviar señales de actividad durante 15 minutos.",
+        "process_restart": "La ejecución se detuvo automáticamente porque se reinició el proceso de la aplicación.",
+        "process_shutdown": "La ejecución se detuvo automáticamente porque se cerró el proceso de la aplicación.",
+    }
+    automatic_stop_reason = snapshot.get("end_reason")
+    automatic_stop_message = automatic_stop_messages.get(
+        automatic_stop_reason,
+    )
+    if automatic_stop_message and automatic_stop_reason != "manual_stop":
+        st.error(automatic_stop_message)
+    if last_execution_notice:
+        st.info(last_execution_notice)
+
     run_id = None if st.session_state.start_pending else snapshot["run_id"]
-    if run_id is not None and snapshot["is_active"]:
+    if (
+        run_id is not None
+        and snapshot["is_active"]
+        and not st.session_state.stop_pending
+    ):
         try:
             kafka_module.ensure_topic()
             spark_module.start_streaming(run_id, snapshot["mode"])
@@ -407,8 +492,8 @@ def render_consoles() -> None:
     )
     run_id = None if st.session_state.start_pending else snapshot["run_id"]
 
-    execution_column, alpaca_column, kafka_column = st.columns(
-        3,
+    execution_column, alpaca_column = st.columns(
+        2,
         gap="small",
         vertical_alignment="top",
         wrap=True,
@@ -566,6 +651,12 @@ def render_consoles() -> None:
             placeholder=is_placeholder,
             resync=resync,
         )
+    kafka_column, spark_column = st.columns(
+        2,
+        gap="small",
+        vertical_alignment="top",
+        wrap=True,
+    )
     with kafka_column:
         st.subheader("3. Log de publicación (Kafka)")
         kafka_state = get_console_state("kafka-log-console", run_id)
@@ -619,12 +710,6 @@ def render_consoles() -> None:
             placeholder=is_placeholder,
             resync=resync,
         )
-    spark_column, pandas_postgresql_column = st.columns(
-        2,
-        gap="small",
-        vertical_alignment="top",
-        wrap=True,
-    )
     with spark_column:
         st.subheader("4. Log de procesamiento (Spark)")
         spark_state = get_console_state("spark-log-console", run_id)
@@ -680,6 +765,12 @@ def render_consoles() -> None:
             "**[Worker 2 ↗](http://localhost:8082/)** &nbsp;-&nbsp; "
             "**[Spark Jobs ↗](http://localhost:4040/)** "
         )
+    pandas_postgresql_column = st.columns(
+        2,
+        gap="small",
+        vertical_alignment="top",
+        wrap=True,
+    )[0]
     with pandas_postgresql_column:
         st.subheader("5. Log de análisis (Pandas + PostgreSQL)")
         pandas_postgresql_state = get_console_state(
@@ -749,6 +840,9 @@ def render_info() -> None:
     streaming_module = load_page_module("02_alpaca_stream")
     controller_module.configure_streaming_module(streaming_module)
     snapshot = controller_module.get_run_snapshot()
+    last_execution_notice = get_last_execution_notice(snapshot)
+    if last_execution_notice:
+        st.info(last_execution_notice)
     if st.session_state.start_pending:
         elapsed_text = "-"
         market_date = "-"
@@ -845,6 +939,13 @@ def render_questions() -> None:
         for answer in analysis_data.get("answers", [])
     }
     metrics = analysis_data.get("metrics", [])
+    correlation_strengths = (
+        (0.20, "Muy débil"),
+        (0.40, "Débil"),
+        (0.60, "Moderada"),
+        (0.80, "Fuerte"),
+        (1.00, "Muy fuerte"),
+    )
     question_columns = st.columns(
         2,
         gap="small",
@@ -873,11 +974,24 @@ def render_questions() -> None:
             if volatility_correlation is None
             else f"{float(volatility_correlation):.4f}"
         )
-        volatility_conclusion = (
-            volatility_answer.get("conclusion", "Datos insuficientes.")
-            if volatility_answer
-            else "Datos insuficientes."
-        )
+        volatility_conclusion = "Datos insuficientes para establecer una correlación."
+        if volatility_answer and volatility_answer.get("symbol_count", 0) >= 2:
+            try:
+                correlation = float(volatility_correlation)
+            except (TypeError, ValueError):
+                correlation = None
+            if correlation is not None and math.isfinite(correlation) and 0 <= abs(correlation) <= 1:
+                strength = next(
+                    intensity
+                    for threshold, intensity in correlation_strengths
+                    if abs(correlation) < threshold or threshold == 1.00
+                )
+                if abs(correlation) < 0.20:
+                    volatility_conclusion = "La relación entre las operaciones y la volatilidad es muy débil o prácticamente nula; no se observa una asociación lineal apreciable. No implica causalidad."
+                elif correlation > 0:
+                    volatility_conclusion = f"La relación entre las operaciones y la volatilidad es {strength.lower()} y positiva: ambas variables tienden a aumentar juntas. No implica causalidad."
+                elif correlation < 0:
+                    volatility_conclusion = f"La relación entre las operaciones y la volatilidad es {strength.lower()} y negativa: cuando una variable aumenta, la otra tiende a disminuir. No implica causalidad."
         st.write(
             f"**Correlación:** {volatility_correlation_text} "
             "(cantidad de operaciones y volatilidad)"
@@ -906,11 +1020,24 @@ def render_questions() -> None:
             if spread_correlation is None
             else f"{float(spread_correlation):.4f}"
         )
-        spread_conclusion = (
-            spread_answer.get("conclusion", "Datos insuficientes.")
-            if spread_answer
-            else "Datos insuficientes."
-        )
+        spread_conclusion = "Datos insuficientes para establecer una correlación."
+        if spread_answer and spread_answer.get("symbol_count", 0) >= 2:
+            try:
+                correlation = float(spread_correlation)
+            except (TypeError, ValueError):
+                correlation = None
+            if correlation is not None and math.isfinite(correlation) and 0 <= abs(correlation) <= 1:
+                strength = next(
+                    intensity
+                    for threshold, intensity in correlation_strengths
+                    if abs(correlation) < threshold or threshold == 1.00
+                )
+                if abs(correlation) < 0.20:
+                    spread_conclusion = "La relación entre las operaciones y el spread es muy débil o prácticamente nula; no se observa una asociación lineal apreciable. No implica causalidad."
+                elif correlation > 0:
+                    spread_conclusion = f"La relación entre las operaciones y el spread es {strength.lower()} y positiva: ambas variables tienden a aumentar juntas. No implica causalidad."
+                elif correlation < 0:
+                    spread_conclusion = f"La relación entre las operaciones y el spread es {strength.lower()} y negativa: cuando una variable aumenta, la otra tiende a disminuir. No implica causalidad."
         st.write(
             f"**Correlación:** {spread_correlation_text} "
             "(cantidad de operaciones y spread)"
@@ -1204,6 +1331,36 @@ def start_run_in_background(
     finally:
         operation["done"] = True
 
+def stop_run_in_background(
+    operation: dict[str, Any],
+    controller_module: ModuleType,
+    spark_module: ModuleType,
+    run_id: str | None,
+) -> None:
+    """Solicito la detención y cierro Controller y Spark sin bloquear la UI."""
+
+    controller_thread = None
+    try:
+        controller_module.request_stop_active_run("manual_stop")
+        controller_thread = threading.Thread(
+            target=controller_module.stop_active_run,
+            args=("manual_stop",),
+            daemon=True,
+            name="stop-controller-run",
+        )
+        controller_thread.start()
+        operation["spark_result"] = spark_module.stop_streaming(
+            run_id,
+            finalize=True,
+        )
+        controller_thread.join()
+    except Exception as error:
+        operation["error"] = error
+        if controller_thread is not None:
+            controller_thread.join()
+    finally:
+        operation["done"] = True
+
 def mark_stop_pending() -> None:
     """Marco que el usuario acaba de solicitar la detención."""
 
@@ -1224,60 +1381,6 @@ def get_console_buffer_view(
     lines, _, total = functions.read_console_tail(console_path, 200)
     console_state["line_number"] = total
     return lines, 0, total, True, False
-
-    """Muestro respuestas y tablas nativas con métricas del RUN actual."""
-
-    answers = {
-        str(answer["question_id"]): answer
-        for answer in analysis_data.get("answers", [])
-    }
-    metrics = analysis_data.get("metrics", [])
-    questions = (
-        (
-            "volatility",
-            "1. ¿Las acciones con más operaciones presentan mayor volatilidad?",
-            ["symbol", "trade_count", "return_count", "volatility"],
-            "cantidad de operaciones y volatilidad",
-        ),
-        (
-            "spread",
-            "2. ¿Las acciones más negociadas tienen menor spread entre compra y venta?",
-            ["symbol", "trade_count", "spread_count", "spread_mean"],
-            "cantidad de operaciones y spread",
-        ),
-    )
-    question_columns = st.columns(
-        2,
-        gap="small",
-        vertical_alignment="top",
-    )
-    for question_column, (question_id, title, columns, correlation_description) in zip(
-        question_columns,
-        questions,
-    ):
-        with question_column:
-            st.markdown(f"#### {title}")
-            answer = answers.get(question_id)
-            correlation = answer.get("correlation") if answer else None
-            table_rows = [
-                {column: row.get(column) for column in columns}
-                for row in metrics
-            ]
-            st.dataframe(table_rows, hide_index=True, width="stretch")
-            correlation_text = (
-                "Datos insuficientes"
-                if correlation is None
-                else f"{float(correlation):.4f}"
-            )
-            conclusion = (
-                answer.get("conclusion", "Datos insuficientes.")
-                if answer
-                else "Datos insuficientes."
-            )
-            st.write(
-                f"**Correlación:** {correlation_text} ({correlation_description})"
-            )
-            st.write(f"**Interpretación:** {conclusion}")
 
 def format_elapsed_time(
     started_at: str | None,

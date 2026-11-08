@@ -216,6 +216,13 @@ def release_active_service(service: Any) -> None:
         if _ACTIVE_SERVICE is service:
             _ACTIVE_SERVICE = None
 
+def request_stop_active_run(end_reason: str) -> None:
+    """Solicito la detención inmediata del servicio activo."""
+
+    service = get_active_service()
+    if service is not None:
+        service.request_stop(end_reason)
+
 def configure_streaming_module(streaming_module: Any) -> None:
     """Registro el módulo Alpaca que utiliza el controlador."""
 

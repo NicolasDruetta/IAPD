@@ -335,8 +335,15 @@ class AlpacaStreamingService:
     def stop(self, end_reason: str) -> None:
         """Detengo el RUN y solicito el cierre de sus hilos."""
 
+        self.request_stop(end_reason)
+        self._join_threads()
+        self._finish("Detenido", end_reason)
+
+    def request_stop(self, end_reason: str) -> None:
+        """Solicito el cierre inmediato sin esperar los hilos de trabajo."""
+
         with self._lock:
-            if self._finished:
+            if self._finished or self._stop_event.is_set():
                 return
             self._status = "Finalizando"
             self._end_reason = end_reason
@@ -344,8 +351,6 @@ class AlpacaStreamingService:
             self._pipeline_ready.set()
             self._add_log(f"REPLAY | detención solicitada: {end_reason}")
             self._append_run_state_callback(self)
-        self._join_threads()
-        self._finish("Detenido", end_reason)
 
     def fail(self, error: str) -> None:
         """Finalizo el RUN con error y libero sus recursos."""
