@@ -144,7 +144,8 @@ textarea {
     gap: 0.35rem;
     line-height: 1;
     position: relative;
-    top: -5px;
+    top: -3px;
+    left: 8px;
 }
 
 .live-indicator-anchor {

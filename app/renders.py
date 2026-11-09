@@ -39,7 +39,7 @@ CONSOLE_ARROW_COMPONENT = st.components.v2.component(
     html=(
         '<span class="console-arrow-track">'
         '<span class="console-arrow" '
-        'aria-hidden="true">→</span></span>'
+        'aria-hidden="true">📄→</span></span>'
     ),
     isolate_styles=False,
     js="""
@@ -330,14 +330,8 @@ def render_header() -> None:
             st.rerun()
 
     st.subheader("Streaming y análisis de operaciones bursátiles con procesamiento distribuido durante una rueda de mercado.")
-    st.write(f"**Controller → Alpaca (Market Data) → Memoria → Kafka → Streaming (Kafka Topic) → Spark → Parquet → Pandas → PostgreSQL → Streamlit**")
-    st.caption("Materia: IAPD. Autor: Nicolás Druetta. Año: 2026.")
-
-def render_footer() -> None:
-    """Muestro el pie del laboratorio."""
-
-    with st.container(key="footer"):
-        st.caption("Materia: IAPD. Autor: Nicolás Druetta. Año: 2026.")
+    st.write("**Pipeline:** Controller → Alpaca (Market Data) → Memoria → Kafka → Streaming (Kafka Topic) → Spark → Parquet → Pandas → PostgreSQL → Streamlit.")
+    st.caption("Materia: Procesamiento de Datos, TP2. Autor: Nicolás Druetta. Año: 2026.")
 
 def render_config() -> None:
     """Muestro la configuración y coordino el estado del RUN."""
@@ -670,51 +664,6 @@ def render_config() -> None:
             run_id,
             finalize=snapshot.get("status") == "Completado",
         )
-
-def _get_consoles_context() -> tuple[Any, ...]:
-    """Obtengo el contexto compartido para las seis consolas."""
-
-    controller_module = load_page_module("01_python_controller")
-    streaming_module = load_page_module("02_alpaca_stream")
-    kafka_module = load_page_module("03_apache_kafka")
-    spark_module = load_page_module("04_apache_spark")
-    load_page_module("05_pandas")
-    load_page_module("06_postgresql")
-    controller_module.configure_streaming_module(streaming_module)
-    controller_module.configure_pipeline_modules(
-        kafka_module,
-        spark_module,
-    )
-    snapshot = controller_module.get_run_snapshot()
-    clear_consoles = bool(
-        st.session_state.start_requested
-        or st.session_state.start_pending
-    )
-    run_id = None if st.session_state.start_pending else snapshot["run_id"]
-    if (
-        run_id is not None
-        and snapshot["is_active"]
-        and not st.session_state.stop_pending
-    ):
-        controller_module.register_heartbeat(run_id)
-    paths = (
-        DATA_DIRECTORY / "runs" / f"{run_id}_01_python_controller_log.txt",
-        DATA_DIRECTORY / "runs" / f"{run_id}_02_alpaca_stream_log.txt",
-        DATA_DIRECTORY / "runs" / f"{run_id}_03_apache_kafka_log.txt",
-        DATA_DIRECTORY / "runs" / f"{run_id}_04_apache_spark_log.txt",
-        DATA_DIRECTORY / "runs" / f"{run_id}_05_pandas_log.txt",
-        DATA_DIRECTORY / "runs" / f"{run_id}_06_postgresql_log.txt",
-    ) if run_id else (None,) * 6
-    downloads_disabled = any(
-        path is None or not path.exists()
-        for path in paths
-    )
-    is_active = bool(
-        snapshot["is_active"]
-        and not st.session_state.start_pending
-        and not st.session_state.stop_pending
-    )
-    return clear_consoles, run_id, *paths, downloads_disabled, is_active
 
 def render_consoles_part1() -> None:
     """Muestro las primeras cuatro consolas del pipeline."""
@@ -1190,7 +1139,7 @@ def render_consoles_part2() -> None:
 def render_info() -> None:
     """Muestro la información de la última ejecución."""
 
-    render_live_indicator("INFORMACIÓN", "live-info")
+    render_live_indicator("Información", "live-info")
     controller_module = load_page_module("01_python_controller")
     streaming_module = load_page_module("02_alpaca_stream")
     controller_module.configure_streaming_module(streaming_module)
@@ -1253,7 +1202,7 @@ def render_info() -> None:
 def render_charts() -> None:
     """Muestro los gráficos de la última ejecución."""
 
-    render_live_indicator("GRÁFICOS", "live-charts")
+    render_live_indicator("Gráficos", "live-charts")
     if st.session_state.start_requested or st.session_state.start_pending:
         analysis_data = {
             "activity_interval": 1,
@@ -1288,10 +1237,7 @@ def render_charts() -> None:
 def render_questions() -> None:
     """Muestro las preguntas de investigación y sus tablas."""
 
-    render_live_indicator(
-        "PREGUNTAS DE INVESTIGACIÓN",
-        "live-questions",
-    )
+    render_live_indicator("Preguntas de investigación", "live-questions",)
     if st.session_state.start_requested or st.session_state.start_pending:
         analysis_data = {
             "answers": [],
@@ -1414,6 +1360,12 @@ def render_questions() -> None:
             "(cantidad de operaciones y spread)"
         )
         st.write(f"**Interpretación:** {spread_conclusion}")
+
+def render_footer() -> None:
+    """Muestro el pie del laboratorio."""
+
+    with st.container(key="footer"):
+        st.caption("Materia: Procesamiento de Datos, TP2. Autor: Nicolás Druetta. Año: 2026.")
 
 render_config = st.fragment(render_config, run_every="5s")
 render_consoles_part1 = st.fragment(render_consoles_part1, run_every="5s")
@@ -1817,3 +1769,48 @@ def format_presentation_log_line(line: str) -> str:
     if timestamp == timestamp_text:
         return line
     return f"{timestamp} | {message}"
+
+def _get_consoles_context() -> tuple[Any, ...]:
+    """Obtengo el contexto compartido para las seis consolas."""
+
+    controller_module = load_page_module("01_python_controller")
+    streaming_module = load_page_module("02_alpaca_stream")
+    kafka_module = load_page_module("03_apache_kafka")
+    spark_module = load_page_module("04_apache_spark")
+    load_page_module("05_pandas")
+    load_page_module("06_postgresql")
+    controller_module.configure_streaming_module(streaming_module)
+    controller_module.configure_pipeline_modules(
+        kafka_module,
+        spark_module,
+    )
+    snapshot = controller_module.get_run_snapshot()
+    clear_consoles = bool(
+        st.session_state.start_requested
+        or st.session_state.start_pending
+    )
+    run_id = None if st.session_state.start_pending else snapshot["run_id"]
+    if (
+        run_id is not None
+        and snapshot["is_active"]
+        and not st.session_state.stop_pending
+    ):
+        controller_module.register_heartbeat(run_id)
+    paths = (
+        DATA_DIRECTORY / "runs" / f"{run_id}_01_python_controller_log.txt",
+        DATA_DIRECTORY / "runs" / f"{run_id}_02_alpaca_stream_log.txt",
+        DATA_DIRECTORY / "runs" / f"{run_id}_03_apache_kafka_log.txt",
+        DATA_DIRECTORY / "runs" / f"{run_id}_04_apache_spark_log.txt",
+        DATA_DIRECTORY / "runs" / f"{run_id}_05_pandas_log.txt",
+        DATA_DIRECTORY / "runs" / f"{run_id}_06_postgresql_log.txt",
+    ) if run_id else (None,) * 6
+    downloads_disabled = any(
+        path is None or not path.exists()
+        for path in paths
+    )
+    is_active = bool(
+        snapshot["is_active"]
+        and not st.session_state.start_pending
+        and not st.session_state.stop_pending
+    )
+    return clear_consoles, run_id, *paths, downloads_disabled, is_active
