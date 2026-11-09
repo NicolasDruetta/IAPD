@@ -21,29 +21,40 @@ def analyze(
     batch_paths = sorted(parquet_path.glob("batch_*")) if parquet_path.is_dir() else []
     if not batch_paths:
         return None
-    state = _ANALYSIS_STATES.get(run_id)
-    if state is None:
-        frame = pd.read_parquet(parquet_path)
-        state = _create_analysis_state()
-        _update_analysis_state(state, frame)
-        state["batches"] = {path.name for path in batch_paths}
-    else:
-        known_batches = state["batches"]
-        new_paths = [path for path in batch_paths if path.name not in known_batches]
+    try:
+        state = _ANALYSIS_STATES.get(run_id)
+        if state is None:
+            state = _create_analysis_state()
+            _ANALYSIS_STATES[run_id] = state
+            new_paths = batch_paths
+        else:
+            known_batches = state["batches"]
+            new_paths = [path for path in batch_paths if path.name not in known_batches]
         if not new_paths:
-            return None
-        frame = pd.concat(
-            [pd.read_parquet(path) for path in new_paths],
-            ignore_index=True,
+            return state["analysis"]
+        frame = (
+            pd.read_parquet(new_paths[0])
+            if len(new_paths) == 1
+            else pd.concat(
+                [pd.read_parquet(path) for path in new_paths],
+                ignore_index=True,
+            )
         )
         _update_analysis_state(state, frame)
-        known_batches.update(path.name for path in new_paths)
-    metrics_frame = _build_metrics_frame(state)
-    if metrics_frame.empty:
-        return None
-    metrics, answers = _build_analysis_results(metrics_frame, feed)
-    top_volume, activity, activity_interval = prepare_chart_data(state)
-    try:
+        metrics_frame = _build_metrics_frame(state)
+        if metrics_frame.empty:
+            return None
+        metrics, answers = _build_analysis_results(metrics_frame, feed)
+        top_volume, activity, activity_interval = prepare_chart_data(state)
+        analysis = {
+            "activity": activity,
+            "activity_interval": activity_interval,
+            "answers": answers,
+            "metrics": metrics,
+            "top_volume": top_volume,
+        }
+        state["analysis"] = analysis
+        state["batches"].update(path.name for path in new_paths)
         functions.append_console_log(
             run_id,
             "pandas",
@@ -54,14 +65,9 @@ def analyze(
             "pandas",
             f"PANDAS | correlaciones_calculadas={len(answers)} | feed={feed}",
         )
-        return {
-            "activity": activity,
-            "activity_interval": activity_interval,
-            "answers": answers,
-            "metrics": metrics,
-            "top_volume": top_volume,
-        }
+        return analysis
     except (OSError, TypeError, ValueError) as error:
+        _ANALYSIS_STATES.pop(run_id, None)
         functions.append_console_log(
             run_id,
             "pandas",
@@ -232,7 +238,7 @@ def _build_metrics_frame(
 def _create_analysis_state() -> dict[str, Any]:
     """Creo el estado pequeño de acumulados, no de eventos crudos."""
 
-    return {"activity": {}, "batches": set(), "metrics": {}}
+    return {"activity": {}, "analysis": None, "batches": set(), "metrics": {}}
 
 def _prepare_events(frame: pd.DataFrame) -> pd.DataFrame:
     """Preparo timestamps y tipos numéricos del microbatch Parquet."""

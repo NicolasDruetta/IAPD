@@ -12,7 +12,6 @@ from types import ModuleType
 from typing import Any
 from zoneinfo import ZoneInfo
 
-CONSOLE_TRANSFER_BATCH_SIZE = 256
 DATA_DIRECTORY = Path(__file__).parent.parent / "data"
 PRESENTATION_TIMEZONE = ZoneInfo("America/Argentina/Cordoba")
 SYMBOL_OPTIONS = {
@@ -87,7 +86,10 @@ EXECUTION_TIMER_COMPONENT = st.components.v2.component(
                     : elapsed
                 : data.text;
         };
-        if (state.timerKey !== data.timer_key) {
+        if (
+            state.timerKey !== data.timer_key
+            || (!data.active && state.interval !== null)
+        ) {
             if (state.interval !== null) {
                 clearInterval(state.interval);
             }
@@ -558,6 +560,8 @@ def render_config() -> None:
         market_date = (
             snapshot.get("historical_date") or "-"
             if snapshot["is_active"]
+            else "El último día hábil completo."
+            if snapshot["status"] == "Listo para ejecutar"
             else "-"
         )
         market_time = (
@@ -695,7 +699,12 @@ def render_consoles_part1() -> None:
                 gap="small",
             ):
                 st.subheader("1. Log del controlador (Python)", width="content")
-                if is_active:
+                if (
+                    is_active
+                    and execution_path is not None
+                    and execution_path.exists()
+                    and execution_path.stat().st_size
+                ):
                     CONSOLE_ARROW_COMPONENT(
                         key="console-arrow-controller",
                         width="stretch",
@@ -704,7 +713,7 @@ def render_consoles_part1() -> None:
                 "execution-log-console",
                 run_id,
             )
-            log_lines, cursor_start, next_cursor, initial_load, resync = (
+            log_lines, _, _, _, _ = (
                 get_console_buffer_view(
                     run_id,
                     "controller",
@@ -750,16 +759,7 @@ def render_consoles_part1() -> None:
                     type="secondary",
                     width=36,
                 )
-            render_log_console(
-                log_display_lines,
-                "execution-log-console",
-                cursor_end=next_cursor,
-                cursor_start=cursor_start,
-                has_more=False,
-                initial_load=initial_load,
-                placeholder=is_placeholder,
-                resync=resync,
-            )
+            render_log_console(log_display_lines, "execution-log-console")
         with alpaca_column:
             with st.container(
                 horizontal=True,
@@ -767,7 +767,12 @@ def render_consoles_part1() -> None:
                 gap="small",
             ):
                 st.subheader("2. Log de descarga (Alpaca)", width="content")
-                if is_active:
+                if (
+                    is_active
+                    and alpaca_path is not None
+                    and alpaca_path.exists()
+                    and alpaca_path.stat().st_size
+                ):
                     CONSOLE_ARROW_COMPONENT(
                         key="console-arrow-alpaca",
                         width="stretch",
@@ -776,7 +781,7 @@ def render_consoles_part1() -> None:
                 "alpaca-log-console",
                 run_id,
             )
-            events, cursor_start, next_cursor, initial_load, resync = (
+            events, _, _, _, _ = (
                 get_console_buffer_view(
                     run_id,
                     "alpaca",
@@ -821,16 +826,7 @@ def render_consoles_part1() -> None:
                     type="secondary",
                     width=36,
                 )
-            render_log_console(
-                event_lines,
-                "alpaca-log-console",
-                cursor_end=next_cursor,
-                cursor_start=cursor_start,
-                has_more=False,
-                initial_load=initial_load,
-                placeholder=is_placeholder,
-                resync=resync,
-            )
+            render_log_console(event_lines, "alpaca-log-console")
         kafka_column, spark_column = st.columns(
             2,
             gap="small",
@@ -844,13 +840,18 @@ def render_consoles_part1() -> None:
                 gap="small",
             ):
                 st.subheader("3. Log de publicación (Kafka)", width="content")
-                if is_active:
+                if (
+                    is_active
+                    and kafka_path is not None
+                    and kafka_path.exists()
+                    and kafka_path.stat().st_size
+                ):
                     CONSOLE_ARROW_COMPONENT(
                         key="console-arrow-kafka",
                         width="stretch",
                     )
             kafka_state = get_console_state("kafka-log-console", run_id)
-            kafka_records, cursor_start, next_cursor, initial_load, resync = (
+            kafka_records, _, _, _, _ = (
                 get_console_buffer_view(
                     run_id,
                     "kafka",
@@ -863,7 +864,6 @@ def render_consoles_part1() -> None:
                 format_presentation_log_line(line)
                 for line in kafka_records
             ]
-            kafka_cursor_end = next_cursor
             is_placeholder = not kafka_lines and kafka_state["line_number"] == 0
             if is_placeholder:
                 kafka_lines = ["Kafka | esperando eventos para publicar."]
@@ -890,16 +890,7 @@ def render_consoles_part1() -> None:
                     type="secondary",
                     width=36,
                 )
-            render_log_console(
-                kafka_lines,
-                "kafka-log-console",
-                cursor_end=kafka_cursor_end,
-                cursor_start=cursor_start,
-                has_more=False,
-                initial_load=initial_load,
-                placeholder=is_placeholder,
-                resync=resync,
-            )
+            render_log_console(kafka_lines, "kafka-log-console")
         with spark_column:
             with st.container(
                 horizontal=True,
@@ -907,13 +898,18 @@ def render_consoles_part1() -> None:
                 gap="small",
             ):
                 st.subheader("4. Log de procesamiento (Spark)", width="content")
-                if is_active:
+                if (
+                    is_active
+                    and spark_path is not None
+                    and spark_path.exists()
+                    and spark_path.stat().st_size
+                ):
                     CONSOLE_ARROW_COMPONENT(
                         key="console-arrow-spark",
                         width="stretch",
                     )
             spark_state = get_console_state("spark-log-console", run_id)
-            spark_records, cursor_start, next_cursor, initial_load, resync = (
+            spark_records, _, _, _, _ = (
                 get_console_buffer_view(
                     run_id,
                     "spark",
@@ -949,16 +945,7 @@ def render_consoles_part1() -> None:
                     type="secondary",
                     width=36,
                 )
-            render_log_console(
-                spark_lines,
-                "spark-log-console",
-                cursor_end=next_cursor,
-                cursor_start=cursor_start,
-                has_more=False,
-                initial_load=initial_load,
-                placeholder=is_placeholder,
-                resync=resync,
-            )
+            render_log_console(spark_lines, "spark-log-console")
             st.caption(
                 "**[Spark Master ↗](http://localhost:8080/)** &nbsp;-&nbsp; "
                 "**[Worker 1 ↗](http://localhost:8081/)** &nbsp;-&nbsp; "
@@ -995,7 +982,12 @@ def render_consoles_part2() -> None:
                 gap="small",
             ):
                 st.subheader("5. Log de análisis (Pandas)", width="content")
-                if is_active:
+                if (
+                    is_active
+                    and pandas_path is not None
+                    and pandas_path.exists()
+                    and pandas_path.stat().st_size
+                ):
                     CONSOLE_ARROW_COMPONENT(
                         key="console-arrow-pandas",
                         width="stretch",
@@ -1007,7 +999,7 @@ def render_consoles_part2() -> None:
                 "pandas-log-console",
                 run_id,
             )
-            pandas_records, cursor_start, next_cursor, initial_load, resync = (
+            pandas_records, _, _, _, _ = (
                 get_console_buffer_view(
                     run_id,
                     "pandas",
@@ -1048,16 +1040,7 @@ def render_consoles_part2() -> None:
                     type="secondary",
                     width=36,
                 )
-            render_log_console(
-                pandas_lines,
-                "pandas-log-console",
-                cursor_end=next_cursor,
-                cursor_start=cursor_start,
-                has_more=False,
-                initial_load=initial_load,
-                placeholder=is_placeholder,
-                resync=resync,
-            )
+            render_log_console(pandas_lines, "pandas-log-console")
         with postgresql_column:
             with st.container(
                 horizontal=True,
@@ -1065,7 +1048,12 @@ def render_consoles_part2() -> None:
                 gap="small",
             ):
                 st.subheader("6. Log de persistencia (PostgreSQL)", width="content")
-                if is_active:
+                if (
+                    is_active
+                    and postgresql_path is not None
+                    and postgresql_path.exists()
+                    and postgresql_path.stat().st_size
+                ):
                     CONSOLE_ARROW_COMPONENT(
                         key="console-arrow-postgresql",
                         width="stretch",
@@ -1077,7 +1065,7 @@ def render_consoles_part2() -> None:
                 "postgresql-log-console",
                 run_id,
             )
-            postgresql_records, cursor_start, next_cursor, initial_load, resync = (
+            postgresql_records, _, _, _, _ = (
                 get_console_buffer_view(
                     run_id,
                     "postgresql",
@@ -1123,16 +1111,7 @@ def render_consoles_part2() -> None:
                     type="secondary",
                     width=36,
                 )
-            render_log_console(
-                postgresql_lines,
-                "postgresql-log-console",
-                cursor_end=next_cursor,
-                cursor_start=cursor_start,
-                has_more=False,
-                initial_load=initial_load,
-                placeholder=is_placeholder,
-                resync=resync,
-            )
+            render_log_console(postgresql_lines, "postgresql-log-console")
         if clear_consoles:
             st.session_state.start_requested = False
 
@@ -1377,12 +1356,6 @@ render_charts = st.fragment(render_charts, run_every="5s")
 def render_log_console(
     lines: list[str],
     console_id: str,
-    cursor_end: int,
-    cursor_start: int = 0,
-    has_more: bool = False,
-    initial_load: bool = False,
-    placeholder: bool = False,
-    resync: bool = False,
 ) -> None:
     """Muestro y actualizo incrementalmente una consola de registros."""
 

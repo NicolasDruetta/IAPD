@@ -6,9 +6,10 @@ import threading
 import urllib.request
 
 from app import functions
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 from pyspark import SparkContext
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.functions import (
@@ -44,7 +45,9 @@ KAFKA_BOOTSTRAP_SERVERS = os.getenv(
     "KAFKA_BOOTSTRAP_SERVERS",
     "kafka:9092",
 )
+KAFKA_STARTING_OFFSET_LOOKBACK_SECONDS = 5
 KAFKA_TOPIC = os.getenv("KAFKA_TOPIC", "iapd-market-events")
+PRESENTATION_TIMEZONE = ZoneInfo("America/Argentina/Cordoba")
 SPARK_APP_NAME = "Apache Big Data Lab"
 SPARK_BLOCK_MANAGER_PORT = os.getenv("SPARK_BLOCK_MANAGER_PORT", "4042")
 SPARK_DRIVER_HOST = os.getenv("SPARK_DRIVER_HOST", "spark-driver")
@@ -491,8 +494,10 @@ def process_batch(run_id: str, data_frame: DataFrame, batch_id: int) -> None:
             )
             os.replace(temporary_path, batch_path)
         analysis_module = sys.modules.get("06_postgresql")
-        if analysis_module is not None:
-            analysis_module.analyze_and_persist(run_id)
+        if analysis_module is None:
+            raise RuntimeError("PostgreSQL no está disponible para persistir el batch.")
+        if not analysis_module.analyze_and_persist(run_id):
+            raise RuntimeError("El análisis o la persistencia del batch no se completó.")
         trade_count = processed_frame.where(
             col("event_type") == "TRADE"
         ).count()
@@ -677,13 +682,20 @@ def start_streaming(run_id: str) -> None:
     (DATA_DIRECTORY / "spark").mkdir(parents=True, exist_ok=True)
     checkpoint_path = str(DATA_DIRECTORY / "spark" / f"{run_id}_04_spark_checkpoint")
     query_started_at = datetime.now(timezone.utc)
+    starting_timestamp = (
+        datetime.strptime(run_id, "%Y%m%d_%H%M%S")
+        .replace(tzinfo=PRESENTATION_TIMEZONE)
+        .astimezone(timezone.utc)
+        - timedelta(seconds=KAFKA_STARTING_OFFSET_LOOKBACK_SECONDS)
+    )
+    starting_timestamp_milliseconds = int(starting_timestamp.timestamp() * 1000)
     try:
         initialize_parquet_output(run_id, spark)
         events = (
             spark.readStream.format("kafka")
             .option("kafka.bootstrap.servers", KAFKA_BOOTSTRAP_SERVERS)
             .option("subscribe", KAFKA_TOPIC)
-            .option("startingOffsets", "earliest")
+            .option("startingTimestamp", starting_timestamp_milliseconds)
             .option("failOnDataLoss", "false")
             .load()
             .select(from_json(col("value").cast("string"), EVENT_SCHEMA).alias("event"))

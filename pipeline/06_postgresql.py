@@ -13,11 +13,21 @@ def analyze_and_persist(
 
     analysis_module = sys.modules.get("05_pandas")
     if analysis_module is None:
-        return False
-    analysis = analysis_module.analyze(run_id, feed)
-    if analysis is None:
+        functions.append_console_log(
+            run_id,
+            "postgresql",
+            "ERROR | persistencia=análisis Pandas no disponible",
+        )
         return False
     try:
+        analysis = analysis_module.analyze(run_id, feed)
+        if analysis is None:
+            functions.append_console_log(
+                run_id,
+                "postgresql",
+                "ERROR | persistencia=análisis Pandas no disponible",
+            )
+            return False
         with database.get_postgresql_connection() as connection:
             database.ensure_tables(connection)
             database.persist_analysis(

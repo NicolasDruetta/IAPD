@@ -1,10 +1,13 @@
 import os
 import psycopg
+import threading
 
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from typing import Any
 
+_SCHEMA_LOCK = threading.Lock()
+_SCHEMA_READY = False
 MARKET_ANSWERS_TABLE = "market_answers"
 MARKET_METRICS_TABLE = "market_metrics"
 POSTGRES_DB = os.getenv("POSTGRES_DB", "apache_big_data_lab")
@@ -16,52 +19,58 @@ POSTGRES_USER = os.getenv("POSTGRES_USER", "bigdata")
 def ensure_tables(connection: psycopg.Connection) -> None:
     """Creo las tablas analíticas y verifico sus columnas compatibles."""
 
-    with connection.cursor() as cursor:
-        cursor.execute(
-            f"""
-            CREATE TABLE IF NOT EXISTS {MARKET_METRICS_TABLE} (
-                run_id TEXT NOT NULL,
-                symbol TEXT NOT NULL,
-                feed TEXT NOT NULL,
-                trade_count BIGINT NOT NULL,
-                return_count BIGINT NOT NULL,
-                volatility DOUBLE PRECISION,
-                spread_count BIGINT NOT NULL,
-                spread_mean DOUBLE PRECISION,
-                total_volume DOUBLE PRECISION,
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                PRIMARY KEY (run_id, symbol)
+    global _SCHEMA_READY
+    with _SCHEMA_LOCK:
+        if _SCHEMA_READY:
+            return
+        with connection.cursor() as cursor:
+            cursor.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {MARKET_METRICS_TABLE} (
+                    run_id TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    feed TEXT NOT NULL,
+                    trade_count BIGINT NOT NULL,
+                    return_count BIGINT NOT NULL,
+                    volatility DOUBLE PRECISION,
+                    spread_count BIGINT NOT NULL,
+                    spread_mean DOUBLE PRECISION,
+                    total_volume DOUBLE PRECISION,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (run_id, symbol)
+                )
+                """,
             )
-            """,
-        )
-        cursor.execute(
-            f"""
-            CREATE TABLE IF NOT EXISTS {MARKET_ANSWERS_TABLE} (
-                run_id TEXT NOT NULL,
-                question_id TEXT NOT NULL,
-                feed TEXT NOT NULL,
-                correlation DOUBLE PRECISION,
-                symbol_count BIGINT NOT NULL,
-                top_volume JSONB,
-                activity_rows JSONB,
-                activity_interval INTEGER,
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                PRIMARY KEY (run_id, question_id)
+            cursor.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {MARKET_ANSWERS_TABLE} (
+                    run_id TEXT NOT NULL,
+                    question_id TEXT NOT NULL,
+                    feed TEXT NOT NULL,
+                    correlation DOUBLE PRECISION,
+                    symbol_count BIGINT NOT NULL,
+                    top_volume JSONB,
+                    activity_rows JSONB,
+                    activity_interval INTEGER,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (run_id, question_id)
+                )
+                """,
             )
-            """,
-        )
-        cursor.execute(
-            f"ALTER TABLE {MARKET_ANSWERS_TABLE} ADD COLUMN IF NOT EXISTS top_volume JSONB"
-        )
-        cursor.execute(
-            f"ALTER TABLE {MARKET_ANSWERS_TABLE} ADD COLUMN IF NOT EXISTS activity_rows JSONB"
-        )
-        cursor.execute(
-            f"ALTER TABLE {MARKET_ANSWERS_TABLE} ADD COLUMN IF NOT EXISTS activity_interval INTEGER"
-        )
-        cursor.execute(
-            f"ALTER TABLE {MARKET_ANSWERS_TABLE} DROP COLUMN IF EXISTS conclusion"
-        )
+            cursor.execute(
+                f"ALTER TABLE {MARKET_ANSWERS_TABLE} ADD COLUMN IF NOT EXISTS top_volume JSONB"
+            )
+            cursor.execute(
+                f"ALTER TABLE {MARKET_ANSWERS_TABLE} ADD COLUMN IF NOT EXISTS activity_rows JSONB"
+            )
+            cursor.execute(
+                f"ALTER TABLE {MARKET_ANSWERS_TABLE} ADD COLUMN IF NOT EXISTS activity_interval INTEGER"
+            )
+            cursor.execute(
+                f"ALTER TABLE {MARKET_ANSWERS_TABLE} DROP COLUMN IF EXISTS conclusion"
+            )
+        connection.commit()
+        _SCHEMA_READY = True
 
 def get_market_analysis(run_id: str | None) -> dict[str, Any]:
     """Consulto PostgreSQL y devuelvo datos para preguntas y gráficos."""
@@ -87,11 +96,14 @@ def get_market_analysis(run_id: str | None) -> dict[str, Any]:
                     (run_id,),
                 )
                 answers = cursor.fetchall()
-                cursor.execute(
-                    "SELECT top_volume, activity_rows, activity_interval FROM market_answers WHERE run_id = %s AND question_id = %s",
-                    (run_id, "volatility"),
+                chart_answer = next(
+                    (
+                        answer
+                        for answer in answers
+                        if answer["question_id"] == "volatility"
+                    ),
+                    {},
                 )
-                chart_answer = cursor.fetchone() or {}
         return {
             "activity_interval": chart_answer.get("activity_interval", 1),
             "activity_rows": chart_answer.get("activity_rows") or [],
