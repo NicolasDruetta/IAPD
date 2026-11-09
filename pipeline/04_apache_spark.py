@@ -3,22 +3,18 @@ import os
 import shutil
 import sys
 import threading
+import time
 import urllib.request
 
 from app import functions
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
-from zoneinfo import ZoneInfo
 from pyspark import SparkContext
 from pyspark.sql import DataFrame, SparkSession
-from pyspark.sql.functions import (
-    col,
-    count,
-    from_json,
-    when,
-)
+from pyspark.sql.functions import (col,count,from_json,when)
 from pyspark.sql.types import DoubleType, StringType, StructField, StructType
+from typing import Any
+from zoneinfo import ZoneInfo
 
 _RUN_STATES: dict[str, dict[str, Any]] = {}
 _SPARK_ERROR: str | None = None
@@ -142,7 +138,11 @@ def get_snapshot(run_id: str | None = None) -> dict[str, Any]:
                     "spark",
                     f"QUERY | run_id={run_id} | query_id={state['query_id']} | estado={query_status}",
                 )
-        if not query_active and query_error is not None:
+        if (
+            not query_active
+            and query_error is not None
+            and not state.get("stopping", False)
+        ):
             state["status"] = "error"
     if state["processed_events"] > 0:
         monitor_workers(run_id, state)
@@ -537,7 +537,11 @@ def process_batch(run_id: str, data_frame: DataFrame, batch_id: int) -> None:
         ):
             functions.append_console_log(run_id, "spark", message)
     except Exception as error:
-        if "InterruptedException" in str(error) and not has_active_query():
+        with _SPARK_LOCK:
+            stopping = bool(
+                _RUN_STATES.get(run_id, {}).get("stopping", False)
+            )
+        if stopping or "InterruptedException" in str(error):
             functions.append_console_log(
                 run_id,
                 "spark",
@@ -669,6 +673,7 @@ def start_streaming(run_id: str) -> None:
             "query_status_signature": "",
             "rows": [],
             "status": "iniciando",
+            "stopping": False,
         }
     spark = get_spark_session()
     if spark is None:
@@ -734,11 +739,18 @@ def stop_streaming(
         state = _RUN_STATES.get(run_id)
         if state is None:
             return True
+        state["stopping"] = True
         query = state.get("query") if state else None
     if query is not None:
         try:
             if query.isActive:
                 query.stop()
+            # Spark puede devolver de query.stop() antes de que el driver
+            # haya liberado la consulta. Esperamos un margen corto para que
+            # no queden microbatches ni foreachBatch ejecutándose detrás del STOP.
+            deadline = time.monotonic() + 5
+            while query.isActive and time.monotonic() < deadline:
+                time.sleep(0.1)
         except Exception as error:
             error_text = str(error)
             if "stopped SparkContext" not in error_text:

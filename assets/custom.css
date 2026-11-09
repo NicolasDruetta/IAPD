@@ -148,6 +148,10 @@ textarea {
     left: 8px;
 }
 
+.live-indicator.is-hidden {
+    display: none;
+}
+
 .live-indicator-anchor {
     display: none;
 }
@@ -406,7 +410,7 @@ textarea {
 }
 
 .stMainBlockContainer {
-    padding: 2rem 3rem !important; /* Custom Nico. No tocar. */
+    padding: 1.5rem 3rem !important; /* Custom Nico. No tocar. */
 }
 
 .stMetric {

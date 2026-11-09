@@ -39,17 +39,21 @@ La versión de Python y las bibliotecas utilizadas se encuentran en `Dockerfile`
 El recorrido principal es el siguiente:
 
 ```text
-Controller -> Alpaca -> Kafka -> Spark -> Parquet -> Pandas -> PostgreSQL -> Streamlit
+Controller (Orquestación) -> Alpaca (Fuente) -> Memoria (Buffer) -> Kafka (Streaming) -> Streaming (Procesamiento de eventos) -> Spark (Procesamiento distribuido) -> Parquet (Persistencia de datos) -> Pandas (Análisis estadístico) -> PostgreSQL (Base de datos) -> Streamlit (Visualización)
 ```
 
 El Controller administra cada ejecución, identificada por un `run_id`.
 
 1. **Controller:** inicia la ejecución, coordina las etapas y registra su estado.
 2. **Alpaca:** obtiene datos de una sesión bursátil anterior y los emite progresivamente.
-3. **Kafka:** recibe y publica los eventos para que Spark pueda consumirlos.
-4. **Spark:** procesa los eventos en lotes, distingue `TRADE` de `QUOTE` y escribe archivos Parquet. Se utiliza un Master y dos Workers.
-5. **Pandas:** lee los resultados generados por Spark y calcula las métricas y correlaciones.
-6. **PostgreSQL:** guarda los resultados mediante operaciones de inserción o actualización, evitando duplicar registros de un mismo RUN.
+3. **Memoria:** mantiene temporalmente los eventos antes de su publicación.
+4. **Kafka:** publica los eventos en un tópico.
+5. **Streaming:** permite que Spark consuma los eventos de Kafka de forma progresiva mediante Structured Streaming. No es un servicio adicional.
+6. **Spark:** procesa los eventos en microbatches, distingue `TRADE` de `QUOTE` y escribe archivos Parquet. Se utiliza un Master y dos Workers.
+7. **Parquet:** almacena los datos procesados que Pandas necesita para el análisis.
+8. **Pandas:** lee los archivos Parquet y calcula las métricas y correlaciones.
+9. **PostgreSQL:** guarda los resultados numéricos mediante inserciones o actualizaciones, evitando registros duplicados de un mismo RUN.
+10. **Streamlit:** muestra las consolas, los gráficos y los resultados del análisis.
 
 Spark registra las operaciones de extracción, transformación, carga y análisis exploratorio (EXTRACT, TRANSFORM, LOAD y EDA). Durante una ejecución se generan fragmentos Parquet y, cuando el cierre lo permite, se produce un archivo consolidado.
 

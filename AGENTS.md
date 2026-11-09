@@ -33,9 +33,11 @@ Separé la aplicación en módulos para que cada archivo tenga una tarea concret
 
 ## 2. Recorrido de los datos
 
-El Controller inicia una ejecución con un identificador propio (`run_id`). Alpaca descarga operaciones y cotizaciones históricas y las emite progresivamente. Kafka publica los mensajes y Spark los procesa mediante Structured Streaming.
+El orden del pipeline es: Controller (Orquestación) → Alpaca (Fuente) → Memoria (Buffer) → Kafka (Streaming) → Streaming (Procesamiento de eventos) → Spark (Procesamiento distribuido) → Parquet (Persistencia de datos) → Pandas (Análisis estadístico) → PostgreSQL (Base de datos) → Streamlit (Visualización).
 
-Spark separa operaciones (`TRADE`) y cotizaciones (`QUOTE`), genera resultados por símbolo y escribe fragmentos Parquet. Pandas lee los fragmentos nuevos y calcula métricas. PostgreSQL guarda los resultados y Streamlit los consulta para mostrarlos.
+El Controller inicia una ejecución con un identificador propio (`run_id`). Alpaca descarga operaciones y cotizaciones históricas y las emite progresivamente a través de un buffer en memoria. Kafka publica los mensajes en un tópico. La etapa Streaming corresponde al consumo progresivo de ese tópico mediante Spark Structured Streaming; no es otro servicio independiente.
+
+Spark procesa los microbatches, separa operaciones (`TRADE`) y cotizaciones (`QUOTE`), genera resultados por símbolo y escribe fragmentos Parquet. Pandas lee los fragmentos nuevos y calcula métricas. PostgreSQL guarda los resultados numéricos y Streamlit los consulta para mostrarlos.
 
 El sistema combina reproducción histórica, streaming por microbatches y análisis de resultados. Que se utilice Structured Streaming no significa que se estén recibiendo cotizaciones en vivo.
 
@@ -49,7 +51,7 @@ La carpeta `data/` se genera automáticamente y se usa para archivos temporales 
 
 ## 4. Inicio y detención
 
-El botón de inicio prepara un RUN y pone en marcha las etapas correspondientes. El Controller mantiene el estado de la ejecución y el seguimiento de actividad.
+El botón de inicio prepara un RUN y pone en marcha las etapas correspondientes. El Controller mantiene el estado de la ejecución y el seguimiento de actividad. La falta de actualizaciones del navegador no detiene por sí sola un RUN; la detención manual se solicita desde el botón STOP.
 
 El botón de detención solicita cortar la descarga, la publicación y el procesamiento del RUN. La detención tiene prioridad sobre completar los lotes pendientes. Por ese motivo, una ejecución interrumpida puede no tener un Parquet final consolidado.
 

@@ -213,37 +213,37 @@ class AlpacaStreamingService:
     ) -> None:
         self._api_key = api_key
         self._api_secret = api_secret
-        self._run_id = run_id
-        self._run_stem = run_stem
-        self._symbols = symbols
-        self._universe_metadata = universe_metadata
-        self._feed = feed
-        self._replay_speed = replay_speed
-        self._release_callback = release_callback
-        self._publish_events_callback = publish_events_callback
         self._append_controller_log_callback = append_controller_log_callback
         self._append_run_record_callback = append_run_record_callback
         self._append_run_state_callback = append_run_state_callback
-        self._events: deque[AlpacaEvent] = deque()
-        self._stop_event = threading.Event()
-        self._pipeline_ready = threading.Event()
-        self._lock = threading.RLock()
-        self._stream_thread: threading.Thread | None = None
-        self._status = "Listo para ejecutar"
-        self._error: str | None = None
+        self._download_thread: threading.Thread | None = None
         self._end_reason: str | None = None
-        self._started_at: str | None = None
         self._ended_at: str | None = None
+        self._error: str | None = None
+        self._event_count = 0
+        self._events: deque[AlpacaEvent] = deque()
+        self._feed = feed
+        self._finished = False
+        self._historical_date: str | None = None
+        self._kafka_published_count = 0
         self._last_heartbeat_at: str | None = None
         self._last_heartbeat_monotonic: float | None = None
-        self._event_count = 0
-        self._kafka_published_count = 0
+        self._lock = threading.RLock()
+        self._market_timestamp: str | None = None
+        self._pipeline_ready = threading.Event()
+        self._publish_events_callback = publish_events_callback
+        self._release_callback = release_callback
         self._replay_batch_number = 0
         self._replay_position = 0
-        self._historical_date: str | None = None
-        self._finished = False
-        self._market_timestamp: str | None = None
+        self._replay_speed = replay_speed
+        self._run_id = run_id
+        self._run_stem = run_stem
         self._started_at = started_at
+        self._status = "Listo para ejecutar"
+        self._stop_event = threading.Event()
+        self._stream_thread: threading.Thread | None = None
+        self._symbols = symbols
+        self._universe_metadata = universe_metadata
         self._log_alpaca_path = (
             DATA_DIRECTORY / "runs" / f"{run_stem}_02_alpaca_stream_log.txt"
         )
@@ -464,6 +464,7 @@ class AlpacaStreamingService:
             daemon=True,
             name=f"alpaca-download-{self._run_id}",
         )
+        self._download_thread = download_thread
         download_thread.start()
         while True:
             try:
@@ -605,6 +606,8 @@ class AlpacaStreamingService:
         """Informo al Controller un mensaje operativo de Alpaca."""
 
         with self._lock:
+            if self._stop_event.is_set() and not message.startswith("DATA | finalizado:"):
+                return
             if self._append_controller_log_callback is not None:
                 self._append_controller_log_callback(
                     self._run_id,
@@ -616,9 +619,9 @@ class AlpacaStreamingService:
         """Espero el cierre de los hilos sin bloquearse a sí mismos."""
 
         current_thread = threading.current_thread()
-        for thread in (self._stream_thread,):
+        for thread in (self._stream_thread, self._download_thread):
             if thread is not None and thread is not current_thread:
-                thread.join(timeout=1)
+                thread.join(timeout=3)
 
     def _safe_error(self, error: Exception) -> str:
         """Devuelvo un error útil sin incluir secretos de autenticación."""

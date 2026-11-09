@@ -2,7 +2,6 @@ import atexit
 import json
 import os
 import threading
-import time
 
 from app import functions
 from datetime import timezone
@@ -10,6 +9,7 @@ from typing import Any
 
 _ACTIVE_SERVICE: Any = None
 _KAFKA_MODULE: Any = None
+_LAST_STOPPED_SNAPSHOT: dict[str, Any] | None = None
 _MANAGER_LOCK = threading.RLock()
 _RUN_LOG_COUNTS: dict[str, int] = {}
 _RUN_SEQUENCES: dict[str, int] = {}
@@ -138,6 +138,8 @@ def get_run_snapshot() -> dict[str, Any]:
             }
         )
         return snapshot
+    if _LAST_STOPPED_SNAPSHOT is not None:
+        return dict(_LAST_STOPPED_SNAPSHOT)
     metadata = streaming_module.get_latest_metadata()
     if metadata is not None:
         metadata.setdefault("universe", {"selection": "manual"})
@@ -257,7 +259,7 @@ def start_run(
 ) -> Any:
     """Creo un único RUN y coordino su ciclo de vida."""
 
-    global _ACTIVE_SERVICE, _SUPERVISOR_THREAD
+    global _ACTIVE_SERVICE, _LAST_STOPPED_SNAPSHOT, _SUPERVISOR_THREAD
     streaming_module = _require_streaming_module()
     if _KAFKA_MODULE is None or _SPARK_MODULE is None:
         raise RuntimeError("Kafka y Spark no fueron configurados.")
@@ -293,6 +295,7 @@ def start_run(
                 "El identificador del RUN ya existe; esperá un segundo y volvé a iniciar."
             )
         _KAFKA_MODULE.initialize_run(run_id)
+        _LAST_STOPPED_SNAPSHOT = None
         try:
             _ACTIVE_SERVICE = streaming_module.AlpacaStreamingService(
                 api_key,
@@ -327,23 +330,20 @@ def start_run(
 def stop_active_run(end_reason: str) -> None:
     """Detengo el único RUN administrado por el controlador."""
 
-    global _SUPERVISOR_THREAD
+    global _LAST_STOPPED_SNAPSHOT, _SUPERVISOR_THREAD
     service = get_active_service()
     try:
         if service is not None:
             service.stop(end_reason)
+            _LAST_STOPPED_SNAPSHOT = service.get_snapshot()
     finally:
         if service is not None:
             release_active_service(service)
         if _KAFKA_MODULE is not None:
             _KAFKA_MODULE.reset_producer()
         supervisor_thread = _SUPERVISOR_THREAD
-        if (
-            supervisor_thread is not None
-            and supervisor_thread is not threading.current_thread()
-        ):
-            supervisor_thread.join(timeout=1)
-        _SUPERVISOR_THREAD = None
+        if supervisor_thread is not threading.current_thread():
+            _SUPERVISOR_THREAD = None
 
 def _require_streaming_module() -> Any:
     """Obtengo el módulo Alpaca configurado para el controlador."""
@@ -353,15 +353,25 @@ def _require_streaming_module() -> Any:
     return _STREAMING_MODULE
 
 def _supervise_heartbeat(service: Any) -> None:
-    """Detengo el RUN cuando la interfaz deja de informar actividad."""
+    """Cancelo el RUN tras 15 minutos sin señales del navegador."""
 
+    run_id = service.get_snapshot()["run_id"]
     while service.is_active():
-        time.sleep(1)
-        if (
-            service.is_active()
-            and service.heartbeat_elapsed() > HEARTBEAT_TIMEOUT_MINUTES * 60
-        ):
-            service.stop("heartbeat_timeout")
+        if service.get_snapshot()["end_reason"] is not None:
             return
+        if service.heartbeat_elapsed() >= HEARTBEAT_TIMEOUT_MINUTES * 60:
+            # Detengo la fuente primero; después cancelo Spark para este RUN.
+            if get_active_service() is not service:
+                return
+            if service.heartbeat_elapsed() < HEARTBEAT_TIMEOUT_MINUTES * 60:
+                continue
+            service.request_stop("heartbeat_timeout")
+            try:
+                stop_active_run("heartbeat_timeout")
+            finally:
+                if _SPARK_MODULE is not None:
+                    _SPARK_MODULE.stop_streaming(run_id, finalize=False)
+            return
+        threading.Event().wait(1)
 
 atexit.register(shutdown_active_run)

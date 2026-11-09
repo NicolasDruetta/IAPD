@@ -43,7 +43,13 @@ CONSOLE_ARROW_COMPONENT = st.components.v2.component(
     ),
     isolate_styles=False,
     js="""
-    export default function () {
+    export default function ({ parentElement }) {
+        const icon = parentElement.querySelector(".console-arrow");
+        if (!icon) return () => {};
+        const styles = getComputedStyle(icon);
+        const duration = parseFloat(styles.animationDuration) || 4;
+        const phase = (Date.now() / 1000) % duration;
+        icon.style.animationDelay = `-${phase}s`;
         return () => {};
     }
     """,
@@ -121,17 +127,17 @@ LIVE_INDICATOR_COMPONENT = st.components.v2.component(
         if (heading === undefined) {
             return () => {};
         }
-        const indicator = heading.querySelector(":scope > .live-indicator");
-        if (data.active && indicator === null) {
+        let indicator = heading.querySelector(":scope > .live-indicator");
+        if (indicator === null) {
             const liveIndicator = document.createElement("span");
             liveIndicator.className = "live-indicator";
             liveIndicator.innerHTML =
                 '<span class="live-dot" aria-hidden="true"></span>' +
                 '<span>LIVE</span>';
             heading.appendChild(liveIndicator);
-        } else if (!data.active && indicator !== null) {
-            indicator.remove();
+            indicator = liveIndicator;
         }
+        indicator.classList.toggle("is-hidden", !data.active);
         return () => {};
     }
     """,
@@ -288,11 +294,25 @@ def render_live_indicator(title: str, key: str) -> None:
         snapshot.get("is_active")
         and not st.session_state.start_pending
         and not st.session_state.stop_pending
+        and not st.session_state.manual_stop_status
     )
     LIVE_INDICATOR_COMPONENT(
         data={"active": is_active, "title": title},
         key=key,
     )
+
+def render_heartbeat() -> None:
+    """Renuevo la actividad del RUN mientras el navegador mantiene la sesión."""
+
+    if st.session_state.get("stop_pending"):
+        return
+    controller_module = load_page_module("01_python_controller")
+    service = controller_module.get_active_service()
+    if service is None or not service.is_active():
+        return
+    run_id = service.get_snapshot().get("run_id")
+    if run_id:
+        controller_module.register_heartbeat(run_id)
 
 def render_header() -> None:
     """Muestro el encabezado general del laboratorio."""
@@ -334,8 +354,10 @@ def render_header() -> None:
             st.session_state.theme_user_set = True
             st.rerun()
 
+    render_heartbeat()
+
     st.subheader("Procesamiento distribuido y análisis estadístico de datos bursátiles.")
-    st.write("**Pipeline:** Controller (Orquestación) → Alpaca (Fuente) → Memoria (Buffer) → Kafka (Streaming) → Spark (Procesamiento distribuido) → Parquet (Persistencia de datos) → Pandas (Análisis estadístico) → PostgreSQL (Base de datos) → Streamlit (Visualización).")
+    st.write("**Pipeline:** Controller → Alpaca → Memoria → Kafka → Streaming → Spark → Parquet → Pandas → PostgreSQL → Streamlit.")
     st.caption("Materia: Procesamiento de Datos, TP2. Autor: Nicolás Druetta. Año: 2026.")
 
 def render_config() -> None:
@@ -562,6 +584,8 @@ def render_config() -> None:
         )
         st.session_state.stop_pending = False
         st.session_state.stop_operation = None
+        st.session_state.start_requested = False
+        st.session_state.alpaca_run_id = None
         snapshot = controller_module.get_run_snapshot()
         stop_completed = True
 
@@ -1260,13 +1284,6 @@ def render_questions() -> None:
         for answer in analysis_data.get("answers", [])
     }
     metrics = analysis_data.get("metrics", [])
-    correlation_strengths = (
-        (0.20, "Muy débil"),
-        (0.40, "Débil"),
-        (0.60, "Moderada"),
-        (0.80, "Fuerte"),
-        (1.00, "Muy fuerte"),
-    )
     question_columns = st.columns(
         2,
         gap="small",
@@ -1295,27 +1312,16 @@ def render_questions() -> None:
             if volatility_correlation is None
             else f"{float(volatility_correlation):.4f}"
         )
-        volatility_conclusion = "Datos insuficientes para establecer una correlación."
-        if volatility_answer and volatility_answer.get("symbol_count", 0) >= 2:
-            try:
-                correlation = float(volatility_correlation)
-            except (TypeError, ValueError):
-                correlation = None
-            if correlation is not None and math.isfinite(correlation) and 0 <= abs(correlation) <= 1:
-                strength = next(
-                    intensity
-                    for threshold, intensity in correlation_strengths
-                    if abs(correlation) < threshold or threshold == 1.00
-                )
-                if abs(correlation) < 0.20:
-                    volatility_conclusion = "La relación entre las operaciones y la volatilidad es muy débil o prácticamente nula; no se observa una asociación lineal apreciable. No implica causalidad."
-                elif correlation > 0:
-                    volatility_conclusion = f"La relación entre las operaciones y la volatilidad es {strength.lower()} y positiva: ambas variables tienden a aumentar juntas. No implica causalidad."
-                elif correlation < 0:
-                    volatility_conclusion = f"La relación entre las operaciones y la volatilidad es {strength.lower()} y negativa: cuando una variable aumenta, la otra tiende a disminuir. No implica causalidad."
+        volatility_conclusion = describe_correlation(
+            volatility_correlation
+            if volatility_answer and volatility_answer.get("symbol_count", 0) >= 2
+            else None,
+            "la cantidad de operaciones",
+            "la volatilidad",
+        )
         st.write(
             f"**Correlación:** {volatility_correlation_text} "
-            "(cantidad de operaciones y volatilidad)"
+            "(cantidad de operaciones y volatilidad)."
         )
         st.write(f"**Interpretación:** {volatility_conclusion}")
     with question_columns[1]:
@@ -1341,27 +1347,16 @@ def render_questions() -> None:
             if spread_correlation is None
             else f"{float(spread_correlation):.4f}"
         )
-        spread_conclusion = "Datos insuficientes para establecer una correlación."
-        if spread_answer and spread_answer.get("symbol_count", 0) >= 2:
-            try:
-                correlation = float(spread_correlation)
-            except (TypeError, ValueError):
-                correlation = None
-            if correlation is not None and math.isfinite(correlation) and 0 <= abs(correlation) <= 1:
-                strength = next(
-                    intensity
-                    for threshold, intensity in correlation_strengths
-                    if abs(correlation) < threshold or threshold == 1.00
-                )
-                if abs(correlation) < 0.20:
-                    spread_conclusion = "La relación entre las operaciones y el spread es muy débil o prácticamente nula; no se observa una asociación lineal apreciable. No implica causalidad."
-                elif correlation > 0:
-                    spread_conclusion = f"La relación entre las operaciones y el spread es {strength.lower()} y positiva: ambas variables tienden a aumentar juntas. No implica causalidad."
-                elif correlation < 0:
-                    spread_conclusion = f"La relación entre las operaciones y el spread es {strength.lower()} y negativa: cuando una variable aumenta, la otra tiende a disminuir. No implica causalidad."
+        spread_conclusion = describe_correlation(
+            spread_correlation
+            if spread_answer and spread_answer.get("symbol_count", 0) >= 2
+            else None,
+            "la cantidad de operaciones",
+            "el spread",
+        )
         st.write(
             f"**Correlación:** {spread_correlation_text} "
-            "(cantidad de operaciones y spread)"
+            "(cantidad de operaciones y spread)."
         )
         st.write(f"**Interpretación:** {spread_conclusion}")
 
@@ -1371,12 +1366,65 @@ def render_footer() -> None:
     with st.container(key="footer"):
         st.caption("Materia: Procesamiento de Datos, TP2. Autor: Nicolás Druetta. Año: 2026.")
 
+render_heartbeat = st.fragment(render_heartbeat, run_every="5s")
 render_config = st.fragment(render_config, run_every="5s")
 render_consoles_part1 = st.fragment(render_consoles_part1, run_every="5s")
 render_consoles_part2 = st.fragment(render_consoles_part2, run_every="5s")
 render_info = st.fragment(render_info, run_every="5s")
 render_questions = st.fragment(render_questions, run_every="5s")
 render_charts = st.fragment(render_charts, run_every="5s")
+
+def describe_correlation(
+    correlation: Any,
+    first_variable: str,
+    second_variable: str,
+) -> str:
+    """Construyo una interpretación específica en rangos de 0,10."""
+
+    try:
+        correlation = float(correlation)
+    except (TypeError, ValueError):
+        correlation = None
+    if correlation is None or not math.isfinite(correlation):
+        return "Datos insuficientes para establecer una correlación."
+    absolute_correlation = abs(correlation)
+    if absolute_correlation > 1:
+        return "El valor de correlación obtenido no es válido."
+    strengths = (
+        (0.10, "prácticamente nula"),
+        (0.20, "muy débil"),
+        (0.30, "débil"),
+        (0.40, "débil a moderada"),
+        (0.50, "moderada"),
+        (0.60, "moderada"),
+        (0.70, "moderada a fuerte"),
+        (0.80, "fuerte"),
+        (0.90, "muy fuerte"),
+        (1.01, "casi perfecta"),
+    )
+    strength = next(
+        label
+        for threshold, label in strengths
+        if absolute_correlation < threshold
+    )
+    percentage = absolute_correlation * 100
+    if absolute_correlation < 0.10:
+        direction_text = "no muestra una tendencia lineal apreciable"
+    elif correlation > 0:
+        direction_text = (
+            f"es positiva: cuando aumenta {first_variable}, "
+            f"{second_variable} tiende a aumentar"
+        )
+    else:
+        direction_text = (
+            f"es negativa: cuando aumenta {first_variable}, "
+            f"{second_variable} tiende a disminuir"
+        )
+    return (
+        f"La relación entre {first_variable} y {second_variable} es "
+        f"{strength} ({percentage:.1f}% de intensidad absoluta) y "
+        f"{direction_text}."
+    )
 
 def render_log_console(
     lines: list[str],
@@ -1663,17 +1711,19 @@ def stop_run_in_background(
     """Detengo el RUN y libero sus recursos sin esperar la consolidación."""
 
     try:
+        active_snapshot = controller_module.get_run_snapshot()
+        run_id = run_id or active_snapshot.get("run_id")
         operation["debug"].append("solicitando detención del RUN")
         controller_module.request_stop_active_run("manual_stop")
         operation["debug"].append("RUN marcado para detener")
-        controller_module.stop_active_run("manual_stop")
-        operation["debug"].append("Controller y Kafka finalizados")
         operation["debug"].append("solicitando cierre de Spark")
         operation["spark_result"] = spark_module.stop_streaming(
             run_id,
             finalize=False,
         )
         operation["debug"].append("Spark finalizado")
+        controller_module.stop_active_run("manual_stop")
+        operation["debug"].append("Controller y Kafka finalizados")
     except Exception as error:
         operation["error"] = error
         operation["debug"].append(f"ERROR: {error}")
@@ -1682,9 +1732,11 @@ def stop_run_in_background(
         operation["done"] = True
 
 def mark_stop_pending() -> None:
-    """Marco que el usuario acaba de solicitar la detención."""
+    """Envío STOP al servicio antes de que Streamlit vuelva a renderizar."""
 
     st.session_state.stop_pending = True
+    controller_module = load_page_module("01_python_controller")
+    controller_module.request_stop_active_run("manual_stop")
 
 def get_console_buffer_view(
     run_id: str | None,
