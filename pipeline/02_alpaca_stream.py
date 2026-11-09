@@ -235,7 +235,7 @@ class AlpacaStreamingService:
         self._started_at: str | None = None
         self._ended_at: str | None = None
         self._last_heartbeat_at: str | None = None
-        self._last_heartbeat_monotonic = 0.0
+        self._last_heartbeat_monotonic: float | None = None
         self._event_count = 0
         self._kafka_published_count = 0
         self._replay_batch_number = 0
@@ -264,7 +264,7 @@ class AlpacaStreamingService:
                 return False
             self._status = "Descargando histórico"
             self._last_heartbeat_at = self._started_at
-            self._last_heartbeat_monotonic = time.monotonic()
+            self._last_heartbeat_monotonic = None
             self._append_run_record_callback(
                 self._run_id,
                 "run_started",
@@ -324,6 +324,8 @@ class AlpacaStreamingService:
         """Devuelvo los segundos desde el último heartbeat válido."""
 
         with self._lock:
+            if self._last_heartbeat_monotonic is None:
+                return 0.0
             return time.monotonic() - self._last_heartbeat_monotonic
 
     def stop(self, end_reason: str) -> None:
