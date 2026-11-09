@@ -385,6 +385,26 @@ def render_config() -> None:
     if session_run_id == active_run_id and active_run_id is not None:
         controller_module.register_heartbeat(active_run_id)
         snapshot = controller_module.get_run_snapshot()
+    pending_stop_operation = st.session_state.stop_operation
+    if (
+        st.session_state.stop_pending
+        and pending_stop_operation is not None
+        and (
+            pending_stop_operation["done"]
+            or (
+                not snapshot["is_active"]
+                and not spark_module.has_active_query()
+            )
+        )
+    ):
+        st.session_state.last_stop_debug = list(
+            pending_stop_operation.get("debug", [])
+        )
+        st.session_state.stop_pending = False
+        st.session_state.stop_operation = None
+        st.session_state.start_requested = False
+        st.session_state.alpaca_run_id = None
+        st.rerun()
 
     universe = snapshot.get("universe", {})
     option_labels = list(SYMBOL_OPTIONS)
@@ -733,7 +753,6 @@ def render_consoles_part1() -> None:
             spark_path,
             _pandas_path,
             _postgresql_path,
-            downloads_disabled,
             is_active,
         ) = _get_consoles_context()
 
@@ -806,7 +825,6 @@ def render_consoles_part1() -> None:
                     mime="text/plain",
                     key=f"download-execution-log-console-{run_id or 'no-run'}",
                     help="Descargar log completo",
-                    disabled=downloads_disabled,
                     type="secondary",
                     width=36,
                 )
@@ -873,7 +891,6 @@ def render_consoles_part1() -> None:
                     mime="text/plain",
                     key=f"download-alpaca-log-console-{run_id or 'no-run'}",
                     help="Descargar log completo",
-                    disabled=downloads_disabled,
                     type="secondary",
                     width=36,
                 )
@@ -937,7 +954,6 @@ def render_consoles_part1() -> None:
                     mime="text/plain",
                     key=f"download-kafka-log-console-{run_id or 'no-run'}",
                     help="Descargar log completo",
-                    disabled=downloads_disabled,
                     type="secondary",
                     width=36,
                 )
@@ -992,7 +1008,6 @@ def render_consoles_part1() -> None:
                     mime="text/plain",
                     key=f"download-spark-log-console-{run_id or 'no-run'}",
                     help="Descargar log completo",
-                    disabled=downloads_disabled,
                     type="secondary",
                     width=36,
                 )
@@ -1017,7 +1032,6 @@ def render_consoles_part2() -> None:
             spark_path,
             pandas_path,
             postgresql_path,
-            downloads_disabled,
             is_active,
         ) = _get_consoles_context()
         pandas_column, postgresql_column = st.columns(
@@ -1043,9 +1057,6 @@ def render_consoles_part2() -> None:
                         key="console-arrow-pandas",
                         width="stretch",
                     )
-            pandas_download_disabled = (
-                pandas_path is None or not pandas_path.exists()
-            )
             pandas_state = get_console_state(
                 "pandas-log-console",
                 run_id,
@@ -1087,7 +1098,6 @@ def render_consoles_part2() -> None:
                     mime="text/plain",
                     key=f"download-pandas-log-console-{run_id or 'no-run'}",
                     help="Descargar log completo",
-                    disabled=pandas_download_disabled,
                     type="secondary",
                     width=36,
                 )
@@ -1109,9 +1119,6 @@ def render_consoles_part2() -> None:
                         key="console-arrow-postgresql",
                         width="stretch",
                     )
-            postgresql_download_disabled = (
-                postgresql_path is None or not postgresql_path.exists()
-            )
             postgresql_state = get_console_state(
                 "postgresql-log-console",
                 run_id,
@@ -1158,7 +1165,6 @@ def render_consoles_part2() -> None:
                     mime="text/plain",
                     key=f"download-postgresql-log-console-{run_id or 'no-run'}",
                     help="Descargar log completo",
-                    disabled=postgresql_download_disabled,
                     type="secondary",
                     width=36,
                 )
@@ -1854,13 +1860,9 @@ def _get_consoles_context() -> tuple[Any, ...]:
         DATA_DIRECTORY / "runs" / f"{run_id}_05_pandas_log.txt",
         DATA_DIRECTORY / "runs" / f"{run_id}_06_postgresql_log.txt",
     ) if run_id else (None,) * 6
-    downloads_disabled = any(
-        path is None or not path.exists()
-        for path in paths
-    )
     is_active = bool(
         snapshot["is_active"]
         and not st.session_state.start_pending
         and not st.session_state.stop_pending
     )
-    return clear_consoles, run_id, *paths, downloads_disabled, is_active
+    return clear_consoles, run_id, *paths, is_active

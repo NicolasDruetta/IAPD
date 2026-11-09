@@ -11,6 +11,7 @@ _ACTIVE_SERVICE: Any = None
 _KAFKA_MODULE: Any = None
 _LAST_STOPPED_SNAPSHOT: dict[str, Any] | None = None
 _MANAGER_LOCK = threading.RLock()
+_RECOVERY_THREAD: threading.Thread | None = None
 _RUN_LOG_COUNTS: dict[str, int] = {}
 _RUN_SEQUENCES: dict[str, int] = {}
 _SPARK_MODULE: Any = None
@@ -224,6 +225,27 @@ def request_stop_active_run(end_reason: str) -> None:
     service = get_active_service()
     if service is not None:
         service.request_stop(end_reason)
+        return
+    if end_reason != "manual_stop":
+        return
+    streaming_module = _require_streaming_module()
+    metadata = streaming_module.get_latest_metadata()
+    run_id = metadata.get("run_id") if metadata is not None else None
+    if (
+        metadata is None
+        or not metadata.get("is_active")
+        or not isinstance(run_id, str)
+    ):
+        return
+    append_run_record(
+        run_id,
+        "state",
+        {
+            "status": "Finalizando",
+            "is_active": True,
+            "end_reason": "manual_stop",
+        },
+    )
 
 def configure_streaming_module(streaming_module: Any) -> None:
     """Registro el módulo Alpaca que utiliza el controlador."""
@@ -234,24 +256,13 @@ def configure_streaming_module(streaming_module: Any) -> None:
     _STREAMING_MODULE = streaming_module
     mark_interrupted_run()
 
-def configure_pipeline_modules(
-    kafka_module: Any,
+def _consolidate_recovered_run(
     spark_module: Any,
+    metadata: dict[str, Any],
+    run_id: str,
 ) -> None:
-    """Registro Kafka y Spark para coordinar el flujo del RUN."""
+    """Consolido en segundo plano un RUN detenido antes del reinicio."""
 
-    global _KAFKA_MODULE, _SPARK_MODULE
-    _KAFKA_MODULE = kafka_module
-    _SPARK_MODULE = spark_module
-    metadata = _STREAMING_MODULE.get_latest_metadata()
-    if (
-        metadata is None
-        or metadata.get("status") != "Incompleto"
-        or metadata.get("end_reason") != "manual_stop"
-        or not isinstance(metadata.get("run_id"), str)
-    ):
-        return
-    run_id = metadata["run_id"]
     try:
         consolidated = spark_module.consolidate_parquet(run_id)
     except Exception:
@@ -262,12 +273,13 @@ def configure_pipeline_modules(
     if not consolidated:
         return
     ended_at = metadata.get("ended_at") or _STREAMING_MODULE.get_utc_timestamp()
+    end_reason = metadata.get("end_reason") or "process_restart"
     append_run_record(
         run_id,
         "run_finished",
         {
             "status": "Detenido",
-            "end_reason": "manual_stop",
+            "end_reason": end_reason,
             "error": None,
             "ended_at": ended_at,
         },
@@ -278,15 +290,79 @@ def configure_pipeline_modules(
         {
             "status": "Detenido",
             "is_active": False,
-            "end_reason": "manual_stop",
+            "end_reason": end_reason,
             "ended_at": ended_at,
         },
     )
 
+def configure_pipeline_modules(
+    kafka_module: Any,
+    spark_module: Any,
+) -> None:
+    """Registro Kafka y Spark para coordinar el flujo del RUN."""
+
+    global _KAFKA_MODULE, _SPARK_MODULE, _RECOVERY_THREAD
+    _KAFKA_MODULE = kafka_module
+    _SPARK_MODULE = spark_module
+    metadata = _STREAMING_MODULE.get_latest_metadata()
+    if (
+        metadata is None
+        or metadata.get("status") not in {"Detenido", "Incompleto"}
+        or metadata.get("is_active")
+        or not isinstance(metadata.get("run_id"), str)
+    ):
+        return
+    run_id = metadata["run_id"]
+    parts_path = DATA_DIRECTORY / "spark" / f"{run_id}_04_apache_spark_data.parquet.parts"
+    status_path = DATA_DIRECTORY / "runs" / f"{run_id}_04_apache_spark_data_status.txt"
+    if not parts_path.exists() and not status_path.exists():
+        return
+    if _RECOVERY_THREAD is not None and _RECOVERY_THREAD.is_alive():
+        return
+    _RECOVERY_THREAD = threading.Thread(
+        target=_consolidate_recovered_run,
+        args=(spark_module, metadata, run_id),
+        daemon=True,
+        name=f"parquet-recovery-{run_id}",
+    )
+    _RECOVERY_THREAD.start()
+
+def _manual_stop_was_requested(metadata: dict[str, Any] | None) -> bool:
+    """Detecto un STOP manual aunque otro hilo haya escrito después."""
+
+    if metadata is None or not isinstance(metadata.get("run_id"), str):
+        return False
+    run_info_path = DATA_DIRECTORY / "runs" / (
+        f"{metadata['run_id']}_01_python_controller_info.jsonl"
+    )
+    try:
+        with run_info_path.open(encoding="utf-8") as info_file:
+            return any(
+                json.loads(line).get("end_reason") == "manual_stop"
+                for line in info_file
+                if line.strip()
+            )
+    except (OSError, json.JSONDecodeError):
+        return False
+
 def shutdown_active_run() -> None:
     """Cierro el RUN administrado cuando finaliza el proceso Python."""
 
-    stop_active_run("process_shutdown")
+    service = get_active_service()
+    metadata = (
+        _STREAMING_MODULE.get_latest_metadata()
+        if _STREAMING_MODULE is not None
+        else None
+    )
+    end_reason = (
+        "manual_stop"
+        if (
+            service is not None
+            and service.get_snapshot().get("end_reason") == "manual_stop"
+        ) or _manual_stop_was_requested(metadata)
+        else "process_shutdown"
+    )
+    stop_active_run(end_reason)
 
 def start_run(
     api_key: str,
@@ -299,6 +375,9 @@ def start_run(
     """Creo un único RUN y coordino su ciclo de vida."""
 
     global _ACTIVE_SERVICE, _LAST_STOPPED_SNAPSHOT
+    recovery_thread = _RECOVERY_THREAD
+    if recovery_thread is not None and recovery_thread.is_alive():
+        recovery_thread.join()
     streaming_module = _require_streaming_module()
     if _KAFKA_MODULE is None or _SPARK_MODULE is None:
         raise RuntimeError("Kafka y Spark no fueron configurados.")
