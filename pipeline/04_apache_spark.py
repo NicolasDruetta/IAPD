@@ -696,6 +696,7 @@ def start_streaming(run_id: str) -> None:
             .option("kafka.bootstrap.servers", KAFKA_BOOTSTRAP_SERVERS)
             .option("subscribe", KAFKA_TOPIC)
             .option("startingTimestamp", starting_timestamp_milliseconds)
+            .option("startingOffsetsByTimestampStrategy", "latest")
             .option("failOnDataLoss", "false")
             .load()
             .select(from_json(col("value").cast("string"), EVENT_SCHEMA).alias("event"))
@@ -738,15 +739,6 @@ def stop_streaming(
         try:
             if query.isActive:
                 query.stop()
-            if query.isActive:
-                query.awaitTermination(10)
-            if query.isActive:
-                functions.append_console_log(
-                    run_id,
-                    "spark",
-                    "ERROR | STOP | la consulta Structured Streaming continúa activa",
-                )
-                return False
         except Exception as error:
             error_text = str(error)
             if "stopped SparkContext" not in error_text:

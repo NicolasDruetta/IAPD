@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 
 DATA_DIRECTORY = Path(__file__).parent.parent / "data"
 PRESENTATION_TIMEZONE = ZoneInfo("America/Argentina/Cordoba")
+SHOW_STOP_DEBUG = False
 SYMBOL_OPTIONS = {
     "Todos los símbolos del S&P 500": {
         "value": ("*",),
@@ -234,6 +235,8 @@ def initialize_state(system_theme: dict[str, Any] | None = None) -> None:
         st.session_state.stop_operation = None
     if "manual_stop_status" not in st.session_state:
         st.session_state.manual_stop_status = False
+    if "last_stop_debug" not in st.session_state:
+        st.session_state.last_stop_debug = []
     if "console_states" not in st.session_state:
         st.session_state.console_states = {}
 
@@ -331,8 +334,8 @@ def render_header() -> None:
             st.session_state.theme_user_set = True
             st.rerun()
 
-    st.subheader("Streaming y análisis de operaciones bursátiles con procesamiento distribuido durante una rueda de mercado.")
-    st.write("**Pipeline:** Controller → Alpaca (Market Data) → Memoria → Kafka → Streaming (Kafka Topic) → Spark → Parquet → Pandas → PostgreSQL → Streamlit.")
+    st.subheader("Procesamiento distribuido y análisis estadístico de datos bursátiles.")
+    st.write("**Pipeline:** Controller (Orquestación) → Alpaca (Fuente) → Memoria (Buffer) → Kafka (Streaming) → Spark (Procesamiento distribuido) → Parquet (Persistencia de datos) → Pandas (Análisis estadístico) → PostgreSQL (Base de datos) → Streamlit (Visualización).")
     st.caption("Materia: Procesamiento de Datos, TP2. Autor: Nicolás Druetta. Año: 2026.")
 
 def render_config() -> None:
@@ -509,6 +512,7 @@ def render_config() -> None:
         run_id = snapshot.get("run_id")
         operation = {
             "done": False,
+            "debug": ["STOP recibido: iniciando detención."],
             "error": None,
             "spark_result": None,
         }
@@ -529,6 +533,19 @@ def render_config() -> None:
         stop_thread.start()
 
     stop_operation = st.session_state.stop_operation
+    stop_completed = False
+    stop_debug = (
+        stop_operation.get("debug", [])
+        if stop_operation is not None
+        else st.session_state.last_stop_debug
+        if st.session_state.manual_stop_status
+        else []
+    )
+    if SHOW_STOP_DEBUG and stop_debug:
+        st.warning(
+            "**STOP DEBUG**  |  "
+            + "  |  ".join(stop_debug)
+        )
     if (
         st.session_state.stop_pending
         and stop_operation is not None
@@ -540,13 +557,20 @@ def render_config() -> None:
             )
         )
     ):
+        st.session_state.last_stop_debug = list(
+            stop_operation.get("debug", [])
+        )
         st.session_state.stop_pending = False
         st.session_state.stop_operation = None
         snapshot = controller_module.get_run_snapshot()
+        stop_completed = True
+
+    if stop_completed:
+        st.rerun()
 
     if st.session_state.start_pending:
         elapsed_text = "-"
-        market_date = "-"
+        market_date = "El último día hábil completo."
         market_time = "-"
     else:
         elapsed_text = format_elapsed_time(
@@ -557,19 +581,17 @@ def render_config() -> None:
         presentation_market_timestamp = format_presentation_timestamp(
             market_timestamp,
         )
+        current_run = st.session_state.alpaca_run_id
         market_date = (
-            snapshot.get("historical_date") or "-"
-            if snapshot["is_active"]
+            snapshot.get("historical_date") or "El último día hábil completo."
+            if current_run is not None or snapshot["is_active"]
             else "El último día hábil completo."
-            if snapshot["status"] == "Listo para ejecutar"
-            else "-"
         )
         market_time = (
             presentation_market_timestamp.split(" ", 1)[1]
             if presentation_market_timestamp != "-"
             else "-"
         )
-    status = snapshot["status"]
     status_text = "Listo para ejecutar."
     if st.session_state.stop_pending:
         status_text = "Deteniendo..."
@@ -579,7 +601,10 @@ def render_config() -> None:
         status_text = "Iniciando..."
     elif snapshot["is_active"]:
         status_text = f"Ejecutando... {elapsed_text}."
-    elif status == "Error":
+    elif (
+        st.session_state.alpaca_run_id is not None
+        and snapshot["status"] == "Error"
+    ):
         status_text = "Finalizado con error."
     market_date_col, run_col, status_col = st.columns(
         [1, 1, 2],
@@ -1635,28 +1660,25 @@ def stop_run_in_background(
     spark_module: ModuleType,
     run_id: str | None,
 ) -> None:
-    """Solicito la detención y cierro Controller y Spark sin bloquear la UI."""
+    """Detengo el RUN y libero sus recursos sin esperar la consolidación."""
 
-    controller_thread = None
     try:
+        operation["debug"].append("solicitando detención del RUN")
         controller_module.request_stop_active_run("manual_stop")
-        controller_thread = threading.Thread(
-            target=controller_module.stop_active_run,
-            args=("manual_stop",),
-            daemon=True,
-            name="stop-controller-run",
-        )
-        controller_thread.start()
+        operation["debug"].append("RUN marcado para detener")
+        controller_module.stop_active_run("manual_stop")
+        operation["debug"].append("Controller y Kafka finalizados")
+        operation["debug"].append("solicitando cierre de Spark")
         operation["spark_result"] = spark_module.stop_streaming(
             run_id,
-            finalize=True,
+            finalize=False,
         )
-        controller_thread.join()
+        operation["debug"].append("Spark finalizado")
     except Exception as error:
         operation["error"] = error
-        if controller_thread is not None:
-            controller_thread.join()
+        operation["debug"].append(f"ERROR: {error}")
     finally:
+        operation["debug"].append("STOP terminado")
         operation["done"] = True
 
 def mark_stop_pending() -> None:

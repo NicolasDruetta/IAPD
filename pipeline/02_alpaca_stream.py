@@ -332,8 +332,8 @@ class AlpacaStreamingService:
         """Detengo el RUN y solicito el cierre de sus hilos."""
 
         self.request_stop(end_reason)
-        self._join_threads()
         self._finish("Detenido", end_reason)
+        self._join_threads()
 
     def request_stop(self, end_reason: str) -> None:
         """Solicito el cierre inmediato sin esperar los hilos de trabajo."""
@@ -466,10 +466,17 @@ class AlpacaStreamingService:
         )
         download_thread.start()
         while True:
-            batch = batch_queue.get()
+            try:
+                batch = batch_queue.get(timeout=0.5)
+            except queue.Empty:
+                if self._stop_event.is_set():
+                    return
+                continue
             if batch is None or self._stop_event.is_set():
                 break
             self._emit_replay_batch(batch)
+        if self._stop_event.is_set():
+            return
         download_thread.join()
         result = result_queue.get()
         if isinstance(result, BaseException):
@@ -548,12 +555,16 @@ class AlpacaStreamingService:
                 f"DATA | lote emitido={self._replay_batch_number} | operaciones={trade_count} | cotizaciones={quote_count} | total_emitidos={self._event_count}"
             )
             self._append_run_state_callback(self)
-            if self._publish_events_callback is not None:
-                self._publish_events_callback(
-                    self._run_id,
-                    stream_records,
-                    self._stop_event,
-                )
+        if (
+            self._publish_events_callback is not None
+            and not self._stop_event.is_set()
+        ):
+            self._publish_events_callback(
+                self._run_id,
+                stream_records,
+                self._stop_event,
+            )
+            with self._lock:
                 self._kafka_published_count += len(stream_records)
 
     def _finish(
@@ -607,7 +618,7 @@ class AlpacaStreamingService:
         current_thread = threading.current_thread()
         for thread in (self._stream_thread,):
             if thread is not None and thread is not current_thread:
-                thread.join()
+                thread.join(timeout=1)
 
     def _safe_error(self, error: Exception) -> str:
         """Devuelvo un error útil sin incluir secretos de autenticación."""

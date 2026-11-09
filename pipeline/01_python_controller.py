@@ -329,15 +329,21 @@ def stop_active_run(end_reason: str) -> None:
 
     global _SUPERVISOR_THREAD
     service = get_active_service()
-    if service is not None:
-        service.stop(end_reason)
-    supervisor_thread = _SUPERVISOR_THREAD
-    if (
-        supervisor_thread is not None
-        and supervisor_thread is not threading.current_thread()
-    ):
-        supervisor_thread.join(timeout=5)
-    _SUPERVISOR_THREAD = None
+    try:
+        if service is not None:
+            service.stop(end_reason)
+    finally:
+        if service is not None:
+            release_active_service(service)
+        if _KAFKA_MODULE is not None:
+            _KAFKA_MODULE.reset_producer()
+        supervisor_thread = _SUPERVISOR_THREAD
+        if (
+            supervisor_thread is not None
+            and supervisor_thread is not threading.current_thread()
+        ):
+            supervisor_thread.join(timeout=1)
+        _SUPERVISOR_THREAD = None
 
 def _require_streaming_module() -> Any:
     """Obtengo el módulo Alpaca configurado para el controlador."""
