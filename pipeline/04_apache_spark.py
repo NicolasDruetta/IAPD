@@ -310,10 +310,15 @@ def consolidate_parquet(run_id: str) -> bool:
         raise RuntimeError("Spark no está disponible para consolidar Parquet.")
     temporary_file = DATA_DIRECTORY / "runs" / f".{final_path.name}.tmp"
     try:
-        processed_frame = spark.read.parquet(str(parts_path)).dropDuplicates([
-            "run_id", "timestamp", "symbol", "event_type", "price", "size",
-            "bid_price", "bid_size", "ask_price", "ask_size",
-        ])
+        processed_frame = (
+            spark.read
+            .option("recursiveFileLookup", "true")
+            .parquet(str(parts_path))
+            .dropDuplicates([
+                "run_id", "timestamp", "symbol", "event_type", "price", "size",
+                "bid_price", "bid_size", "ask_price", "ask_size",
+            ])
+        )
         shutil.rmtree(temporary_path, ignore_errors=True)
         processed_frame.coalesce(1).write.mode("overwrite").parquet(
             str(temporary_path)

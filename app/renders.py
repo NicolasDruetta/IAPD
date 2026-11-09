@@ -388,17 +388,21 @@ def render_config() -> None:
     pending_stop_operation = st.session_state.stop_operation
     if (
         st.session_state.stop_pending
-        and pending_stop_operation is not None
         and (
-            pending_stop_operation["done"]
+            pending_stop_operation is None
+            or pending_stop_operation["done"]
             or (
                 not snapshot["is_active"]
                 and not spark_module.has_active_query()
             )
         )
+        and not snapshot["is_active"]
+        and not spark_module.has_active_query()
     ):
         st.session_state.last_stop_debug = list(
             pending_stop_operation.get("debug", [])
+            if pending_stop_operation is not None
+            else []
         )
         st.session_state.stop_pending = False
         st.session_state.stop_operation = None
@@ -467,10 +471,7 @@ def render_config() -> None:
                     on_click=mark_start_pending,
                     width="content",
                 )
-            if (
-                snapshot["is_active"]
-                and not st.session_state.start_pending
-            ) or st.session_state.stop_pending:
+            if snapshot["is_active"] and not st.session_state.start_pending:
                 stop_clicked = st.button(
                     "⟳ Deteniendo..."
                     if st.session_state.stop_pending

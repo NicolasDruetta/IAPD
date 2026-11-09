@@ -266,10 +266,17 @@ def _consolidate_recovered_run(
     try:
         consolidated = spark_module.consolidate_parquet(run_id)
     except Exception:
-        return
-    finally:
-        if not spark_module.has_active_query():
-            spark_module.reset_spark_runtime()
+        try:
+            if not spark_module.has_active_query():
+                spark_module.reset_spark_runtime()
+            consolidated = spark_module.consolidate_parquet(run_id)
+        except Exception as error:
+            functions.append_console_log(
+                run_id,
+                "spark",
+                f"ERROR | consolidación Parquet después del reinicio: {error}",
+            )
+            return
     if not consolidated:
         return
     ended_at = metadata.get("ended_at") or _STREAMING_MODULE.get_utc_timestamp()
