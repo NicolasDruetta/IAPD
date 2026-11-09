@@ -5,6 +5,7 @@
 **Materia:** Procesamiento de Datos  
 **Trabajo:** Trabajo Práctico N.º 2  
 **Autor:** Nicolás Druetta
+**Año:** 2026
 
 Apache Big Data Lab es un proyecto académico orientado al procesamiento de
 datos financieros mediante herramientas de Big Data. La aplicación integra

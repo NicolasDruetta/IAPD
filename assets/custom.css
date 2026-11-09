@@ -235,6 +235,10 @@ textarea {
     padding: 1rem;
 }
 
+.st-key-footer p {
+    text-align: right;
+}
+
 .st-key-start-button button,
 .st-key-stop-button button,
 .stApp:has(.st-key-theme-dark) .st-key-start-button button,

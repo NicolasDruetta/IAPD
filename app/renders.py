@@ -330,7 +330,14 @@ def render_header() -> None:
             st.rerun()
 
     st.subheader("Streaming y análisis de operaciones bursátiles con procesamiento distribuido durante una rueda de mercado.")
+    st.write(f"**Controller → Alpaca (Market Data) → Memoria → Kafka → Streaming (Kafka Topic) → Spark → Parquet → Pandas → PostgreSQL → Streamlit**")
     st.caption("Materia: IAPD. Autor: Nicolás Druetta. Año: 2026.")
+
+def render_footer() -> None:
+    """Muestro el pie del laboratorio."""
+
+    with st.container(key="footer"):
+        st.caption("Materia: IAPD. Autor: Nicolás Druetta. Año: 2026.")
 
 def render_config() -> None:
     """Muestro la configuración y coordino el estado del RUN."""
@@ -607,12 +614,15 @@ def render_config() -> None:
             else:
                 st.text(status_text)
 
+    error_placeholder = st.empty()
     if (
         snapshot["error"]
         and not snapshot["is_active"]
         and not st.session_state.start_pending
     ):
-        st.error("**Error:** " + (" ".join(str(snapshot["error"]).split())))
+        error_placeholder.error(
+            "**Error:** " + (" ".join(str(snapshot["error"]).split()))
+        )
 
     last_execution_notice = get_last_execution_notice(snapshot)
     automatic_stop_messages = {
@@ -624,15 +634,17 @@ def render_config() -> None:
     automatic_stop_message = automatic_stop_messages.get(
         automatic_stop_reason,
     )
+    automatic_stop_placeholder = st.empty()
     if (
         automatic_stop_message
         and automatic_stop_reason != "manual_stop"
         and not snapshot["is_active"]
         and not st.session_state.start_pending
     ):
-        st.error(automatic_stop_message)
+        automatic_stop_placeholder.error(automatic_stop_message)
+    last_execution_placeholder = st.empty()
     if last_execution_notice:
-        st.info(last_execution_notice)
+        last_execution_placeholder.info(last_execution_notice)
 
     run_id = None if st.session_state.start_pending else snapshot["run_id"]
     if (
