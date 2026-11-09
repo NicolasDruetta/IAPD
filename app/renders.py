@@ -1,6 +1,8 @@
 import importlib.util
 import json
 import math
+import os
+import signal
 import streamlit as st
 import sys
 import threading
@@ -1711,6 +1713,7 @@ def stop_run_in_background(
     """Detengo el RUN y libero sus recursos sin esperar la consolidación."""
 
     try:
+        os.kill(os.getpid(), signal.SIGTERM)
         active_snapshot = controller_module.get_run_snapshot()
         run_id = run_id or active_snapshot.get("run_id")
         operation["debug"].append("solicitando detención del RUN")
