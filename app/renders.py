@@ -453,26 +453,28 @@ def render_config() -> None:
             vertical_alignment="bottom",
             gap="small",
         ):
-            start_clicked = False
-            if not st.session_state.stop_pending:
-                start_clicked = st.button(
-                    "⟳ Iniciando..."
-                    if st.session_state.start_pending
-                    else (
-                        "⟳ Ejecutando streaming..."
-                        if snapshot["is_active"]
-                        else "▶ Iniciar streaming"
-                    ),
-                    disabled=bool(
-                        snapshot["is_active"]
-                        or st.session_state.start_pending
-                    ),
-                    key="start-button",
-                    on_click=mark_start_pending,
-                    width="content",
-                )
-            if snapshot["is_active"] and not st.session_state.start_pending:
-                stop_clicked = st.button(
+            start_clicked = st.button(
+                "⟳ Iniciando..."
+                if st.session_state.start_pending
+                else (
+                    "⟳ Ejecutando streaming..."
+                    if snapshot["is_active"]
+                    else "▶ Iniciar streaming"
+                ),
+                disabled=bool(
+                    snapshot["is_active"]
+                    or st.session_state.start_pending
+                    or st.session_state.stop_pending
+                ),
+                key="start-button",
+                on_click=mark_start_pending,
+                width="content",
+            )
+            stop_placeholder = st.empty()
+            if (
+                snapshot["is_active"] or st.session_state.stop_pending
+            ) and not st.session_state.start_pending:
+                stop_clicked = stop_placeholder.button(
                     "⟳ Deteniendo..."
                     if st.session_state.stop_pending
                     else "■ Detener streaming",
@@ -481,6 +483,8 @@ def render_config() -> None:
                     on_click=mark_stop_pending,
                     width="content",
                 )
+            else:
+                stop_placeholder.empty()
     selected_symbols = SYMBOL_OPTIONS[selected_option]
     symbols = list(selected_symbols["value"])
     symbol_ranking = selected_symbols["ranking"]
@@ -811,7 +815,7 @@ def render_consoles_part1() -> None:
                 vertical_alignment="center",
             ):
                 st.caption(
-                    f"Eventos recibidos: {execution_state['line_number']}"
+                    f"Eventos procesados: {execution_state['line_number']}"
                 )
                 st.download_button(
                     "↓",
@@ -878,7 +882,7 @@ def render_consoles_part1() -> None:
                 horizontal_alignment="distribute",
                 vertical_alignment="center",
             ):
-                st.caption(f"Datos descargados: {alpaca_state['line_number']}")
+                st.caption(f"Eventos procesados: {alpaca_state['line_number']}")
                 st.download_button(
                     "↓",
                     data=alpaca_path.read_bytes()
@@ -941,7 +945,7 @@ def render_consoles_part1() -> None:
                 horizontal_alignment="distribute",
                 vertical_alignment="center",
             ):
-                st.caption(f"Registros publicados: {kafka_state['line_number']}")
+                st.caption(f"Eventos procesados: {kafka_state['line_number']}")
                 st.download_button(
                     "↓",
                     data=kafka_path.read_bytes()
@@ -995,7 +999,7 @@ def render_consoles_part1() -> None:
                 horizontal_alignment="distribute",
                 vertical_alignment="center",
             ):
-                st.caption(f"Registros procesados: {spark_state['line_number']}")
+                st.caption(f"Eventos procesados: {spark_state['line_number']}")
                 st.download_button(
                     "↓",
                     data=spark_path.read_bytes()
@@ -1084,7 +1088,7 @@ def render_consoles_part2() -> None:
                 vertical_alignment="center",
             ):
                 st.caption(
-                    f"Registros analíticos: {pandas_state['line_number']}"
+                    f"Eventos procesados: {pandas_state['line_number']}"
                 )
                 st.download_button(
                     "↓",
@@ -1151,7 +1155,7 @@ def render_consoles_part2() -> None:
                 vertical_alignment="center",
             ):
                 st.caption(
-                    f"Registros persistidos: {postgresql_state['line_number']}"
+                    f"Eventos procesados: {postgresql_state['line_number']}"
                 )
                 st.download_button(
                     "↓",
