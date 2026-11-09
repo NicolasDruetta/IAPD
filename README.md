@@ -55,7 +55,13 @@ El Controller administra cada ejecución, identificada por un `run_id`.
 9. **PostgreSQL:** guarda los resultados numéricos mediante inserciones o actualizaciones, evitando registros duplicados de un mismo RUN.
 10. **Streamlit:** muestra las consolas, los gráficos y los resultados del análisis.
 
-Spark registra las operaciones de extracción, transformación, carga y análisis exploratorio (EXTRACT, TRANSFORM, LOAD y EDA). Durante una ejecución se generan fragmentos Parquet y, cuando el cierre lo permite, se produce un archivo consolidado.
+Spark registra las operaciones de extracción, transformación, carga y análisis exploratorio (EXTRACT, TRANSFORM, LOAD y EDA). Durante una ejecución se generan fragmentos Parquet y se produce un archivo consolidado al finalizar. Si STOP reinicia Streamlit antes del cierre, la aplicación consolida los fragmentos pendientes al volver a iniciar.
+
+### Recargas y detención global
+
+F5 y las recargas automáticas normales de Streamlit no deben interrumpir un RUN activo. Los módulos de procesamiento activos se conservan durante las recargas y la interfaz recupera el estado desde los JSONL persistidos y los archivos TXT de cada etapa. La ausencia temporal de la pantalla no detiene por sí sola el procesamiento.
+
+El botón **Detener streaming** es diferente: ejecuta `os.kill(os.getpid(), signal.SIGTERM)` y termina el proceso de Streamlit. Como el servicio `streamlit` tiene `restart: unless-stopped` en Docker Compose, Docker vuelve a iniciarlo automáticamente. Kafka Broker, Spark Master, Spark Workers y PostgreSQL no se reinician. La terminación elimina los threads Python de Alpaca, Controller y Kafka; al regresar, Streamlit recupera el RUN marcado como `manual_stop`, consolida el Parquet pendiente y recién después lo deja en estado finalizado. Si Spark demora en liberar recursos externos, la consolidación queda pendiente y se reintenta sin declarar éxito prematuramente.
 
 ## 5. Análisis realizado
 
@@ -112,6 +118,8 @@ La pantalla está organizada en configuración, dos bloques de consolas, informa
 
 Las seis consolas corresponden al Controller, Alpaca, Kafka, Spark, Pandas y PostgreSQL. Muestran los últimos registros disponibles y permiten descargar el log completo de cada etapa.
 
+La vista de cada consola muestra solamente las últimas 200 líneas. Esto no limita la descarga: cada botón lee el archivo TXT completo y descarga todas sus líneas, desde la primera hasta la última. Los seis archivos descargables son los logs de Controller, Alpaca, Kafka, Spark, Pandas y PostgreSQL.
+
 Los resultados se identifican mediante el `run_id`. De esta forma se pueden consultar los datos de una ejecución sin mezclarlos con los de otra.
 
 ## 9. Limitaciones
@@ -120,7 +128,7 @@ Los resultados se identifican mediante el `run_id`. De esta forma se pueden cons
 - Los datos se descargan de una sesión histórica y después se reproducen como flujo.
 - Algunas acciones pueden tener pocas operaciones o cotizaciones y no permitir cálculos estadísticos completos.
 - El rendimiento depende de los recursos asignados a Docker y de la disponibilidad de las APIs utilizadas.
-- Una detención anticipada puede dejar archivos parciales sin consolidar.
+- Una detención anticipada puede dejar fragmentos temporales mientras Spark libera recursos; Streamlit los consolida automáticamente al volver y reintenta si todavía no puede acceder a ellos.
 - Las correlaciones describen asociaciones en los datos observados, no causalidad.
 
 ## 10. Conclusión

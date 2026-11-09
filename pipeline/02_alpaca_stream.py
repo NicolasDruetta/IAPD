@@ -367,11 +367,6 @@ class AlpacaStreamingService:
             "Finalizando",
         }
 
-    def is_running(self) -> bool:
-        """Indico si el hilo de datos todavía está activo."""
-
-        return bool(self._stream_thread and self._stream_thread.is_alive())
-
     def get_snapshot(self) -> dict[str, Any]:
         """Devuelvo el estado actual del RUN sin exponer credenciales."""
 

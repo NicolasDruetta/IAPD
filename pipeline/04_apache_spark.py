@@ -4,14 +4,13 @@ import shutil
 import sys
 import threading
 import time
-import urllib.request
 
 from app import functions
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from pyspark import SparkContext
 from pyspark.sql import DataFrame, SparkSession
-from pyspark.sql.functions import (col,count,from_json,when)
+from pyspark.sql.functions import (col,count,from_json)
 from pyspark.sql.types import DoubleType, StringType, StructField, StructType
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -49,8 +48,6 @@ SPARK_BLOCK_MANAGER_PORT = os.getenv("SPARK_BLOCK_MANAGER_PORT", "4042")
 SPARK_DRIVER_HOST = os.getenv("SPARK_DRIVER_HOST", "spark-driver")
 SPARK_DRIVER_PORT = os.getenv("SPARK_DRIVER_PORT", "4041")
 SPARK_MASTER = os.getenv("SPARK_MASTER_URL", "spark://spark-master:7077")
-SPARK_MASTER_UI_URL = os.getenv("SPARK_MASTER_UI_URL", "http://spark-master:8080")
-SPARK_UI_URL = os.getenv("SPARK_UI_URL", "http://localhost:4040")
 
 def get_checkpoint(run_id: str | None) -> dict[str, Any] | None:
     """Leo el checkpoint estructurado de un RUN."""
@@ -70,89 +67,6 @@ def get_checkpoint(run_id: str | None) -> dict[str, Any] | None:
         return checkpoint
     except (OSError, json.JSONDecodeError):
         return None
-
-def get_snapshot(run_id: str | None = None) -> dict[str, Any]:
-    """Devuelvo el resultado acumulado de Spark para un RUN."""
-
-    with _SPARK_LOCK:
-        state = _RUN_STATES.get(run_id or "")
-        if state is None:
-            checkpoint = get_checkpoint(run_id)
-            return {
-                "status": "sin_datos",
-                "logs": ["Spark | esperando eventos bursátiles."],
-                "rows": [],
-                "checkpoint": checkpoint,
-            }
-    query = state.get("query")
-    persisted_checkpoint = get_checkpoint(run_id)
-    if persisted_checkpoint is not None:
-        persisted_processed_events = int(
-            persisted_checkpoint.get("processed_events", 0)
-        )
-        if persisted_processed_events > state["processed_events"]:
-            state["checkpoint"] = persisted_checkpoint
-            state["input_events"] = int(
-                persisted_checkpoint.get(
-                    "input_events",
-                    state["input_events"],
-                )
-            )
-            state["batch_number"] = int(
-                persisted_checkpoint.get(
-                    "batch_number",
-                    state["batch_number"],
-                )
-            )
-            state["processed_events"] = persisted_processed_events
-            state["processed_events_by_type"] = dict(
-                persisted_checkpoint.get(
-                    "processed_events_by_type",
-                    state["processed_events_by_type"],
-                )
-            )
-    if query is not None:
-        try:
-            query_active = bool(query.isActive)
-            query_error = None if query_active else query.exception()
-            query_status = (
-                "activa"
-                if query_active
-                else f"terminada:{query_error}"
-            )
-        except Exception as error:
-            query_active = False
-            query_status = f"error_consulta:{error}"
-            query_error = error
-        with _SPARK_LOCK:
-            if (
-                query_status != state["query_status_signature"]
-                and (
-                    state["processed_events"] > 0
-                    or (not query_active and query_error is not None)
-                )
-            ):
-                state["query_status_signature"] = query_status
-                functions.append_console_log(
-                    run_id,
-                    "spark",
-                    f"QUERY | run_id={run_id} | query_id={state['query_id']} | estado={query_status}",
-                )
-        if (
-            not query_active
-            and query_error is not None
-            and not state.get("stopping", False)
-        ):
-            state["status"] = "error"
-    if state["processed_events"] > 0:
-        monitor_workers(run_id, state)
-    with _SPARK_LOCK:
-        return {
-            "status": state["status"],
-            "logs": list(state["logs"]),
-            "rows": list(state["rows"]),
-            "checkpoint": dict(state["checkpoint"]),
-        }
 
 def get_spark_session() -> SparkSession | None:
     """Obtengo una única SparkSession distribuida reutilizable."""
@@ -249,211 +163,6 @@ def reset_spark_runtime() -> None:
     SparkContext._gateway = None
     SparkContext._jvm = None
     SparkContext._active_spark_context = None
-
-def monitor_workers(run_id: str, state: dict[str, Any]) -> None:
-    """Consulto jobs, stages y tasks reales del Driver y sus Workers."""
-
-    try:
-        def worker_number(host: str, worker_list: list[dict[str, Any]]) -> str | None:
-            """Identifico el número del Worker a partir de sus datos reales."""
-
-            for number in ("1", "2"):
-                if host == f"spark-worker-{number}":
-                    return number
-            for worker in worker_list:
-                identities = {
-                    str(worker.get("host", "")),
-                    str(worker.get("id", "")),
-                }
-                if host not in identities:
-                    continue
-                for identity in identities:
-                    if identity.endswith("spark-worker-1"):
-                        return "1"
-                    if identity.endswith("spark-worker-2"):
-                        return "2"
-            return None
-
-        applications = read_spark_api("/api/v1/applications")
-        application = next(
-            item for item in applications if item.get("name") == SPARK_APP_NAME
-        )
-        application_id = application["id"]
-        workers = read_spark_api_from_master("/json/").get("workers", [])
-        executors = read_spark_api(
-            f"/api/v1/applications/{application_id}/executors"
-        )
-        query_started_at = state.get("query_started_at")
-        jobs = [
-            job
-            for job in read_spark_api(
-                f"/api/v1/applications/{application_id}/jobs"
-            )
-            if query_started_at is not None
-            and _is_current_spark_item(job, query_started_at)
-        ][:3]
-        job_stage_ids = {
-            str(stage_id)
-            for job in jobs
-            for stage_id in job.get("stageIds", [])
-        }
-        stages = [
-            stage
-            for stage in read_spark_api(
-                f"/api/v1/applications/{application_id}/stages"
-            )
-            if str(stage.get("stageId")) in job_stage_ids
-        ][:3]
-        task_groups = []
-        stage_workers: dict[str, set[str]] = {}
-        for stage in stages:
-            tasks = read_spark_api(
-                f"/api/v1/applications/{application_id}/stages/"
-                f"{stage['stageId']}/{stage['attemptId']}/taskList"
-            )
-            grouped_tasks: dict[tuple[str, str, str], int] = {}
-            for task in tasks:
-                host = str(task.get("host", "-"))
-                worker = worker_number(host, workers)
-                if worker is not None:
-                    stage_workers.setdefault(
-                        str(stage.get("stageId")),
-                        set(),
-                    ).add(worker)
-                key = (
-                    str(task.get("executorId", "-")),
-                    worker or host,
-                    str(task.get("status", "-")),
-                )
-                grouped_tasks[key] = grouped_tasks.get(key, 0) + 1
-            task_groups.append(
-                (stage.get("stageId"), stage.get("status"), stage.get("numTasks", 0), sorted(grouped_tasks.items()))
-            )
-        stable_workers = [
-            {
-                "coresused": worker.get("coresused"),
-                "host": worker.get("host"),
-                "id": worker.get("id"),
-                "state": worker.get("state"),
-            }
-            for worker in workers
-        ]
-        stable_executors = [
-            {
-                "completedTasks": executor.get("completedTasks"),
-                "failedTasks": executor.get("failedTasks"),
-                "id": executor.get("id"),
-                "isActive": executor.get("isActive"),
-                "hostPort": executor.get("hostPort"),
-                "totalTasks": executor.get("totalTasks"),
-            }
-            for executor in executors
-        ]
-        stable_jobs = [
-            {
-                "jobId": job.get("jobId"),
-                "numCompletedTasks": job.get("numCompletedTasks"),
-                "numFailedTasks": job.get("numFailedTasks"),
-                "numTasks": job.get("numTasks"),
-                "stageIds": job.get("stageIds"),
-                "status": job.get("status"),
-                "submissionTime": job.get("submissionTime"),
-                "completionTime": job.get("completionTime"),
-            }
-            for job in jobs
-        ]
-        signature = json.dumps(
-            [stable_workers, stable_executors, stable_jobs, task_groups],
-            sort_keys=True,
-            default=str,
-        )
-        if signature == state["monitor_signature"]:
-            return
-        state["monitor_signature"] = signature
-        worker_names = ", ".join(
-            f"Worker {index}: {worker.get('host')} | estado={worker.get('state')}"
-            for index, worker in enumerate(workers, 1)
-        )
-
-        def worker_prefix(worker_labels: set[str]) -> str:
-            """Genero el prefijo según la participación real observada."""
-
-            if len(worker_labels) > 1:
-                return "WORKERS"
-            if worker_labels:
-                return f"WORKER {next(iter(worker_labels))}"
-            return "WORKER"
-
-        monitor_lines = [
-            f"WORKER | Workers activos | {worker_names or 'ninguno'}",
-            f"WORKER | executors activos={len(executors)} | jobs observados={len(jobs)} | stages observados={len(stages)}",
-        ]
-        monitor_lines.extend(
-            f"{worker_prefix({worker for stage_id in job.get('stageIds', []) for worker in stage_workers.get(str(stage_id), set())})} | job={job.get('jobId')} | estado={job.get('status')} | stages={job.get('stageIds')} | tasks={job.get('numTasks')} | completadas={job.get('numCompletedTasks')} | fallidas={job.get('numFailedTasks')} | inicio={job.get('submissionTime')} | fin={job.get('completionTime')}"
-            + (
-                f" | workers={','.join(sorted({worker for stage_id in job.get('stageIds', []) for worker in stage_workers.get(str(stage_id), set())}, key=int))}"
-                if any(
-                    stage_workers.get(str(stage_id))
-                    for stage_id in job.get("stageIds", [])
-                )
-                else ""
-            )
-            for job in jobs
-        )
-        for stage_id, stage_status, task_count, groups in task_groups:
-            workers_for_stage = stage_workers.get(str(stage_id), set())
-            workers_text = (
-                f" | workers={','.join(sorted(workers_for_stage, key=int))}"
-                if workers_for_stage
-                else ""
-            )
-            monitor_lines.append(
-                f"{worker_prefix(workers_for_stage)} | stage={stage_id} | estado={stage_status} | tasks={task_count}{workers_text}"
-            )
-            monitor_lines.extend(
-                f"{worker_prefix({host} if host in {'1', '2'} else set())} | stage={stage_id} | executor={executor_id} | worker={host} | estado={status} | tasks={count}"
-                for (executor_id, host, status), count in groups
-            )
-        state["logs"] = (state["logs"] + monitor_lines)[-64:]
-        for line in monitor_lines:
-            functions.append_console_log(run_id, "spark", line)
-    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError, StopIteration):
-        return
-
-def _is_current_spark_item(
-    item: dict[str, Any],
-    query_started_at: datetime,
-) -> bool:
-    """Determino si un Job o Stage comenzó con la query actual."""
-
-    submission_time = item.get("submissionTime")
-    if not submission_time:
-        return False
-    try:
-        submitted_at = datetime.fromisoformat(
-            str(submission_time).replace("GMT", "+00:00")
-        )
-    except ValueError:
-        return False
-    if submitted_at.tzinfo is None:
-        submitted_at = submitted_at.replace(tzinfo=timezone.utc)
-    return submitted_at >= query_started_at
-
-def read_spark_api(path: str) -> Any:
-    """Leo un endpoint JSON del Spark Driver."""
-
-    with urllib.request.urlopen(f"{SPARK_UI_URL}{path}", timeout=2) as response:
-        return json.load(response)
-
-def read_spark_api_from_master(path: str) -> Any:
-    """Leo un endpoint JSON del Spark Master."""
-
-    with urllib.request.urlopen(
-        f"{SPARK_MASTER_UI_URL}{path}",
-        timeout=2,
-    ) as response:
-        return json.load(response)
-
 
 def process_batch(run_id: str, data_frame: DataFrame, batch_id: int) -> None:
     """Proceso un microbatch distribuido y escribo su fragmento Parquet."""
@@ -657,8 +366,6 @@ def start_streaming(run_id: str) -> None:
         _RUN_STATES[run_id] = {
             "batch_number": int(checkpoint.get("batch_number", 0)),
             "checkpoint": checkpoint,
-            "logs": [],
-            "monitor_signature": "",
             "input_events": int(
                 checkpoint.get(
                     "input_events",
@@ -669,9 +376,6 @@ def start_streaming(run_id: str) -> None:
             "processed_events_by_type": dict(checkpoint.get("processed_events_by_type", {})),
             "query": None,
             "query_id": None,
-            "query_started_at": None,
-            "query_status_signature": "",
-            "rows": [],
             "status": "iniciando",
             "stopping": False,
         }
@@ -681,12 +385,10 @@ def start_streaming(run_id: str) -> None:
         with _SPARK_LOCK:
             _STARTING_RUNS.discard(run_id)
             _RUN_STATES[run_id]["status"] = "error"
-            _RUN_STATES[run_id]["logs"] = [error_message]
         functions.append_console_log(run_id, "spark", error_message)
         raise RuntimeError(error_message)
     (DATA_DIRECTORY / "spark").mkdir(parents=True, exist_ok=True)
     checkpoint_path = str(DATA_DIRECTORY / "spark" / f"{run_id}_04_spark_checkpoint")
-    query_started_at = datetime.now(timezone.utc)
     starting_timestamp = (
         datetime.strptime(run_id, "%Y%m%d_%H%M%S")
         .replace(tzinfo=PRESENTATION_TIMEZONE)
@@ -724,8 +426,6 @@ def start_streaming(run_id: str) -> None:
         _STARTING_RUNS.discard(run_id)
         _RUN_STATES[run_id]["query"] = query
         _RUN_STATES[run_id]["query_id"] = str(query.id)
-        _RUN_STATES[run_id]["query_started_at"] = query_started_at
-        _RUN_STATES[run_id]["query_status_signature"] = "activa"
 
 def stop_streaming(
     run_id: str | None,

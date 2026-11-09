@@ -1,5 +1,4 @@
 import importlib.util
-import json
 import math
 import os
 import signal
@@ -262,6 +261,7 @@ def get_last_execution_notice(snapshot: dict[str, Any]) -> str | None:
         not snapshot.get("run_id")
         or snapshot.get("is_active")
         or st.session_state.start_pending
+        or st.session_state.stop_pending
     ):
         return None
     last_execution_at = snapshot.get("ended_at") or snapshot.get("started_at")

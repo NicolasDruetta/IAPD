@@ -53,11 +53,21 @@ La carpeta `data/` se genera automáticamente y se usa para archivos temporales 
 
 El botón de inicio prepara un RUN y pone en marcha las etapas correspondientes. El Controller mantiene el estado de la ejecución y el seguimiento de actividad. La falta de actualizaciones del navegador no detiene por sí sola un RUN; la detención manual se solicita desde el botón STOP.
 
-El botón de detención solicita cortar la descarga, la publicación y el procesamiento del RUN. La detención tiene prioridad sobre completar los lotes pendientes. Por ese motivo, una ejecución interrumpida puede no tener un Parquet final consolidado.
+F5 y las recargas automáticas normales de Streamlit no deben interrumpir un RUN activo. La aplicación conserva los módulos de procesamiento que tienen un servicio Alpaca o una query Spark activa, y reconstruye la pantalla a partir del estado persistido en los JSONL y de los TXT de logs. Por eso, una recarga puede recuperar el RUN y continuar mostrando su actividad sin crear otra ejecución.
+
+El botón STOP tiene un comportamiento separado y deliberadamente más fuerte: ejecuta `os.kill(os.getpid(), signal.SIGTERM)` sobre el proceso de Streamlit. Docker reinicia el servicio `streamlit` mediante `restart: unless-stopped`, mientras Kafka, Spark Master, Spark Workers y PostgreSQL permanecen como servicios independientes. Al terminar el proceso desaparecen los threads Python de Alpaca, Controller y Kafka. Al volver a iniciar Streamlit, el RUN detenido manualmente se recupera desde el JSONL existente y se consolida su Parquet pendiente antes de quedar marcado como finalizado. Si Spark todavía no liberó un recurso externo, la consolidación se reintenta en los refrescos siguientes y no se informa el RUN como finalizado hasta completarla.
 
 Los errores se registran en los logs de las etapas que corresponden. El estado visual de Streamlit no reemplaza la información registrada sobre el procesamiento.
 
-## 5. Kafka y Spark
+## 5. Recargas, persistencia y logs
+
+El estado de cada RUN se persiste en JSONL y los registros de las seis etapas se escriben en TXT. Las consolas no cargan todo el archivo para la vista: muestran solamente las últimas 200 líneas para mantener la interfaz manejable.
+
+Cada una de las seis consolas conserva su botón de descarga. El botón no descarga el recorte visible: lee el TXT completo desde disco y entrega todas sus líneas, desde la primera hasta la última, cuando el archivo existe.
+
+Las seis descargas son: Controller (`01_python_controller_log.txt`), Alpaca (`02_alpaca_stream_log.txt`), Kafka (`03_apache_kafka_log.txt`), Spark (`04_apache_spark_log.txt`), Pandas (`05_pandas_log.txt`) y PostgreSQL (`06_postgresql_log.txt`).
+
+## 6. Kafka y Spark
 
 Los mensajes están asociados a un `run_id` para evitar mezclar ejecuciones. Spark utiliza una referencia temporal de inicio con un margen de cinco segundos y filtra los eventos por RUN.
 
@@ -65,7 +75,7 @@ Spark Structured Streaming procesa microbatches y utiliza checkpoints. Si el an�
 
 La configuración de los servicios y los recursos asignados al clúster se encuentra en los archivos de Docker Compose.
 
-## 6. Pandas y PostgreSQL
+## 7. Pandas y PostgreSQL
 
 Pandas lee los fragmentos nuevos de Parquet durante el procesamiento normal. Cuando se reconstruye el estado de una ejecución, puede necesitar leer los fragmentos que ya existen.
 
@@ -73,7 +83,7 @@ Las métricas por símbolo se almacenan en `market_metrics`. La base también co
 
 Las tablas se crean cuando corresponde mediante operaciones idempotentes. No es necesario recrearlas en cada microbatch.
 
-## 7. Criterios de programación
+## 8. Criterios de programación
 
 El proyecto sigue estas convenciones:
 
@@ -89,7 +99,7 @@ El proyecto sigue estas convenciones:
 
 Estas decisiones permiten encontrar más fácilmente cada responsabilidad y mantener el proyecto sin mezclar la interfaz con el procesamiento.
 
-## 8. Ejecución en otra computadora
+## 9. Ejecución en otra computadora
 
 La instalación se explica en `README.md`. El proyecto se entrega sin `data/` y sin entorno virtual. Con Docker Desktop iniciado, el archivo de ejecución de Windows o macOS prepara los contenedores y permite acceder a la aplicación desde el navegador.
 

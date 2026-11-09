@@ -15,7 +15,6 @@ _RUN_LOG_COUNTS: dict[str, int] = {}
 _RUN_SEQUENCES: dict[str, int] = {}
 _SPARK_MODULE: Any = None
 _STREAMING_MODULE: Any = None
-_SUPERVISOR_THREAD: threading.Thread | None = None
 HEARTBEAT_TIMEOUT_MINUTES = 15
 
 def append_controller_log(
@@ -175,9 +174,10 @@ def mark_interrupted_run() -> dict[str, Any] | None:
     metadata = streaming_module.get_latest_metadata()
     if metadata is None or not metadata.get("is_active"):
         return metadata
+    end_reason = metadata.get("end_reason") or "process_restart"
     metadata["status"] = "Incompleto"
     metadata["is_active"] = False
-    metadata["end_reason"] = "process_restart"
+    metadata["end_reason"] = end_reason
     metadata["ended_at"] = streaming_module.get_utc_timestamp()
     run_id = metadata.get("run_id")
     if isinstance(run_id, str) and isinstance(metadata.get("info_controller_file"), str):
@@ -189,7 +189,7 @@ def mark_interrupted_run() -> dict[str, Any] | None:
             {
                 "status": "Incompleto",
                 "is_active": False,
-                "end_reason": "process_restart",
+                "end_reason": end_reason,
                 "ended_at": metadata["ended_at"],
             },
         )
@@ -243,6 +243,45 @@ def configure_pipeline_modules(
     global _KAFKA_MODULE, _SPARK_MODULE
     _KAFKA_MODULE = kafka_module
     _SPARK_MODULE = spark_module
+    metadata = _STREAMING_MODULE.get_latest_metadata()
+    if (
+        metadata is None
+        or metadata.get("status") != "Incompleto"
+        or metadata.get("end_reason") != "manual_stop"
+        or not isinstance(metadata.get("run_id"), str)
+    ):
+        return
+    run_id = metadata["run_id"]
+    try:
+        consolidated = spark_module.consolidate_parquet(run_id)
+    except Exception:
+        return
+    finally:
+        if not spark_module.has_active_query():
+            spark_module.reset_spark_runtime()
+    if not consolidated:
+        return
+    ended_at = metadata.get("ended_at") or _STREAMING_MODULE.get_utc_timestamp()
+    append_run_record(
+        run_id,
+        "run_finished",
+        {
+            "status": "Detenido",
+            "end_reason": "manual_stop",
+            "error": None,
+            "ended_at": ended_at,
+        },
+    )
+    append_run_record(
+        run_id,
+        "state",
+        {
+            "status": "Detenido",
+            "is_active": False,
+            "end_reason": "manual_stop",
+            "ended_at": ended_at,
+        },
+    )
 
 def shutdown_active_run() -> None:
     """Cierro el RUN administrado cuando finaliza el proceso Python."""
@@ -259,7 +298,7 @@ def start_run(
 ) -> Any:
     """Creo un único RUN y coordino su ciclo de vida."""
 
-    global _ACTIVE_SERVICE, _LAST_STOPPED_SNAPSHOT, _SUPERVISOR_THREAD
+    global _ACTIVE_SERVICE, _LAST_STOPPED_SNAPSHOT
     streaming_module = _require_streaming_module()
     if _KAFKA_MODULE is None or _SPARK_MODULE is None:
         raise RuntimeError("Kafka y Spark no fueron configurados.")
@@ -318,19 +357,19 @@ def start_run(
                 "El identificador del RUN ya existe; esperá un segundo y volvé a iniciar."
             ) from error
         _ACTIVE_SERVICE.start()
-        _SUPERVISOR_THREAD = threading.Thread(
+        supervisor_thread = threading.Thread(
             target=_supervise_heartbeat,
             args=(_ACTIVE_SERVICE,),
             daemon=True,
             name=f"controller-supervisor-{run_id}",
         )
-        _SUPERVISOR_THREAD.start()
+        supervisor_thread.start()
         return _ACTIVE_SERVICE
 
 def stop_active_run(end_reason: str) -> None:
     """Detengo el único RUN administrado por el controlador."""
 
-    global _LAST_STOPPED_SNAPSHOT, _SUPERVISOR_THREAD
+    global _LAST_STOPPED_SNAPSHOT
     service = get_active_service()
     try:
         if service is not None:
@@ -341,9 +380,6 @@ def stop_active_run(end_reason: str) -> None:
             release_active_service(service)
         if _KAFKA_MODULE is not None:
             _KAFKA_MODULE.reset_producer()
-        supervisor_thread = _SUPERVISOR_THREAD
-        if supervisor_thread is not threading.current_thread():
-            _SUPERVISOR_THREAD = None
 
 def _require_streaming_module() -> Any:
     """Obtengo el módulo Alpaca configurado para el controlador."""
