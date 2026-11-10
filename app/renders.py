@@ -207,6 +207,39 @@ def get_console_state(console_id: str, run_id: str | None) -> dict[str, Any]:
         state.update({"run_key": key, "line_number": 0})
     return state
 
+def get_last_execution_notice(snapshot: dict[str, Any]) -> str | None:
+    """Construyo el aviso visible de la última ejecución terminada."""
+
+    if (
+        not snapshot.get("run_id")
+        or snapshot.get("is_active")
+        or st.session_state.start_pending
+        or st.session_state.stop_pending
+    ):
+        return None
+    last_execution_at = snapshot.get("ended_at") or snapshot.get("started_at")
+    last_execution_text = (
+        format_presentation_timestamp(last_execution_at)
+        if last_execution_at
+        else "-"
+    )
+    elapsed_text = format_elapsed_time(
+        snapshot.get("started_at"),
+        snapshot.get("ended_at"),
+    )
+    history_market_date = snapshot.get("historical_date") or "-"
+    history_run_id = snapshot.get("run_id") or "-"
+    completion_text = {
+        "Completado": "Finalizado correctamente.",
+        "Error": "Finalizado con error.",
+    }.get(snapshot.get("status"), f"{snapshot.get('status')}.")
+    if (
+        snapshot.get("status") == "Detenido"
+        and snapshot.get("end_reason") == "manual_stop"
+    ):
+        completion_text = "Detenido manualmente."
+    return f"Datos de la **última ejecución:** {last_execution_text}. **Duración:** {elapsed_text}. **{completion_text}** | **Fecha de mercado:** {history_market_date}. | **RUN ID:** {history_run_id}."
+
 def initialize_state(system_theme: dict[str, Any] | None = None) -> None:
     """Creo el estado para conservar referencias visuales del RUN."""
 
@@ -254,39 +287,6 @@ def load_custom_css() -> None:
     css_content = css_path.read_text(encoding="utf-8")
     st.markdown(f"<style>{css_content}</style>", unsafe_allow_html=True)
 
-def get_last_execution_notice(snapshot: dict[str, Any]) -> str | None:
-    """Construyo el aviso visible de la última ejecución terminada."""
-
-    if (
-        not snapshot.get("run_id")
-        or snapshot.get("is_active")
-        or st.session_state.start_pending
-        or st.session_state.stop_pending
-    ):
-        return None
-    last_execution_at = snapshot.get("ended_at") or snapshot.get("started_at")
-    last_execution_text = (
-        format_presentation_timestamp(last_execution_at)
-        if last_execution_at
-        else "-"
-    )
-    elapsed_text = format_elapsed_time(
-        snapshot.get("started_at"),
-        snapshot.get("ended_at"),
-    )
-    history_market_date = snapshot.get("historical_date") or "-"
-    history_run_id = snapshot.get("run_id") or "-"
-    completion_text = {
-        "Completado": "Finalizado correctamente.",
-        "Error": "Finalizado con error.",
-    }.get(snapshot.get("status"), f"{snapshot.get('status')}.")
-    if (
-        snapshot.get("status") == "Detenido"
-        and snapshot.get("end_reason") == "manual_stop"
-    ):
-        completion_text = "Detenido manualmente."
-    return f"Datos de la **última ejecución:** {last_execution_text}. **Duración:** {elapsed_text}. **{completion_text}** | **Fecha de mercado:** {history_market_date}. | **RUN ID:** {history_run_id}."
-
 def render_live_indicator(title: str, key: str) -> None:
     """Muestro LIVE únicamente durante una ejecución activa."""
 
@@ -319,6 +319,7 @@ def render_heartbeat() -> None:
 def render_header() -> None:
     """Muestro el encabezado general del laboratorio."""
 
+    st.markdown('<div id="top"></div>', unsafe_allow_html=True)
     icon_path = Path(__file__).parent.parent / "assets" / "icon.png"
     theme_key = "theme-dark" if st.session_state.dark_mode else "theme-light"
     with st.container(key=theme_key):
@@ -1378,6 +1379,7 @@ def render_footer() -> None:
 
     with st.container(key="footer"):
         st.caption("Materia: Procesamiento de Datos, TP2. Autor: Nicolás Druetta. Año: 2026.")
+        st.markdown("[Volver arriba ↑](#top)")
 
 render_heartbeat = st.fragment(render_heartbeat, run_every="5s")
 render_config = st.fragment(render_config, run_every="5s")
