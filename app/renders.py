@@ -21,10 +21,6 @@ DATA_DIRECTORY = Path(__file__).parent.parent / "data"
 PRESENTATION_TIMEZONE = ZoneInfo("America/Argentina/Cordoba")
 SHOW_STOP_DEBUG = False
 SYMBOL_OPTIONS = {
-    "Todas los empresas del S&P 500": {
-        "value": ("*",),
-        "ranking": None,
-    },
     "Las 7 magníficas: AAPL, AMZN, GOOGL, META, MSFT, NVDA, TSLA": {
         "value": ("AAPL", "AMZN", "GOOGL", "META", "MSFT", "NVDA", "TSLA"),
         "ranking": None,
@@ -36,6 +32,10 @@ SYMBOL_OPTIONS = {
     "Top 20 empresas con más volumen del S&P 500": {
         "value": (),
         "ranking": "volume",
+    },
+    "Todas las empresas del S&P 500 (Big Data)": {
+        "value": ("*",),
+        "ranking": None,
     },
 }
 
@@ -409,7 +409,7 @@ def render_config() -> None:
             default_option,
         )
 
-    st.write(f"**Símbolos bursátiles a analizar:**")
+    st.write(f"**Empresas a analizar:**")
     symbols_col, actions_col = st.columns(
         [1, 1],
         gap="small",
@@ -857,7 +857,7 @@ def render_info() -> None:
 def render_charts() -> None:
     """Muestro los gráficos de la última ejecución."""
 
-    render_live_indicator("Gráficos", "live-charts")
+    render_live_indicator("Gráficos (lectura de PostgreSQL)", "live-charts")
     if st.session_state.start_requested or st.session_state.start_pending:
         analysis_data = {
             "activity_interval": 1,
@@ -892,7 +892,7 @@ def render_charts() -> None:
 def render_questions() -> None:
     """Muestro las preguntas de investigación y sus tablas."""
 
-    render_live_indicator("Preguntas de investigación", "live-questions",)
+    render_live_indicator("Preguntas de investigación (lectura de PostgreSQL)", "live-questions",)
     if st.session_state.start_requested or st.session_state.start_pending:
         analysis_data = {
             "answers": [],

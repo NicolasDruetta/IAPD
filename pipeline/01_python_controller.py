@@ -4,6 +4,7 @@ import atexit
 import builtins
 import json
 import os
+import sys
 import threading
 import uuid
 
@@ -24,6 +25,7 @@ _RUN_LOG_COUNTS: dict[str, int] = {}
 _RUN_SEQUENCES: dict[str, int] = {}
 _SPARK_MODULE: Any = None
 _SPARK_STARTED_RUNS: set[str] = set()
+_STAGE_NOTIFICATIONS: set[tuple[str, str]] = set()
 _STREAMING_MODULE: Any = None
 HEARTBEAT_TIMEOUT_MINUTES = 15
 
@@ -296,6 +298,9 @@ def _notify_first_publication(run_id: str) -> None:
             "Python | primera publicación Kafka confirmada; iniciando Spark",
         )
         _SPARK_MODULE.start_streaming(run_id)
+        if not _SPARK_MODULE.has_active_query():
+            raise RuntimeError("Structured Streaming no quedó activo.")
+        _notify_stage_status(run_id, "Spark")
     except Exception as error:
         with _MANAGER_LOCK:
             _SPARK_STARTED_RUNS.discard(run_id)
@@ -305,6 +310,25 @@ def _notify_first_publication(run_id: str) -> None:
             f"Python | error al iniciar Spark tras confirmar Kafka | {error}",
         )
         fail_active_run(str(error))
+
+def _notify_stage_status(run_id: str, stage: str) -> None:
+    """Registro una sola confirmación real de una etapa por RUN."""
+
+    notification = (run_id, stage)
+    with _MANAGER_LOCK:
+        if notification in _STAGE_NOTIFICATIONS:
+            return
+        _STAGE_NOTIFICATIONS.add(notification)
+    messages = {
+        "Pandas": "Python | Pandas iniciado correctamente",
+        "PostgreSQL": (
+            "Python | PostgreSQL iniciado correctamente; persistencia en curso"
+        ),
+        "Spark": "Python | Spark iniciado correctamente",
+    }
+    message = messages.get(stage)
+    if message is not None:
+        functions.append_console_log(run_id, "controller", message)
 
 def release_active_pipeline(run_id: str) -> bool:
     """Habilito el primer lote cuando las consultas del RUN están preparadas."""
@@ -442,6 +466,12 @@ def configure_pipeline_modules(
     spark_module.configure_failure_callback(
         lambda run_id, error: fail_run(run_id, error, "Spark")
     )
+    pandas_module = sys.modules.get("05_pandas")
+    if pandas_module is not None:
+        pandas_module.configure_status_callback(_notify_stage_status)
+    postgresql_module = sys.modules.get("06_postgresql")
+    if postgresql_module is not None:
+        postgresql_module.configure_status_callback(_notify_stage_status)
     metadata = _STREAMING_MODULE.get_latest_metadata()
     if (
         metadata is None

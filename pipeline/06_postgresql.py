@@ -6,6 +6,13 @@ import sys
 from app import database, functions
 
 FEED_NAME = "IEX"
+_STATUS_CALLBACK: object | None = None
+
+def configure_status_callback(callback: object | None) -> None:
+    """Registro el callback de confirmación de la primera persistencia."""
+
+    global _STATUS_CALLBACK
+    _STATUS_CALLBACK = callback
 
 def analyze_and_persist(
     run_id: str,
@@ -59,6 +66,8 @@ def analyze_and_persist(
                     f"ERROR | conteo_postpersistencia={error} | persistencia_confirmada=True",
                 )
                 return True
+        if _STATUS_CALLBACK is not None:
+            _STATUS_CALLBACK(run_id, "PostgreSQL")
         previous_counts = functions.get_postgresql_counters(
             functions.DATA_DIRECTORY / "runs" / f"{run_id}_06_postgresql_log.txt"
         )

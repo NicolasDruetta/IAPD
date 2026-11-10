@@ -12,6 +12,13 @@ DATA_DIRECTORY = Path(__file__).parent.parent / "data"
 FEED_NAME = "IEX"
 PRESENTATION_TIMEZONE = ZoneInfo("America/Argentina/Cordoba")
 _ANALYSIS_STATES: dict[str, dict[str, Any]] = {}
+_STATUS_CALLBACK: Any = None
+
+def configure_status_callback(callback: Any) -> None:
+    """Registro el callback de confirmación del primer análisis real."""
+
+    global _STATUS_CALLBACK
+    _STATUS_CALLBACK = callback
 
 def analyze(
     run_id: str,
@@ -56,6 +63,8 @@ def analyze(
             "top_volume": top_volume,
         }
         state["analysis"] = analysis
+        if _STATUS_CALLBACK is not None:
+            _STATUS_CALLBACK(run_id, "Pandas")
         state["batches"].update(path.name for path in new_paths)
         functions.append_console_log(
             run_id,
