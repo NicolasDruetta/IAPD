@@ -161,27 +161,38 @@ LIVE_INDICATOR_COMPONENT = st.components.v2.component(
     isolate_styles=False,
     js="""
     export default function ({ data }) {
-        const headings = Array.from(
-            document.querySelectorAll("h1, h2, h3, h4, h5, h6"),
-        );
-        const heading = headings.find(
-            (element) => element.textContent.trim() === data.title,
-        );
-        if (heading === undefined) {
-            return () => {};
-        }
-        let indicator = heading.querySelector(":scope > .live-indicator");
-        if (indicator === null) {
-            const liveIndicator = document.createElement("span");
-            liveIndicator.className = "live-indicator";
-            liveIndicator.innerHTML =
-                '<span class="live-dot" aria-hidden="true"></span>' +
-                '<span>LIVE</span>';
-            heading.appendChild(liveIndicator);
-            indicator = liveIndicator;
-        }
-        indicator.classList.toggle("is-hidden", !data.active);
-        return () => {};
+        let cancelled = false;
+
+        const update = () => {
+            if (cancelled) return;
+            const headings = Array.from(
+                document.querySelectorAll("h1, h2, h3, h4, h5, h6"),
+            );
+            const heading = headings.find(
+                (element) => element.textContent.trim().startsWith(data.title),
+            );
+            if (heading === undefined) return;
+            let indicator = heading.querySelector(":scope > .live-indicator");
+            if (indicator === null) {
+                const liveIndicator = document.createElement("span");
+                liveIndicator.className = "live-indicator";
+                liveIndicator.innerHTML =
+                    '<span class="live-dot" aria-hidden="true"></span>' +
+                    '<span>LIVE</span>';
+                heading.appendChild(liveIndicator);
+                indicator = liveIndicator;
+            }
+            indicator.classList.toggle("is-hidden", !data.active);
+        };
+
+        update();
+        const retryTimer = setInterval(update, 50);
+        const stopRetry = setTimeout(() => clearInterval(retryTimer), 2000);
+        return () => {
+            cancelled = true;
+            clearInterval(retryTimer);
+            clearTimeout(stopRetry);
+        };
     }
     """,
 )
@@ -857,12 +868,9 @@ def render_consoles_part1() -> None:
                 gap="small",
             ):
                 st.subheader("1. Log del controlador (Python)", width="content")
-                LIVE_INDICATOR_COMPONENT(
-                    data={
-                        "active": bool(is_active),
-                        "title": "1. Log del controlador (Python)",
-                    },
-                    key="live-controller-log",
+                render_live_indicator(
+                    "1. Log del controlador (Python)",
+                    "live-controller-log",
                 )
             execution_state = get_console_state(
                 "execution-log-console",
