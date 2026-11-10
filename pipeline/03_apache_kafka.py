@@ -235,8 +235,6 @@ def publish_events(
         first_publication = run_id not in _FIRST_PUBLICATION_RUNS
         if first_publication:
             _FIRST_PUBLICATION_RUNS.add(run_id)
-    if first_publication and first_publication_callback is not None:
-        first_publication_callback(run_id)
     partition_counts = {partition: 0 for partition in partitions}
     for record_metadata in metadata:
         partition_counts[record_metadata.partition] = partition_counts.get(
@@ -270,6 +268,8 @@ def publish_events(
             "kafka",
             f"KAFKA | lote={batch} | eventos={len(events)} | TRADE={trade_count} | QUOTE={quote_count} | total={total} | particiones={distribution} | confirmados={len(metadata)}",
         )
+    if first_publication and first_publication_callback is not None:
+        first_publication_callback(run_id)
 
 atexit.register(close_producer)
 

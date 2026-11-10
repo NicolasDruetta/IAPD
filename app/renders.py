@@ -1042,10 +1042,23 @@ def render_controller_console() -> None:
         )
     render_log_console(log_display_lines, "execution-log-console")
 
+def get_kafka_confirmed_count(
+    kafka_path: Path | None,
+    run_id: str | None,
+) -> int:
+    """Conservo el último total Kafka confirmado observado para el RUN."""
+
+    current_count = functions.count_processed_data(kafka_path, "kafka")
+    state_key = f"kafka-confirmed-count-{run_id or 'empty'}"
+    previous_count = int(st.session_state.get(state_key, 0))
+    confirmed_count = max(previous_count, current_count)
+    st.session_state[state_key] = confirmed_count
+    return confirmed_count
+
 def render_alpaca_console() -> None:
     """Muestro la consola de descarga de Alpaca."""
 
-    clear_consoles, run_id, _, alpaca_path, _, _, _, _, is_active = _get_consoles_context()
+    clear_consoles, run_id, _, alpaca_path, kafka_path, _, _, _, is_active = _get_consoles_context()
     with st.container(horizontal=True, vertical_alignment="center", gap="small"):
         st.subheader("2. Log de descarga (Alpaca)", width="content")
         if is_active and alpaca_path is not None and alpaca_path.exists() and alpaca_path.stat().st_size:
@@ -1057,8 +1070,19 @@ def render_alpaca_console() -> None:
     event_lines = [format_presentation_log_line(line) for line in events]
     if not event_lines and alpaca_state["line_number"] == 0:
         event_lines = ["Alpaca | esperando cotizaciones y operaciones."]
+    controller_module = load_page_module("01_python_controller")
+    snapshot = controller_module.get_run_snapshot()
+    downloaded_count = (
+        snapshot.get("downloaded_event_count", alpaca_state["line_number"])
+        if snapshot.get("run_id") == run_id
+        else alpaca_state["line_number"]
+    )
     with st.container(horizontal=True, horizontal_alignment="distribute", vertical_alignment="center"):
-        st.caption(f"Datos descargados: **{alpaca_state['line_number']}**.")
+        sent_count = get_kafka_confirmed_count(kafka_path, run_id)
+        st.caption(
+            f"Datos descargados: **{downloaded_count}**. "
+            f"Datos enviados: **{sent_count}**."
+        )
         st.download_button(
             "↓",
             data=alpaca_path.read_bytes() if alpaca_path is not None and alpaca_path.exists() else b"",
@@ -1087,9 +1111,10 @@ def render_kafka_console() -> None:
     if not kafka_lines and kafka_state["line_number"] == 0:
         kafka_lines = ["Kafka | esperando datos para publicar."]
     with st.container(horizontal=True, horizontal_alignment="distribute", vertical_alignment="center"):
+        processed_count = get_kafka_confirmed_count(kafka_path, run_id)
         st.caption(
             f"Eventos recibidos: **{kafka_state['line_number']}**. "
-            f"Datos procesados: **{functions.count_processed_data(kafka_path, 'kafka')}**."
+            f"Datos procesados: **{processed_count}**."
         )
         st.download_button(
             "↓",

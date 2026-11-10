@@ -218,8 +218,9 @@ class AlpacaStreamingService:
         self._append_run_record_callback = append_run_record_callback
         self._append_run_state_callback = append_run_state_callback
         self._download_thread: threading.Thread | None = None
-        self._end_reason: str | None = None
+        self._downloaded_event_count = 0
         self._ended_at: str | None = None
+        self._end_reason: str | None = None
         self._error: str | None = None
         self._event_count = 0
         self._events: deque[AlpacaEvent] = deque()
@@ -403,25 +404,26 @@ class AlpacaStreamingService:
 
         with self._lock:
             return {
-                "run_id": self._run_id,
-                "symbols": list(self._symbols),
-                "universe": self._universe_metadata,
-                "replay_speed": self._replay_speed,
-                "status": self._status,
+                "downloaded_event_count": self._downloaded_event_count,
+                "end_reason": self._end_reason,
+                "ended_at": self._ended_at,
                 "error": self._error,
                 "event_count": self._event_count,
+                "heartbeat_count": self._heartbeat_count,
+                "heartbeat_id": self._heartbeat_id,
+                "historical_date": self._historical_date,
+                "is_active": self.is_active(),
+                "last_heartbeat": self._last_heartbeat_at,
+                "last_heartbeat_session_id": self._last_heartbeat_session_id,
+                "logs": [],
                 "market_timestamp": self._market_timestamp,
                 "replay_position": self._replay_position,
-                "historical_date": self._historical_date,
-                "logs": [],
+                "replay_speed": self._replay_speed,
+                "run_id": self._run_id,
                 "started_at": self._started_at,
-                "ended_at": self._ended_at,
-                "last_heartbeat": self._last_heartbeat_at,
-                "heartbeat_id": self._heartbeat_id,
-                "heartbeat_count": self._heartbeat_count,
-                "last_heartbeat_session_id": self._last_heartbeat_session_id,
-                "end_reason": self._end_reason,
-                "is_active": self.is_active(),
+                "status": self._status,
+                "symbols": list(self._symbols),
+                "universe": self._universe_metadata,
             }
 
     def _run_stream(self) -> None:
@@ -471,9 +473,10 @@ class AlpacaStreamingService:
                         self._api_secret,
                         self._symbols,
                         self._feed,
-                        progress_callback=self._add_log,
+                        download_count_callback=self._register_downloaded_count,
                         event_callback=enqueue_batch,
                         historical_date_callback=self._set_historical_date,
+                        progress_callback=self._add_log,
                         stop_event=self._stop_event,
                     )
                 )
@@ -534,6 +537,15 @@ class AlpacaStreamingService:
             if self._finished:
                 return
             self._historical_date = historical_date
+            self._append_run_state_callback(self)
+
+    def _register_downloaded_count(self, downloaded_count: int) -> None:
+        """Persisto los eventos descargados antes de entregarlos a Kafka."""
+
+        with self._lock:
+            if downloaded_count <= self._downloaded_event_count:
+                return
+            self._downloaded_event_count = downloaded_count
             self._append_run_state_callback(self)
 
     def _emit_replay_batch(self, events: list[AlpacaEvent]) -> None:
@@ -662,8 +674,9 @@ def download_historical_dataset(
     date_text: str,
     session_start: datetime,
     session_end: datetime,
-    progress_callback: Callable[[str], None] | None = None,
+    download_count_callback: Callable[[int], None] | None = None,
     event_callback: Callable[[list[AlpacaEvent]], None] | None = None,
+    progress_callback: Callable[[str], None] | None = None,
     stop_event: threading.Event | None = None,
 ) -> tuple[int, bool]:
     """Descargo páginas y entrego cada ventana ordenada directamente a Kafka."""
@@ -911,6 +924,8 @@ def download_historical_dataset(
             f"DATA | ventana={format_presentation_timestamp(window_start)}-{format_presentation_timestamp(window_end)} | grupos={completed_groups}/{len(symbol_groups)} | respuestas={window_responses} | páginas_con_operaciones={window_responses_with_trades} | páginas_con_cotizaciones={window_responses_with_quotes} | descargados={window_downloaded}"
                     )
         group_records.sort(key=lambda item: item[0])
+        if download_count_callback is not None:
+            download_count_callback(event_count + window_downloaded)
         merged_count = merge_window(group_records)
         event_count += merged_count
         if progress_callback is not None:
@@ -960,9 +975,10 @@ def get_historical_dataset(
     api_secret: str,
     symbols: list[str],
     feed: str,
-    progress_callback: Callable[[str], None] | None = None,
+    download_count_callback: Callable[[int], None] | None = None,
     event_callback: Callable[[list[AlpacaEvent]], None] | None = None,
     historical_date_callback: Callable[[str], None] | None = None,
+    progress_callback: Callable[[str], None] | None = None,
     stop_event: threading.Event | None = None,
 ) -> str:
     """Obtengo el histórico validado y entrego sus ventanas directamente a Kafka."""
@@ -985,8 +1001,9 @@ def get_historical_dataset(
         date_text,
         session_start,
         session_end,
-        progress_callback,
+        download_count_callback,
         event_callback,
+        progress_callback,
         stop_event,
     )
     if event_count > 0:
@@ -1366,6 +1383,7 @@ def read_streaming_state(path: Path) -> dict[str, Any] | None:
         "replay_speed": 1.0,
         "status": "Incompleto",
         "error": None,
+        "downloaded_event_count": 0,
         "event_count": 0,
         "log_count": 0,
         "market_timestamp": None,
@@ -1423,6 +1441,7 @@ def read_streaming_state(path: Path) -> dict[str, Any] | None:
                     for key in (
                         "status",
                         "error",
+                        "downloaded_event_count",
                         "event_count",
                         "log_count",
                         "market_timestamp",

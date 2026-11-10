@@ -88,18 +88,19 @@ def append_run_state(service: Any) -> None:
         snapshot["run_id"],
         "state",
         {
-            "status": snapshot["status"],
+            "downloaded_event_count": snapshot["downloaded_event_count"],
+            "ended_at": snapshot["ended_at"],
+            "end_reason": snapshot["end_reason"],
             "error": snapshot["error"],
             "event_count": snapshot["event_count"],
+            "historical_date": snapshot["historical_date"],
+            "is_active": snapshot["is_active"],
+            "last_heartbeat": snapshot["last_heartbeat"],
             "log_count": log_count,
             "market_timestamp": snapshot["market_timestamp"],
             "replay_position": snapshot["replay_position"],
-            "historical_date": snapshot["historical_date"],
             "started_at": snapshot["started_at"],
-            "ended_at": snapshot["ended_at"],
-            "last_heartbeat": snapshot["last_heartbeat"],
-            "end_reason": snapshot["end_reason"],
-            "is_active": snapshot["is_active"],
+            "status": snapshot["status"],
         },
     )
 
@@ -194,30 +195,32 @@ def get_run_snapshot() -> dict[str, Any]:
         return dict(_LAST_STOPPED_SNAPSHOT)
     metadata = streaming_module.get_latest_metadata()
     if metadata is not None:
-        metadata.setdefault("universe", {"selection": "manual"})
-        metadata.setdefault("replay_speed", 1.0)
-        metadata.setdefault("replay_position", 0)
+        metadata.setdefault("downloaded_event_count", 0)
         metadata.setdefault("historical_date", None)
         metadata.setdefault("log_count", 0)
         metadata.setdefault("logs", [])
+        metadata.setdefault("replay_position", 0)
+        metadata.setdefault("replay_speed", 1.0)
+        metadata.setdefault("universe", {"selection": "manual"})
         return metadata
     return {
-        "run_id": None,
-        "symbols": [],
-        "universe": {"selection": "manual", "symbols": []},
-        "replay_speed": 1.0,
-        "status": "Listo para ejecutar",
+        "downloaded_event_count": 0,
+        "ended_at": None,
+        "end_reason": None,
         "error": None,
         "event_count": 0,
-        "log_count": 0,
-        "replay_position": 0,
         "historical_date": None,
-        "logs": [],
-        "started_at": None,
-        "ended_at": None,
-        "last_heartbeat": None,
-        "end_reason": None,
         "is_active": False,
+        "last_heartbeat": None,
+        "log_count": 0,
+        "logs": [],
+        "replay_position": 0,
+        "replay_speed": 1.0,
+        "run_id": None,
+        "started_at": None,
+        "status": "Listo para ejecutar",
+        "symbols": [],
+        "universe": {"selection": "manual", "symbols": []},
     }
 
 def mark_interrupted_run() -> dict[str, Any] | None:
