@@ -434,11 +434,6 @@ def start_streaming(run_id: str) -> None:
         _STARTING_RUNS.discard(run_id)
         _RUN_STATES[run_id]["query"] = query
         _RUN_STATES[run_id]["query_id"] = str(query.id)
-    functions.append_console_log(
-        run_id,
-        "spark",
-        f"SPARK | consulta activa | query_id={query.id} | origen=Kafka | destino=Parquet",
-    )
 
 def stop_streaming(
     run_id: str | None,

@@ -210,6 +210,8 @@ services:
       - --server.port=8501
       - --server.headless=true
     environment:
+      ALPACA_API_KEY: ${ALPACA_API_KEY:-}
+      ALPACA_SECRET_KEY: ${ALPACA_SECRET_KEY:-}
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       KAFKA_TOPIC: iapd-market-events
       SPARK_MASTER_URL: spark://spark-master:7077
@@ -226,6 +228,8 @@ services:
       POSTGRES_PORT: "5432"
       POSTGRES_USER: bigdata
     depends_on:
+      kafka:
+        condition: service_healthy
       spark-master:
         condition: service_healthy
       spark-worker-1:

@@ -483,6 +483,11 @@ def render_config() -> None:
             or not streaming_module.ALPACA_SECRET_KEY
         ):
             st.session_state.start_pending = False
+            st.error(
+                "No se puede iniciar el RUN porque faltan las credenciales "
+                "de Alpaca. Verifique ALPACA_API_KEY y ALPACA_SECRET_KEY en "
+                ".env y vuelva a iniciar el contenedor."
+            )
         else:
             operation = st.session_state.start_operation
             if operation is None:
@@ -1376,6 +1381,12 @@ def handle_start_error(
     """Finalizo el RUN y conservo el error visible tras un fallo de inicio."""
 
     error_message = " ".join(str(error).split()) or error.__class__.__name__
+    if "NoBrokersAvailable" in error_message:
+        error_message = (
+            "NoBrokersAvailable: El servicio kafka no está "
+            "listo o no responde en kafka:9092. Espere a que Docker lo marque "
+            "como saludable y vuelva a iniciar el RUN. No se procesaron datos."
+        )
     if run_id is not None:
         spark_module.stop_streaming(run_id, finalize=False)
     controller_module.fail_active_run(error_message)

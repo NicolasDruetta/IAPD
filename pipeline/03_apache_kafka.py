@@ -13,7 +13,6 @@ from typing import Any
 
 _KAFKA_LOCK = threading.RLock()
 _KAFKA_PRODUCER: KafkaProducer | None = None
-_RUN_CONNECTIONS: set[str] = set()
 _RUN_STATS: dict[str, dict[str, Any]] = {}
 KAFKA_BOOTSTRAP_SERVERS = os.getenv(
     "KAFKA_BOOTSTRAP_SERVERS",
@@ -92,7 +91,6 @@ def initialize_run(run_id: str) -> Path:
     path = get_log_path(run_id)
     with _KAFKA_LOCK:
         path.parent.mkdir(parents=True, exist_ok=True)
-        _RUN_CONNECTIONS.discard(run_id)
         _RUN_STATS.pop(run_id, None)
     return path
 
@@ -237,13 +235,6 @@ def publish_events(
             or total == len(events)
             or total % 1000 < len(events)
         )
-        if run_id in _RUN_CONNECTIONS:
-            connection_line = None
-        else:
-            _RUN_CONNECTIONS.add(run_id)
-            connection_line = f"KAFKA | broker={KAFKA_BOOTSTRAP_SERVERS} | topic={KAFKA_TOPIC} | particiones={len(partitions)}"
-    if connection_line is not None:
-        functions.append_console_log(run_id, "kafka", connection_line)
     if should_log:
         distribution = ",".join(
             f"{partition}:{partition_counts.get(partition, 0)}"

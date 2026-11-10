@@ -442,6 +442,7 @@ def start_run(
         if active_service is not None and active_service.is_active():
             _ACTIVE_SERVICE = active_service
             return active_service
+        functions.ensure_pipeline_directories()
         started_at = streaming_module.get_utc_timestamp()
         run_id = streaming_module.build_run_stem(started_at)
         run_info_path = DATA_DIRECTORY / "runs" / f"{run_id}_01_python_controller_info.jsonl"

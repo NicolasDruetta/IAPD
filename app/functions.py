@@ -8,6 +8,18 @@ _CONSOLE_LOG_LOCK = threading.RLock()
 _CONSOLE_LOG_SEQUENCES: dict[tuple[str, str], int] = {}
 DATA_DIRECTORY = Path(__file__).parent.parent / "data"
 
+def ensure_pipeline_directories() -> None:
+    """Creo las carpetas de trabajo sin modificar las que ya existen."""
+
+    for directory_name in (
+        "kafka",
+        "kafka-config",
+        "kafka-secrets",
+        "runs",
+        "spark",
+    ):
+        (DATA_DIRECTORY / directory_name).mkdir(parents=True, exist_ok=True)
+
 def append_console_log(
     run_id: str,
     console_name: str,
@@ -119,7 +131,7 @@ def count_processed_data(path: Path | None, console_name: str) -> int:
             int(metrics) + int(answers)
             for line in lines
             for metrics, answers in re.findall(
-                r"metricas_guardadas=(\d+) \| respuestas_persistidas=(\d+)",
+                r"(?:metricas_guardadas|resultados_enviados)=(\d+) \| (?:respuestas_persistidas|respuestas_enviadas)=(\d+)",
                 line,
             )
         )
