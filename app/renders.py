@@ -609,11 +609,7 @@ def render_config() -> None:
                     try:
                         st.session_state.alpaca_run_id = run_id
                         register_heartbeat_for_display(controller_module, run_id)
-                        kafka_module.ensure_topic()
-                        spark_module.start_streaming(
-                            run_id,
-                        )
-                        service.release_pipeline()
+                        controller_module.start_pipeline(run_id)
                         st.session_state.start_pending = False
                         st.session_state.start_operation = None
                         snapshot = controller_module.get_run_snapshot()
@@ -815,9 +811,7 @@ def render_config() -> None:
         and not st.session_state.stop_pending
     ):
         try:
-            kafka_module.ensure_topic()
-            spark_module.start_streaming(run_id)
-            controller_module.release_active_pipeline(run_id)
+            controller_module.start_pipeline(run_id)
         except Exception as error:
             handle_start_error(
                 error,
@@ -863,9 +857,12 @@ def render_consoles_part1() -> None:
                 gap="small",
             ):
                 st.subheader("1. Log del controlador (Python)", width="content")
-                render_live_indicator(
-                    "1. Log del controlador (Python)",
-                    "live-controller-log",
+                LIVE_INDICATOR_COMPONENT(
+                    data={
+                        "active": bool(is_active),
+                        "title": "1. Log del controlador (Python)",
+                    },
+                    key="live-controller-log",
                 )
             execution_state = get_console_state(
                 "execution-log-console",
@@ -1808,6 +1805,14 @@ def stop_run_in_background(
     """Detengo el RUN y libero sus recursos sin esperar la consolidación."""
 
     try:
+        active_snapshot = controller_module.get_run_snapshot()
+        stopping_run_id = run_id or active_snapshot.get("run_id")
+        if stopping_run_id:
+            functions.append_console_log(
+                stopping_run_id,
+                "controller",
+                "Python | detención manual solicitada | finalizando proceso",
+            )
         os.kill(os.getpid(), signal.SIGTERM)
         active_snapshot = controller_module.get_run_snapshot()
         run_id = run_id or active_snapshot.get("run_id")

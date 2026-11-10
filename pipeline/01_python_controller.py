@@ -46,7 +46,7 @@ def append_run_record(
         }
         if record_type == "run_started":
             functions.append_console_log(
-                run_id, "controller", "Python | RUN registrado | fuente Alpaca preparada"
+                run_id, "controller", "Python | RUN registrado"
             )
             record.update(
                 {
@@ -206,6 +206,36 @@ def get_heartbeat_session_id() -> str:
     """Devuelvo el identificador de esta instancia del controlador."""
 
     return _HEARTBEAT_SESSION_ID
+
+def start_pipeline(run_id: str) -> None:
+    """Coordino la preparación de Kafka y Spark antes de liberar Alpaca."""
+
+    if _KAFKA_MODULE is None or _SPARK_MODULE is None:
+        raise RuntimeError("Kafka y Spark no fueron configurados.")
+    if not _SPARK_MODULE.has_active_query():
+        functions.append_console_log(
+            run_id, "controller", "Python | verificando tópico de Kafka"
+        )
+        _KAFKA_MODULE.ensure_topic()
+        functions.append_console_log(
+            run_id, "controller", "Python | tópico Kafka disponible"
+        )
+        functions.append_console_log(
+            run_id, "controller", "Python | iniciando procesamiento Spark"
+        )
+        _SPARK_MODULE.start_streaming(run_id)
+        functions.append_console_log(
+            run_id, "controller", "Python | consulta Spark iniciada"
+        )
+        functions.append_console_log(
+            run_id,
+            "controller",
+            "Python | análisis Pandas y persistencia PostgreSQL habilitados por microbatch",
+        )
+    else:
+        _KAFKA_MODULE.ensure_topic()
+        _SPARK_MODULE.start_streaming(run_id)
+    release_active_pipeline(run_id)
 
 def release_active_pipeline(run_id: str) -> bool:
     """Habilito el primer lote cuando las consultas del RUN están preparadas."""
@@ -424,15 +454,6 @@ def start_run(
             "controller",
             f"Python | iniciando ejecución | run_id={run_id}",
         )
-        functions.append_console_log(
-            run_id,
-            "controller",
-            "Python | preparando publicación de eventos en Kafka",
-        )
-        _KAFKA_MODULE.initialize_run(run_id)
-        functions.append_console_log(
-            run_id, "controller", "Python | publicación Kafka preparada"
-        )
         _LAST_STOPPED_SNAPSHOT = None
         try:
             functions.append_console_log(
@@ -460,6 +481,9 @@ def start_run(
             raise RuntimeError(
                 "El identificador del RUN ya existe; esperá un segundo y volvé a iniciar."
             ) from error
+        functions.append_console_log(
+            run_id, "controller", "Python | servicio Alpaca preparado"
+        )
         setattr(builtins, _ACTIVE_SERVICE_REGISTRY_KEY, _ACTIVE_SERVICE)
         _ACTIVE_SERVICE.start()
         functions.append_console_log(
@@ -478,6 +502,13 @@ def start_run(
             run_id,
             "controller",
             "Python | supervisor de heartbeat iniciado | límite=15 min",
+        )
+        functions.append_console_log(
+            run_id, "controller", "Python | preparando publicación de eventos en Kafka"
+        )
+        _KAFKA_MODULE.initialize_run(run_id)
+        functions.append_console_log(
+            run_id, "controller", "Python | publicación Kafka preparada"
         )
         return _ACTIVE_SERVICE
 
