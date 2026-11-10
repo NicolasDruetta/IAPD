@@ -138,6 +138,7 @@ textarea {
     font-size: 0.9rem;
     line-height: 1;
     margin-top: 0.25rem;
+    display: none !important; /* Custom Nico. */
 }
 
 .live-dot {

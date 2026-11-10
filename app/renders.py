@@ -1180,7 +1180,7 @@ def render_postgresql_console() -> None:
     with st.container(horizontal=True, horizontal_alignment="distribute", vertical_alignment="center"):
         st.caption(
             f"Eventos recibidos: **{postgresql_state['line_number']}**. "
-            f"Datos procesados: **{functions.count_processed_data(postgresql_path, 'postgresql')}**."
+            f"Datos guardados: **{functions.count_processed_data(postgresql_path, 'postgresql')}**."
         )
         st.download_button(
             "↓",
