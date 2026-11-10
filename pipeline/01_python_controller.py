@@ -271,14 +271,21 @@ def start_pipeline(run_id: str) -> None:
     with _MANAGER_LOCK:
         if run_id in _KAFKA_PREPARED_RUNS:
             return
-    functions.append_console_log(
-        run_id, "controller", "Python | verificando tópico de Kafka"
-    )
-    _KAFKA_MODULE.ensure_topic()
+    functions.append_console_log(run_id, "controller", "Python | iniciando Kafka")
+    try:
+        _KAFKA_MODULE.ensure_topic()
+        _KAFKA_MODULE.get_producer()
+    except Exception as error:
+        functions.append_console_log(
+            run_id,
+            "controller",
+            f"Python | ERROR Kafka | causa={error}",
+        )
+        raise
     functions.append_console_log(
         run_id,
         "controller",
-        "Python | Kafka preparado; esperando la primera publicación",
+        "Python | Kafka iniciado correctamente",
     )
     if release_active_pipeline(run_id):
         with _MANAGER_LOCK:
@@ -295,23 +302,28 @@ def _notify_first_publication(run_id: str) -> None:
         functions.append_console_log(
             run_id,
             "controller",
-            "Python | primera publicación Kafka confirmada; iniciando Spark",
+            "Python | primera publicación Kafka confirmada",
         )
+        functions.append_console_log(run_id, "controller", "Python | iniciando Spark")
         _SPARK_MODULE.start_streaming(run_id)
         if not _SPARK_MODULE.has_active_query():
             raise RuntimeError("Structured Streaming no quedó activo.")
-        _notify_stage_status(run_id, "Spark")
+        _notify_stage_status(run_id, "Spark_success")
     except Exception as error:
         with _MANAGER_LOCK:
             _SPARK_STARTED_RUNS.discard(run_id)
         functions.append_console_log(
             run_id,
             "controller",
-            f"Python | error al iniciar Spark tras confirmar Kafka | {error}",
+            f"Python | ERROR Spark | causa={error}",
         )
         fail_active_run(str(error))
 
-def _notify_stage_status(run_id: str, stage: str) -> None:
+def _notify_stage_status(
+    run_id: str,
+    stage: str,
+    error: str | None = None,
+) -> None:
     """Registro una sola confirmación real de una etapa por RUN."""
 
     notification = (run_id, stage)
@@ -320,15 +332,21 @@ def _notify_stage_status(run_id: str, stage: str) -> None:
             return
         _STAGE_NOTIFICATIONS.add(notification)
     messages = {
-        "Pandas": "Python | Pandas iniciado correctamente",
-        "PostgreSQL": (
-            "Python | PostgreSQL iniciado correctamente; persistencia en curso"
-        ),
-        "Spark": "Python | Spark iniciado correctamente",
+        "Pandas_error": "Python | ERROR Pandas | causa={error}",
+        "Pandas_start": "Python | iniciando Pandas",
+        "Pandas_success": "Python | Pandas iniciado correctamente",
+        "PostgreSQL_error": "Python | ERROR PostgreSQL | causa={error}",
+        "PostgreSQL_start": "Python | iniciando PostgreSQL",
+        "PostgreSQL_success": "Python | PostgreSQL iniciado correctamente",
+        "Spark_success": "Python | Spark iniciado correctamente",
     }
     message = messages.get(stage)
     if message is not None:
-        functions.append_console_log(run_id, "controller", message)
+        functions.append_console_log(
+            run_id,
+            "controller",
+            message.format(error=error or "causa no especificada"),
+        )
 
 def release_active_pipeline(run_id: str) -> bool:
     """Habilito el primer lote cuando las consultas del RUN están preparadas."""
@@ -572,7 +590,7 @@ def start_run(
             functions.append_console_log(
                 run_id,
                 "controller",
-                "Python | solicitando inicialización de Alpaca",
+                "Python | iniciando Alpaca",
             )
             _ACTIVE_SERVICE = streaming_module.AlpacaStreamingService(
                 api_key,
@@ -597,15 +615,12 @@ def start_run(
             raise RuntimeError(
                 "El identificador del RUN ya existe; esperá un segundo y volvé a iniciar."
             ) from error
-        functions.append_console_log(
-            run_id, "controller", "Python | servicio Alpaca preparado"
-        )
         setattr(builtins, _ACTIVE_SERVICE_REGISTRY_KEY, _ACTIVE_SERVICE)
         _ACTIVE_SERVICE.start()
         functions.append_console_log(
             run_id,
             "controller",
-            "Python | servicio Alpaca iniciado | descarga en curso",
+            "Python | Alpaca iniciado correctamente",
         )
         supervisor_thread = threading.Thread(
             target=_supervise_heartbeat,
@@ -614,18 +629,7 @@ def start_run(
             name=f"controller-supervisor-{run_id}",
         )
         supervisor_thread.start()
-        functions.append_console_log(
-            run_id,
-            "controller",
-            "Python | supervisor de heartbeat iniciado | límite=15 min",
-        )
-        functions.append_console_log(
-            run_id, "controller", "Python | preparando publicación de eventos en Kafka"
-        )
         _KAFKA_MODULE.initialize_run(run_id)
-        functions.append_console_log(
-            run_id, "controller", "Python | publicación Kafka preparada"
-        )
         return _ACTIVE_SERVICE
 
 def stop_active_run(end_reason: str) -> None:

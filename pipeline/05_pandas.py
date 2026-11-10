@@ -41,6 +41,8 @@ def analyze(
             new_paths = [path for path in batch_paths if path.name not in known_batches]
         if not new_paths:
             return state["analysis"]
+        if _STATUS_CALLBACK is not None:
+            _STATUS_CALLBACK(run_id, "Pandas_start")
         frame = (
             pd.read_parquet(new_paths[0])
             if len(new_paths) == 1
@@ -64,7 +66,7 @@ def analyze(
         }
         state["analysis"] = analysis
         if _STATUS_CALLBACK is not None:
-            _STATUS_CALLBACK(run_id, "Pandas")
+            _STATUS_CALLBACK(run_id, "Pandas_success")
         state["batches"].update(path.name for path in new_paths)
         functions.append_console_log(
             run_id,
@@ -79,6 +81,8 @@ def analyze(
         return analysis
     except (OSError, TypeError, ValueError) as error:
         _ANALYSIS_STATES.pop(run_id, None)
+        if _STATUS_CALLBACK is not None:
+            _STATUS_CALLBACK(run_id, "Pandas_error", str(error))
         functions.append_console_log(
             run_id,
             "pandas",

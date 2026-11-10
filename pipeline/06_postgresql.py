@@ -37,6 +37,8 @@ def analyze_and_persist(
                 "ERROR | persistencia=análisis Pandas no disponible",
             )
             return False
+        if _STATUS_CALLBACK is not None:
+            _STATUS_CALLBACK(run_id, "PostgreSQL_start")
         with database.get_postgresql_connection() as connection:
             database.ensure_tables(connection)
             persistence_counts = database.persist_analysis(
@@ -67,7 +69,7 @@ def analyze_and_persist(
                 )
                 return True
         if _STATUS_CALLBACK is not None:
-            _STATUS_CALLBACK(run_id, "PostgreSQL")
+            _STATUS_CALLBACK(run_id, "PostgreSQL_success")
         previous_counts = functions.get_postgresql_counters(
             functions.DATA_DIRECTORY / "runs" / f"{run_id}_06_postgresql_log.txt"
         )
@@ -81,6 +83,8 @@ def analyze_and_persist(
         )
         return True
     except (OSError, TypeError, ValueError, psycopg.Error) as error:
+        if _STATUS_CALLBACK is not None:
+            _STATUS_CALLBACK(run_id, "PostgreSQL_error", str(error))
         functions.append_console_log(
             run_id,
             "postgresql",
