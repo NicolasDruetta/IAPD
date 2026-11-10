@@ -39,11 +39,33 @@ def analyze_and_persist(
                 analysis["activity"],
                 analysis["activity_interval"],
             )
-        functions.append_console_log(
-            run_id,
-            "postgresql",
-            f"POSTGRES | persistencia confirmada | run_id={run_id} | métricas={len(analysis['metrics'])} | respuestas={len(analysis['answers'])}",
+        postgresql_log_path = (
+            functions.DATA_DIRECTORY
+            / "runs"
+            / f"{run_id}_06_postgresql_log.txt"
         )
+        postgresql_log_lines, _, _ = functions.read_console_tail(
+            postgresql_log_path,
+            1000,
+        )
+        if not any(
+            "POSTGRES | inicialización confirmada" in line
+            for line in postgresql_log_lines
+        ):
+            functions.append_console_log(
+                run_id,
+                "postgresql",
+                f"POSTGRES | inicialización confirmada | run_id={run_id} | conexión y tablas disponibles",
+            )
+        if not any(
+            "POSTGRES | persistencia confirmada" in line
+            for line in postgresql_log_lines
+        ):
+            functions.append_console_log(
+                run_id,
+                "postgresql",
+                f"POSTGRES | persistencia confirmada | run_id={run_id} | resultados_enviados={len(analysis['metrics'])} | respuestas_enviadas={len(analysis['answers'])}",
+            )
         return True
     except (OSError, TypeError, ValueError, psycopg.Error) as error:
         functions.append_console_log(

@@ -13,6 +13,8 @@ from types import ModuleType
 from typing import Any
 from zoneinfo import ZoneInfo
 
+### Configuraciones.
+
 DATA_DIRECTORY = Path(__file__).parent.parent / "data"
 PRESENTATION_TIMEZONE = ZoneInfo("America/Argentina/Cordoba")
 SHOW_STOP_DEBUG = False
@@ -34,6 +36,8 @@ SYMBOL_OPTIONS = {
         "ranking": "volume",
     },
 }
+
+### Componentes.
 
 CONSOLE_ARROW_COMPONENT = st.components.v2.component(
     name="apache_big_data_lab.console_arrow",
@@ -250,48 +254,14 @@ SYSTEM_THEME_COMPONENT = st.components.v2.component(
     """,
 )
 
-def get_console_state(console_id: str, run_id: str | None) -> dict[str, Any]:
-    """Mantengo el contador visual independiente de cada consola y RUN."""
+### Renders primarios (main).
 
-    key = run_id or "empty"
-    state = st.session_state.console_states.setdefault(console_id, {})
-    if state.get("run_key") != key:
-        state.clear()
-        state.update({"run_key": key, "line_number": 0})
-    return state
+def load_custom_css() -> None:
+    """Cargo los estilos visuales administrados en el archivo del proyecto."""
 
-def get_last_execution_notice(snapshot: dict[str, Any]) -> str | None:
-    """Construyo el aviso visible de la última ejecución terminada."""
-
-    if (
-        not snapshot.get("run_id")
-        or snapshot.get("is_active")
-        or st.session_state.start_pending
-        or st.session_state.stop_pending
-    ):
-        return None
-    last_execution_at = snapshot.get("ended_at") or snapshot.get("started_at")
-    last_execution_text = (
-        format_presentation_timestamp(last_execution_at)
-        if last_execution_at
-        else "-"
-    )
-    elapsed_text = format_elapsed_time(
-        snapshot.get("started_at"),
-        snapshot.get("ended_at"),
-    )
-    history_market_date = snapshot.get("historical_date") or "-"
-    history_run_id = snapshot.get("run_id") or "-"
-    completion_text = {
-        "Completado": "Finalizado correctamente.",
-        "Error": "Finalizado con error.",
-    }.get(snapshot.get("status"), f"{snapshot.get('status')}.")
-    if (
-        snapshot.get("status") == "Detenido"
-        and snapshot.get("end_reason") == "manual_stop"
-    ):
-        completion_text = "Detenido manualmente."
-    return f"Datos de la **última ejecución:** {last_execution_text}. **Duración:** {elapsed_text}. **{completion_text}** | **Fecha de mercado:** {history_market_date}. | **RUN ID:** {history_run_id}."
+    css_path = Path(__file__).parent.parent / "assets" / "custom.css"
+    css_content = css_path.read_text(encoding="utf-8")
+    st.markdown(f"<style>{css_content}</style>", unsafe_allow_html=True)
 
 def initialize_state(system_theme: dict[str, Any] | None = None) -> None:
     """Creo el estado para conservar referencias visuales del RUN."""
@@ -332,76 +302,6 @@ def initialize_state(system_theme: dict[str, Any] | None = None) -> None:
         st.session_state.last_stop_debug = []
     if "console_states" not in st.session_state:
         st.session_state.console_states = {}
-
-def load_custom_css() -> None:
-    """Cargo los estilos visuales administrados en el archivo del proyecto."""
-
-    css_path = Path(__file__).parent.parent / "assets" / "custom.css"
-    css_content = css_path.read_text(encoding="utf-8")
-    st.markdown(f"<style>{css_content}</style>", unsafe_allow_html=True)
-
-def render_live_indicator(title: str, key: str) -> None:
-    """Muestro LIVE únicamente durante una ejecución activa."""
-
-    controller_module = load_page_module("01_python_controller")
-    snapshot = controller_module.get_run_snapshot()
-    is_active = bool(
-        snapshot.get("is_active")
-        and not st.session_state.start_pending
-        and not st.session_state.stop_pending
-        and not st.session_state.manual_stop_status
-    )
-    LIVE_INDICATOR_COMPONENT(
-        data={"active": is_active, "title": title},
-        key=key,
-    )
-
-def _refresh_heartbeat_display(component_key: str) -> None:
-    """Renuevo el heartbeat y actualizo su instante real en la interfaz."""
-
-    heartbeat_text = "-"
-    heartbeat_debug = "-"
-    active = False
-    if st.session_state.get("stop_pending"):
-        HEARTBEAT_REFRESH_COMPONENT(
-            data={"active": False, "text": heartbeat_text, "debug": heartbeat_debug},
-            key=component_key,
-        )
-        return
-    controller_module = load_page_module("01_python_controller")
-    service = controller_module.get_active_service()
-    if service is not None and service.is_active():
-        active = True
-        run_id = service.get_snapshot().get("run_id")
-    else:
-        run_id = None
-    if run_id:
-        if register_heartbeat_for_display(controller_module, run_id):
-            service_snapshot = service.get_snapshot()
-            heartbeat_text = format_presentation_timestamp(
-                service_snapshot.get("last_heartbeat"),
-            ).split()[-1]
-            heartbeat_debug = (
-                f"Heartbeat ID: {service_snapshot.get('heartbeat_id', '-')} | "
-                f"Sesión actual: {controller_module.get_heartbeat_session_id()} | "
-                f"Última sesión: {service_snapshot.get('last_heartbeat_session_id') or '-'} | "
-                f"Heartbeats: {service_snapshot.get('heartbeat_count', 0)}"
-            )
-    HEARTBEAT_REFRESH_COMPONENT(
-        data={"active": active, "text": heartbeat_text, "debug": heartbeat_debug},
-        key=component_key,
-    )
-
-def render_heartbeat() -> None:
-    """Renuevo la actividad del RUN mientras el navegador mantiene la sesión."""
-
-    _refresh_heartbeat_display("heartbeat-refresh-header")
-
-def register_heartbeat_for_display(controller_module: Any, run_id: str) -> bool:
-    """Registro el heartbeat y conservo su instante para mostrarlo en pantalla."""
-
-    registered = controller_module.register_heartbeat(run_id)
-    return registered
 
 def render_header() -> None:
     """Muestro el encabezado general del laboratorio."""
@@ -468,9 +368,6 @@ def render_config() -> None:
     active_run_id = snapshot["run_id"] if snapshot["is_active"] else None
     if st.session_state.alpaca_run_id is None and active_run_id is not None:
         st.session_state.alpaca_run_id = active_run_id
-    if active_run_id is not None and not st.session_state.stop_pending:
-        register_heartbeat_for_display(controller_module, active_run_id)
-        snapshot = controller_module.get_run_snapshot()
     pending_stop_operation = st.session_state.stop_operation
     if (
         st.session_state.stop_pending
@@ -621,6 +518,7 @@ def render_config() -> None:
                         st.session_state.alpaca_run_id = run_id
                         register_heartbeat_for_display(controller_module, run_id)
                         controller_module.start_pipeline(run_id)
+                        st.session_state.controller_log_animation_run_id = run_id
                         st.session_state.start_pending = False
                         st.session_state.start_operation = None
                         snapshot = controller_module.get_run_snapshot()
@@ -843,18 +741,6 @@ def render_consoles_part1() -> None:
 
     _refresh_heartbeat_display("heartbeat-refresh-console")
     with st.container(key="consoles-part1"):
-        (
-            clear_consoles,
-            run_id,
-            execution_path,
-            alpaca_path,
-            kafka_path,
-            spark_path,
-            _pandas_path,
-            _postgresql_path,
-            is_active,
-        ) = _get_consoles_context()
-
         execution_column, alpaca_column = st.columns(
             2,
             gap="small",
@@ -862,134 +748,9 @@ def render_consoles_part1() -> None:
             wrap=True,
         )
         with execution_column:
-            with st.container(
-                horizontal=True,
-                vertical_alignment="center",
-                gap="small",
-            ):
-                st.subheader("1. Log del controlador (Python)", width="content")
-                render_live_indicator(
-                    "1. Log del controlador (Python)",
-                    "live-controller-log",
-                )
-            execution_state = get_console_state(
-                "execution-log-console",
-                run_id,
-            )
-            log_lines, _, _, _, _ = (
-                get_console_buffer_view(
-                    run_id,
-                    "controller",
-                    execution_path,
-                    execution_state,
-                    clear_consoles,
-                )
-            )
-            log_display_lines = [
-                format_presentation_log_line(line)
-                for line in log_lines
-            ]
-            is_placeholder = (
-                not log_display_lines
-                and execution_state["line_number"] == 0
-            )
-            if is_placeholder:
-                log_display_lines = [
-                    "Python | esperando actividad."
-                ]
-            with st.container(
-                horizontal=True,
-                horizontal_alignment="distribute",
-                vertical_alignment="center",
-            ):
-                st.caption(
-                    f"Eventos recibidos: **{execution_state['line_number']}**."
-                )
-                st.download_button(
-                    "↓",
-                    data=execution_path.read_bytes()
-                    if execution_path is not None and execution_path.exists()
-                    else b"",
-                    file_name=(
-                        execution_path.name
-                        if execution_path is not None
-                        else "01_python_controller_log.txt"
-                    ),
-                    mime="text/plain",
-                    key=f"download-execution-log-console-{run_id or 'no-run'}",
-                    help="Descargar log completo",
-                    type="secondary",
-                    width=36,
-                )
-            render_log_console(log_display_lines, "execution-log-console")
+            render_controller_console()
         with alpaca_column:
-            with st.container(
-                horizontal=True,
-                vertical_alignment="center",
-                gap="small",
-            ):
-                st.subheader("2. Log de descarga (Alpaca)", width="content")
-                if (
-                    is_active
-                    and alpaca_path is not None
-                    and alpaca_path.exists()
-                    and alpaca_path.stat().st_size
-                ):
-                    CONSOLE_ARROW_COMPONENT(
-                        key="console-arrow-alpaca",
-                        width="stretch",
-                    )
-            alpaca_state = get_console_state(
-                "alpaca-log-console",
-                run_id,
-            )
-            events, _, _, _, _ = (
-                get_console_buffer_view(
-                    run_id,
-                    "alpaca",
-                    alpaca_path,
-                    alpaca_state,
-                    clear_consoles,
-                )
-            )
-            event_lines = [
-                format_presentation_log_line(line)
-                for line in events
-            ]
-            has_event_lines = bool(event_lines)
-            is_placeholder = (
-                not event_lines
-                and alpaca_state["line_number"] == 0
-            )
-            if is_placeholder:
-                event_lines = [
-                    "Alpaca | esperando cotizaciones y operaciones."
-                ]
-            with st.container(
-                horizontal=True,
-                horizontal_alignment="distribute",
-                vertical_alignment="center",
-            ):
-                st.caption(
-                    f"Datos descargados: **{alpaca_state['line_number']}**."
-                )
-                st.download_button(
-                    "↓",
-                    data=alpaca_path.read_bytes()
-                    if alpaca_path is not None and alpaca_path.exists()
-                    else b"",
-                    file_name=(
-                        alpaca_path.name
-                        if alpaca_path is not None
-                        else "02_alpaca_stream_log.txt"
-                    ),
-                    mime="text/plain",
-                    key=f"download-alpaca-log-console-{run_id or 'no-run'}",
-                    help="Descargar log completo",
-                    type="secondary",
-                    width=36,
-                )
-            render_log_console(event_lines, "alpaca-log-console")
+            render_alpaca_console()
         kafka_column, spark_column = st.columns(
             2,
             gap="small",
@@ -997,144 +758,14 @@ def render_consoles_part1() -> None:
             wrap=True,
         )
         with kafka_column:
-            with st.container(
-                horizontal=True,
-                vertical_alignment="center",
-                gap="small",
-            ):
-                st.subheader("3. Log de publicación (Kafka)", width="content")
-                if (
-                    is_active
-                    and kafka_path is not None
-                    and kafka_path.exists()
-                    and kafka_path.stat().st_size
-                ):
-                    CONSOLE_ARROW_COMPONENT(
-                        key="console-arrow-kafka",
-                        width="stretch",
-                    )
-            kafka_state = get_console_state("kafka-log-console", run_id)
-            kafka_records, _, _, _, _ = (
-                get_console_buffer_view(
-                    run_id,
-                    "kafka",
-                    kafka_path,
-                    kafka_state,
-                    clear_consoles,
-                )
-            )
-            kafka_lines = [
-                format_presentation_log_line(line)
-                for line in kafka_records
-            ]
-            is_placeholder = not kafka_lines and kafka_state["line_number"] == 0
-            if is_placeholder:
-                kafka_lines = ["Kafka | esperando datos para publicar."]
-            with st.container(
-                horizontal=True,
-                horizontal_alignment="distribute",
-                vertical_alignment="center",
-            ):
-                st.caption(
-                    f"Eventos recibidos: **{kafka_state['line_number']}**. "
-                    f"Datos procesados: **{functions.count_processed_data(kafka_path, 'kafka')}**."
-                )
-                st.download_button(
-                    "↓",
-                    data=kafka_path.read_bytes()
-                    if kafka_path is not None and kafka_path.exists()
-                    else b"",
-                    file_name=(
-                        kafka_path.name
-                        if kafka_path is not None
-                        else "03_apache_kafka_log.txt"
-                    ),
-                    mime="text/plain",
-                    key=f"download-kafka-log-console-{run_id or 'no-run'}",
-                    help="Descargar log completo",
-                    type="secondary",
-                    width=36,
-                )
-            render_log_console(kafka_lines, "kafka-log-console")
+            render_kafka_console()
         with spark_column:
-            with st.container(
-                horizontal=True,
-                vertical_alignment="center",
-                gap="small",
-            ):
-                st.subheader("4. Log de procesamiento (Spark)", width="content")
-                if (
-                    is_active
-                    and spark_path is not None
-                    and spark_path.exists()
-                    and spark_path.stat().st_size
-                ):
-                    CONSOLE_ARROW_COMPONENT(
-                        key="console-arrow-spark",
-                        width="stretch",
-                    )
-            spark_state = get_console_state("spark-log-console", run_id)
-            spark_records, _, _, _, _ = (
-                get_console_buffer_view(
-                    run_id,
-                    "spark",
-                    spark_path,
-                    spark_state,
-                    clear_consoles,
-                )
-            )
-            spark_lines = [format_presentation_log_line(line) for line in spark_records]
-            is_placeholder = not spark_lines and spark_state["line_number"] == 0
-            if is_placeholder:
-                spark_lines = ["Spark | esperando datos para procesar."]
-            with st.container(
-                horizontal=True,
-                horizontal_alignment="distribute",
-                vertical_alignment="center",
-            ):
-                st.caption(
-                    f"Eventos recibidos: **{spark_state['line_number']}**. "
-                    f"Datos procesados: **{functions.count_processed_data(spark_path, 'spark')}**."
-                )
-                st.download_button(
-                    "↓",
-                    data=spark_path.read_bytes()
-                    if spark_path is not None and spark_path.exists()
-                    else b"",
-                    file_name=(
-                        spark_path.name
-                        if spark_path is not None
-                        else "04_apache_spark_log.txt"
-                    ),
-                    mime="text/plain",
-                    key=f"download-spark-log-console-{run_id or 'no-run'}",
-                    help="Descargar log completo",
-                    type="secondary",
-                    width=36,
-                )
-            render_log_console(spark_lines, "spark-log-console")
-            st.caption(
-                "**[Spark Master ↗](http://localhost:8080/)** &nbsp;-&nbsp; "
-                "**[Worker 1 ↗](http://localhost:8081/)** &nbsp;-&nbsp; "
-                "**[Worker 2 ↗](http://localhost:8082/)** &nbsp;-&nbsp; "
-                "**[Spark Jobs ↗](http://localhost:4040/)** "
-            )
+            render_spark_console()
 
 def render_consoles_part2() -> None:
     """Muestro las consolas de análisis y persistencia del pipeline."""
 
     with st.container(key="consoles-part2"):
-        (
-            clear_consoles,
-            run_id,
-            execution_path,
-            alpaca_path,
-            kafka_path,
-            spark_path,
-            pandas_path,
-            postgresql_path,
-            is_active,
-        ) = _get_consoles_context()
         pandas_column, postgresql_column = st.columns(
             2,
             gap="small",
@@ -1142,128 +773,9 @@ def render_consoles_part2() -> None:
             wrap=True,
         )
         with pandas_column:
-            with st.container(
-                horizontal=True,
-                vertical_alignment="center",
-                gap="small",
-            ):
-                st.subheader("5. Log de análisis (Pandas)", width="content")
-                if (
-                    is_active
-                    and pandas_path is not None
-                    and pandas_path.exists()
-                    and pandas_path.stat().st_size
-                ):
-                    CONSOLE_ARROW_COMPONENT(
-                        key="console-arrow-pandas",
-                        width="stretch",
-                    )
-            pandas_state = get_console_state(
-                "pandas-log-console",
-                run_id,
-            )
-            pandas_records, _, _, _, _ = (
-                get_console_buffer_view(
-                    run_id,
-                    "pandas",
-                    pandas_path,
-                    pandas_state,
-                    clear_consoles,
-                )
-            )
-            pandas_lines = [
-                format_presentation_log_line(line)
-                for line in pandas_records
-            ]
-            is_placeholder = not pandas_lines and pandas_state["line_number"] == 0
-            if is_placeholder:
-                pandas_lines = ["Pandas | esperando datos para analizar."]
-            with st.container(
-                horizontal=True,
-                horizontal_alignment="distribute",
-                vertical_alignment="center",
-            ):
-                st.caption(
-                    f"Eventos recibidos: **{pandas_state['line_number']}**. "
-                    f"Datos procesados: **{functions.count_processed_data(pandas_path, 'pandas')}**."
-                )
-                st.download_button(
-                    "↓",
-                    data=pandas_path.read_bytes()
-                    if pandas_path is not None and pandas_path.exists()
-                    else b"",
-                    file_name=(
-                        pandas_path.name
-                        if pandas_path is not None
-                        else "05_pandas_log.txt"
-                    ),
-                    mime="text/plain",
-                    key=f"download-pandas-log-console-{run_id or 'no-run'}",
-                    help="Descargar log completo",
-                    type="secondary",
-                    width=36,
-                )
-            render_log_console(pandas_lines, "pandas-log-console")
+            render_pandas_console()
         with postgresql_column:
-            with st.container(
-                horizontal=True,
-                vertical_alignment="center",
-                gap="small",
-            ):
-                st.subheader("6. Log de persistencia (PostgreSQL)", width="content")
-            postgresql_state = get_console_state(
-                "postgresql-log-console",
-                run_id,
-            )
-            postgresql_records, _, _, _, _ = (
-                get_console_buffer_view(
-                    run_id,
-                    "postgresql",
-                    postgresql_path,
-                    postgresql_state,
-                    clear_consoles,
-                )
-            )
-            postgresql_lines = [
-                format_presentation_log_line(line)
-                for line in postgresql_records
-            ]
-            is_placeholder = (
-                not postgresql_lines
-                and postgresql_state["line_number"] == 0
-            )
-            if is_placeholder:
-                postgresql_lines = [
-                    "PostgreSQL | esperando datos para guardar en la base."
-                ]
-            with st.container(
-                horizontal=True,
-                horizontal_alignment="distribute",
-                vertical_alignment="center",
-            ):
-                st.caption(
-                    f"Eventos recibidos: **{postgresql_state['line_number']}**. "
-                    f"Datos procesados: **{functions.count_processed_data(postgresql_path, 'postgresql')}**."
-                )
-                st.download_button(
-                    "↓",
-                    data=postgresql_path.read_bytes()
-                    if postgresql_path is not None and postgresql_path.exists()
-                    else b"",
-                    file_name=(
-                        postgresql_path.name
-                        if postgresql_path is not None
-                        else "06_postgresql_log.txt"
-                    ),
-                    mime="text/plain",
-                    key=f"download-postgresql-log-console-{run_id or 'no-run'}",
-                    help="Descargar log completo",
-                    type="secondary",
-                    width=36,
-                )
-            render_log_console(postgresql_lines, "postgresql-log-console")
-        if clear_consoles:
-            st.session_state.start_requested = False
+            render_postgresql_console()
 
 def render_info() -> None:
     """Muestro la información de la última ejecución."""
@@ -1468,13 +980,218 @@ def render_footer() -> None:
         st.caption("Materia: Procesamiento de Datos, TP2. Autor: Nicolás Druetta. Año: 2026.")
         st.markdown("[Volver arriba ↑](#top)")
 
-render_heartbeat = st.fragment(render_heartbeat, run_every="5s")
-render_config = st.fragment(render_config, run_every="5s")
-render_consoles_part1 = st.fragment(render_consoles_part1, run_every="5s")
-render_consoles_part2 = st.fragment(render_consoles_part2, run_every="5s")
-render_info = st.fragment(render_info, run_every="5s")
-render_questions = st.fragment(render_questions, run_every="5s")
-render_charts = st.fragment(render_charts, run_every="5s")
+### Renders secundarios (hijos).
+
+def render_heartbeat() -> None:
+    """Renuevo la actividad del RUN mientras el navegador mantiene la sesión."""
+
+    _refresh_heartbeat_display("heartbeat-refresh-header", register=True)
+
+def render_controller_console() -> None:
+    """Muestro la consola del Controller."""
+
+    clear_consoles, run_id, execution_path, _, _, _, _, _, _ = _get_consoles_context()
+    with st.container(horizontal=True, vertical_alignment="center", gap="small"):
+        st.subheader("1. Log del controlador (Python)", width="content")
+        render_live_indicator("1. Log del controlador (Python)", "live-controller-log")
+    execution_state = get_console_state("execution-log-console", run_id)
+    log_lines, _, total_lines, _, _ = get_console_buffer_view(
+        run_id, "controller", execution_path, execution_state, clear_consoles
+    )
+    if clear_consoles:
+        execution_state["display_line_number"] = 0
+    elif "display_line_number" not in execution_state:
+        execution_state["display_line_number"] = (
+            0
+            if st.session_state.get("controller_log_animation_run_id") == run_id
+            else total_lines
+        )
+    if execution_state["display_line_number"] < total_lines:
+        execution_state["display_line_number"] += 1
+    log_display_lines = [
+        format_presentation_log_line(line)
+        for line in log_lines[:min(execution_state["display_line_number"], len(log_lines))]
+    ]
+    if not log_display_lines and execution_state["line_number"] == 0:
+        log_display_lines = ["Python | esperando actividad."]
+    with st.container(horizontal=True, horizontal_alignment="distribute", vertical_alignment="center"):
+        st.caption(f"Eventos recibidos: **{execution_state['line_number']}**.")
+        st.download_button(
+            "↓",
+            data=execution_path.read_bytes() if execution_path is not None and execution_path.exists() else b"",
+            file_name=execution_path.name if execution_path is not None else "01_python_controller_log.txt",
+            mime="text/plain",
+            key=f"download-execution-log-console-{run_id or 'no-run'}",
+            help="Descargar log completo",
+            type="secondary",
+            width=36,
+        )
+    render_log_console(log_display_lines, "execution-log-console")
+
+def render_alpaca_console() -> None:
+    """Muestro la consola de descarga de Alpaca."""
+
+    clear_consoles, run_id, _, alpaca_path, _, _, _, _, is_active = _get_consoles_context()
+    with st.container(horizontal=True, vertical_alignment="center", gap="small"):
+        st.subheader("2. Log de descarga (Alpaca)", width="content")
+        if is_active and alpaca_path is not None and alpaca_path.exists() and alpaca_path.stat().st_size:
+            CONSOLE_ARROW_COMPONENT(key="console-arrow-alpaca", width="stretch")
+    alpaca_state = get_console_state("alpaca-log-console", run_id)
+    events, _, _, _, _ = get_console_buffer_view(
+        run_id, "alpaca", alpaca_path, alpaca_state, clear_consoles
+    )
+    event_lines = [format_presentation_log_line(line) for line in events]
+    if not event_lines and alpaca_state["line_number"] == 0:
+        event_lines = ["Alpaca | esperando cotizaciones y operaciones."]
+    with st.container(horizontal=True, horizontal_alignment="distribute", vertical_alignment="center"):
+        st.caption(f"Datos descargados: **{alpaca_state['line_number']}**.")
+        st.download_button(
+            "↓",
+            data=alpaca_path.read_bytes() if alpaca_path is not None and alpaca_path.exists() else b"",
+            file_name=alpaca_path.name if alpaca_path is not None else "02_alpaca_stream_log.txt",
+            mime="text/plain",
+            key=f"download-alpaca-log-console-{run_id or 'no-run'}",
+            help="Descargar log completo",
+            type="secondary",
+            width=36,
+        )
+    render_log_console(event_lines, "alpaca-log-console")
+
+def render_kafka_console() -> None:
+    """Muestro la consola de publicación de Kafka."""
+
+    clear_consoles, run_id, _, _, kafka_path, _, _, _, is_active = _get_consoles_context()
+    with st.container(horizontal=True, vertical_alignment="center", gap="small"):
+        st.subheader("3. Log de publicación (Kafka)", width="content")
+        if is_active and kafka_path is not None and kafka_path.exists() and kafka_path.stat().st_size:
+            CONSOLE_ARROW_COMPONENT(key="console-arrow-kafka", width="stretch")
+    kafka_state = get_console_state("kafka-log-console", run_id)
+    kafka_records, _, _, _, _ = get_console_buffer_view(
+        run_id, "kafka", kafka_path, kafka_state, clear_consoles
+    )
+    kafka_lines = [format_presentation_log_line(line) for line in kafka_records]
+    if not kafka_lines and kafka_state["line_number"] == 0:
+        kafka_lines = ["Kafka | esperando datos para publicar."]
+    with st.container(horizontal=True, horizontal_alignment="distribute", vertical_alignment="center"):
+        st.caption(
+            f"Eventos recibidos: **{kafka_state['line_number']}**. "
+            f"Datos procesados: **{functions.count_processed_data(kafka_path, 'kafka')}**."
+        )
+        st.download_button(
+            "↓",
+            data=kafka_path.read_bytes() if kafka_path is not None and kafka_path.exists() else b"",
+            file_name=kafka_path.name if kafka_path is not None else "03_apache_kafka_log.txt",
+            mime="text/plain",
+            key=f"download-kafka-log-console-{run_id or 'no-run'}",
+            help="Descargar log completo",
+            type="secondary",
+            width=36,
+        )
+    render_log_console(kafka_lines, "kafka-log-console")
+
+def render_spark_console() -> None:
+    """Muestro la consola de procesamiento de Spark."""
+
+    clear_consoles, run_id, _, _, _, spark_path, _, _, is_active = _get_consoles_context()
+    with st.container(horizontal=True, vertical_alignment="center", gap="small"):
+        st.subheader("4. Log de procesamiento (Spark)", width="content")
+        if is_active and spark_path is not None and spark_path.exists() and spark_path.stat().st_size:
+            CONSOLE_ARROW_COMPONENT(key="console-arrow-spark", width="stretch")
+    spark_state = get_console_state("spark-log-console", run_id)
+    spark_records, _, _, _, _ = get_console_buffer_view(
+        run_id, "spark", spark_path, spark_state, clear_consoles
+    )
+    spark_lines = [format_presentation_log_line(line) for line in spark_records]
+    if not spark_lines and spark_state["line_number"] == 0:
+        spark_lines = ["Spark | esperando datos para procesar."]
+    with st.container(horizontal=True, horizontal_alignment="distribute", vertical_alignment="center"):
+        st.caption(
+            f"Eventos recibidos: **{spark_state['line_number']}**. "
+            f"Datos procesados: **{functions.count_processed_data(spark_path, 'spark')}**."
+        )
+        st.download_button(
+            "↓",
+            data=spark_path.read_bytes() if spark_path is not None and spark_path.exists() else b"",
+            file_name=spark_path.name if spark_path is not None else "04_apache_spark_log.txt",
+            mime="text/plain",
+            key=f"download-spark-log-console-{run_id or 'no-run'}",
+            help="Descargar log completo",
+            type="secondary",
+            width=36,
+        )
+    render_log_console(spark_lines, "spark-log-console")
+    st.caption(
+        "**[Spark Master ↗](http://localhost:8080/)** &nbsp;-&nbsp; "
+        "**[Worker 1 ↗](http://localhost:8081/)** &nbsp;-&nbsp; "
+        "**[Worker 2 ↗](http://localhost:8082/)** &nbsp;-&nbsp; "
+        "**[Spark Jobs ↗](http://localhost:4040/)** "
+    )
+
+def render_pandas_console() -> None:
+    """Muestro la consola de análisis de Pandas."""
+
+    clear_consoles, run_id, _, _, _, _, pandas_path, _, is_active = _get_consoles_context()
+    with st.container(horizontal=True, vertical_alignment="center", gap="small"):
+        st.subheader("5. Log de análisis (Pandas)", width="content")
+        if is_active and pandas_path is not None and pandas_path.exists() and pandas_path.stat().st_size:
+            CONSOLE_ARROW_COMPONENT(key="console-arrow-pandas", width="stretch")
+    pandas_state = get_console_state("pandas-log-console", run_id)
+    pandas_records, _, _, _, _ = get_console_buffer_view(
+        run_id, "pandas", pandas_path, pandas_state, clear_consoles
+    )
+    pandas_lines = [format_presentation_log_line(line) for line in pandas_records]
+    if not pandas_lines and pandas_state["line_number"] == 0:
+        pandas_lines = ["Pandas | esperando datos para analizar."]
+    with st.container(horizontal=True, horizontal_alignment="distribute", vertical_alignment="center"):
+        st.caption(
+            f"Eventos recibidos: **{pandas_state['line_number']}**. "
+            f"Datos procesados: **{functions.count_processed_data(pandas_path, 'pandas')}**."
+        )
+        st.download_button(
+            "↓",
+            data=pandas_path.read_bytes() if pandas_path is not None and pandas_path.exists() else b"",
+            file_name=pandas_path.name if pandas_path is not None else "05_pandas_log.txt",
+            mime="text/plain",
+            key=f"download-pandas-log-console-{run_id or 'no-run'}",
+            help="Descargar log completo",
+            type="secondary",
+            width=36,
+        )
+    render_log_console(pandas_lines, "pandas-log-console")
+
+def render_postgresql_console() -> None:
+    """Muestro la consola de persistencia de PostgreSQL."""
+
+    clear_consoles, run_id, _, _, _, _, _, postgresql_path, _ = _get_consoles_context()
+    with st.container(horizontal=True, vertical_alignment="center", gap="small"):
+        st.subheader("6. Log de persistencia (PostgreSQL)", width="content")
+    postgresql_state = get_console_state("postgresql-log-console", run_id)
+    postgresql_records, _, _, _, _ = get_console_buffer_view(
+        run_id, "postgresql", postgresql_path, postgresql_state, clear_consoles
+    )
+    postgresql_lines = [format_presentation_log_line(line) for line in postgresql_records]
+    if not postgresql_lines and postgresql_state["line_number"] == 0:
+        postgresql_lines = ["PostgreSQL | esperando datos para guardar en la base."]
+    with st.container(horizontal=True, horizontal_alignment="distribute", vertical_alignment="center"):
+        st.caption(
+            f"Eventos recibidos: **{postgresql_state['line_number']}**. "
+            f"Datos procesados: **{functions.count_processed_data(postgresql_path, 'postgresql')}**."
+        )
+        st.download_button(
+            "↓",
+            data=postgresql_path.read_bytes() if postgresql_path is not None and postgresql_path.exists() else b"",
+            file_name=postgresql_path.name if postgresql_path is not None else "06_postgresql_log.txt",
+            mime="text/plain",
+            key=f"download-postgresql-log-console-{run_id or 'no-run'}",
+            help="Descargar log completo",
+            type="secondary",
+            width=36,
+        )
+    render_log_console(postgresql_lines, "postgresql-log-console")
+    if clear_consoles:
+        st.session_state.start_requested = False
+
+### Renders terciarios (otros).
 
 def describe_correlation(
     correlation: Any,
@@ -1528,17 +1245,219 @@ def describe_correlation(
         f"{direction_text}."
     )
 
-def render_log_console(
-    lines: list[str],
-    console_id: str,
-) -> None:
-    """Muestro y actualizo incrementalmente una consola de registros."""
+def format_elapsed_time(
+    started_at: str | None,
+    ended_at: str | None = None,
+) -> str:
+    """Formateo el tiempo transcurrido desde el inicio del RUN."""
 
-    LOG_CONSOLE_COMPONENT(
-        data={"lines": lines},
-        height=250,
-        key=console_id,
+    if not started_at:
+        return "00:00:00"
+    try:
+        started_timestamp = datetime.fromisoformat(
+            started_at.replace("Z", "+00:00")
+        )
+        end_timestamp = datetime.fromisoformat(
+            ended_at.replace("Z", "+00:00")
+        ) if ended_at else datetime.now(timezone.utc)
+    except ValueError:
+        return "00:00:00"
+    elapsed_seconds = max(
+        0,
+        int((end_timestamp - started_timestamp).total_seconds()),
     )
+    hours, remainder = divmod(elapsed_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+def format_presentation_log_line(line: str) -> str:
+    """Convierto la marca UTC de un log al horario del laboratorio."""
+
+    timestamp_text, separator, message = line.partition(" | ")
+    if not separator:
+        return line
+    timestamp = format_presentation_timestamp(
+        timestamp_text,
+        source_timezone=timezone.utc,
+    )
+    if timestamp == timestamp_text:
+        return line
+    return f"{timestamp} | {message}"
+
+def format_presentation_timestamp(
+    value: Any = None,
+    source_timezone: tzinfo | None = None,
+) -> str:
+    """Convierto un timestamp zonificado a la hora oficial del laboratorio."""
+
+    if value is None or value == "":
+        return "-"
+    if isinstance(value, datetime):
+        timestamp = value
+    else:
+        text = str(value).replace("Z", "+00:00")
+        try:
+            timestamp = datetime.fromisoformat(text)
+        except ValueError:
+            return str(value)
+    if timestamp.tzinfo is None:
+        if source_timezone is None:
+            return str(value)
+        timestamp = timestamp.replace(tzinfo=source_timezone)
+    return timestamp.astimezone(PRESENTATION_TIMEZONE).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+
+def get_console_buffer_view(
+    run_id: str | None,
+    console_name: str,
+    console_path: Path | None,
+    console_state: dict[str, Any],
+    clear_consoles: bool,
+) -> tuple[list[str], int, int, bool, bool]:
+    """Leo solamente los 200 últimos registros del TXT de cada consola."""
+
+    if clear_consoles or run_id is None or console_path is None:
+        console_state["line_number"] = 0
+        return [], 0, 0, True, False
+    lines, _, total = functions.read_console_tail(console_path, 200)
+    console_state["line_number"] = total
+    return lines, 0, total, True, False
+
+def get_console_state(console_id: str, run_id: str | None) -> dict[str, Any]:
+    """Mantengo el contador visual independiente de cada consola y RUN."""
+
+    key = run_id or "empty"
+    state = st.session_state.console_states.setdefault(console_id, {})
+    if state.get("run_key") != key:
+        state.clear()
+        state.update({"run_key": key, "line_number": 0})
+    return state
+
+def get_last_execution_notice(snapshot: dict[str, Any]) -> str | None:
+    """Construyo el aviso visible de la última ejecución terminada."""
+
+    if (
+        not snapshot.get("run_id")
+        or snapshot.get("is_active")
+        or st.session_state.start_pending
+        or st.session_state.stop_pending
+    ):
+        return None
+    last_execution_at = snapshot.get("ended_at") or snapshot.get("started_at")
+    last_execution_text = (
+        format_presentation_timestamp(last_execution_at)
+        if last_execution_at
+        else "-"
+    )
+    elapsed_text = format_elapsed_time(
+        snapshot.get("started_at"),
+        snapshot.get("ended_at"),
+    )
+    history_market_date = snapshot.get("historical_date") or "-"
+    history_run_id = snapshot.get("run_id") or "-"
+    completion_text = {
+        "Completado": "Finalizado correctamente.",
+        "Error": "Finalizado con error.",
+    }.get(snapshot.get("status"), f"{snapshot.get('status')}.")
+    if (
+        snapshot.get("status") == "Detenido"
+        and snapshot.get("end_reason") == "manual_stop"
+    ):
+        completion_text = "Detenido manualmente."
+    return f"Datos de la **última ejecución:** {last_execution_text}. **Duración:** {elapsed_text}. **{completion_text}** | **Fecha de mercado:** {history_market_date}. | **RUN ID:** {history_run_id}."
+
+def handle_start_error(
+    error: Exception,
+    controller_module: ModuleType,
+    spark_module: ModuleType,
+    run_id: str | None,
+) -> None:
+    """Finalizo el RUN y conservo el error visible tras un fallo de inicio."""
+
+    error_message = " ".join(str(error).split()) or error.__class__.__name__
+    if run_id is not None:
+        spark_module.stop_streaming(run_id, finalize=False)
+    controller_module.fail_active_run(error_message)
+    st.session_state.start_pending = False
+    st.session_state.start_operation = None
+    st.session_state.alpaca_run_id = None
+
+def load_page_module(module_name: str) -> ModuleType:
+    """Cargo un módulo de procesamiento sin construir su interfaz."""
+
+    module_path = Path(__file__).parent.parent / "pipeline" / f"{module_name}.py"
+    source_mtime_ns = module_path.stat().st_mtime_ns
+    cached_module = sys.modules.get(module_name)
+    if cached_module is not None:
+        cached_mtime_ns = getattr(
+            cached_module,
+            "_SOURCE_MTIME_NS",
+            None,
+        )
+        active_service = getattr(
+            cached_module,
+            "get_active_service",
+            lambda: None,
+        )()
+        if active_service is None and module_name == "02_alpaca_stream":
+            controller_module = sys.modules.get("01_python_controller")
+            active_service = getattr(
+                controller_module,
+                "get_active_service",
+                lambda: None,
+            )()
+        if (
+            cached_mtime_ns == source_mtime_ns
+            or (
+                active_service is not None
+                and active_service.is_active()
+            )
+            or (
+                module_name == "04_apache_spark"
+                and _has_active_spark_query(cached_module)
+            )
+        ):
+            return cached_module
+        sys.modules.pop(module_name, None)
+    spec = importlib.util.spec_from_file_location(
+        module_name, module_path
+    )
+    if spec is None or spec.loader is None:
+        raise ImportError("No se pudo cargar el módulo de Alpaca")
+    module = importlib.util.module_from_spec(spec)
+    module.DATA_DIRECTORY = DATA_DIRECTORY
+    module.PRESENTATION_TIMEZONE = PRESENTATION_TIMEZONE
+    module.format_presentation_timestamp = format_presentation_timestamp
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+        module._SOURCE_MTIME_NS = source_mtime_ns
+    except Exception:
+        sys.modules.pop(module_name, None)
+        raise
+    return module
+
+def mark_start_pending() -> None:
+    """Marco que el usuario acaba de solicitar el inicio."""
+
+    st.session_state.manual_stop_status = False
+    st.session_state.start_requested = True
+    st.session_state.start_pending = True
+    st.rerun()
+
+def mark_stop_pending() -> None:
+    """Envío STOP al servicio antes de que Streamlit vuelva a renderizar."""
+
+    st.session_state.stop_pending = True
+    controller_module = load_page_module("01_python_controller")
+    controller_module.request_stop_active_run("manual_stop")
+
+def register_heartbeat_for_display(controller_module: Any, run_id: str) -> bool:
+    """Registro el heartbeat y conservo su instante para mostrarlo en pantalla."""
+
+    registered = controller_module.register_heartbeat(run_id)
+    return registered
 
 def render_activity_chart(
     rows: list[dict[str, Any]],
@@ -1602,6 +1521,34 @@ def render_activity_chart(
     st.vega_lite_chart(
         spec=chart_spec,
         use_container_width=True,
+    )
+
+def render_live_indicator(title: str, key: str) -> None:
+    """Muestro LIVE únicamente durante una ejecución activa."""
+
+    controller_module = load_page_module("01_python_controller")
+    snapshot = controller_module.get_run_snapshot()
+    is_active = bool(
+        snapshot.get("is_active")
+        and not st.session_state.start_pending
+        and not st.session_state.stop_pending
+        and not st.session_state.manual_stop_status
+    )
+    LIVE_INDICATOR_COMPONENT(
+        data={"active": is_active, "title": title},
+        key=key,
+    )
+
+def render_log_console(
+    lines: list[str],
+    console_id: str,
+) -> None:
+    """Muestro y actualizo incrementalmente una consola de registros."""
+
+    LOG_CONSOLE_COMPONENT(
+        data={"lines": lines},
+        height=250,
+        key=console_id,
     )
 
 def render_volume_chart(rows: list[dict[str, Any]]) -> None:
@@ -1692,95 +1639,6 @@ def render_volume_chart(rows: list[dict[str, Any]]) -> None:
         use_container_width=True,
     )
 
-def load_page_module(module_name: str) -> ModuleType:
-    """Cargo un módulo de procesamiento sin construir su interfaz."""
-
-    module_path = Path(__file__).parent.parent / "pipeline" / f"{module_name}.py"
-    source_mtime_ns = module_path.stat().st_mtime_ns
-    cached_module = sys.modules.get(module_name)
-    if cached_module is not None:
-        cached_mtime_ns = getattr(
-            cached_module,
-            "_SOURCE_MTIME_NS",
-            None,
-        )
-        active_service = getattr(
-            cached_module,
-            "get_active_service",
-            lambda: None,
-        )()
-        if active_service is None and module_name == "02_alpaca_stream":
-            controller_module = sys.modules.get("01_python_controller")
-            active_service = getattr(
-                controller_module,
-                "get_active_service",
-                lambda: None,
-            )()
-        if (
-            cached_mtime_ns == source_mtime_ns
-            or (
-                active_service is not None
-                and active_service.is_active()
-            )
-            or (
-                module_name == "04_apache_spark"
-                and _has_active_spark_query(cached_module)
-            )
-        ):
-            return cached_module
-        sys.modules.pop(module_name, None)
-    spec = importlib.util.spec_from_file_location(
-        module_name, module_path
-    )
-    if spec is None or spec.loader is None:
-        raise ImportError("No se pudo cargar el módulo de Alpaca")
-    module = importlib.util.module_from_spec(spec)
-    module.DATA_DIRECTORY = DATA_DIRECTORY
-    module.PRESENTATION_TIMEZONE = PRESENTATION_TIMEZONE
-    module.format_presentation_timestamp = format_presentation_timestamp
-    sys.modules[module_name] = module
-    try:
-        spec.loader.exec_module(module)
-        module._SOURCE_MTIME_NS = source_mtime_ns
-    except Exception:
-        sys.modules.pop(module_name, None)
-        raise
-    return module
-
-def _has_active_spark_query(module: ModuleType) -> bool:
-    """Consulto Spark sin propagar errores de conexión a la interfaz."""
-
-    try:
-        return bool(
-            getattr(module, "has_active_query", lambda: False)()
-        )
-    except Exception:
-        return False
-
-def mark_start_pending() -> None:
-    """Marco que el usuario acaba de solicitar el inicio."""
-
-    st.session_state.manual_stop_status = False
-    st.session_state.start_requested = True
-    st.session_state.start_pending = True
-    st.rerun()
-
-def handle_start_error(
-    error: Exception,
-    controller_module: ModuleType,
-    spark_module: ModuleType,
-    run_id: str | None,
-) -> None:
-    """Finalizo el RUN y conservo el error visible tras un fallo de inicio."""
-
-    error_message = " ".join(str(error).split()) or error.__class__.__name__
-    if run_id is not None:
-        spark_module.stop_streaming(run_id, finalize=False)
-    controller_module.fail_active_run(error_message)
-    st.session_state.start_pending = False
-    st.session_state.start_operation = None
-    st.session_state.alpaca_run_id = None
-
 def start_run_in_background(
     operation: dict[str, Any],
     controller_module: ModuleType,
@@ -1842,92 +1700,6 @@ def stop_run_in_background(
         operation["debug"].append("STOP terminado")
         operation["done"] = True
 
-def mark_stop_pending() -> None:
-    """Envío STOP al servicio antes de que Streamlit vuelva a renderizar."""
-
-    st.session_state.stop_pending = True
-    controller_module = load_page_module("01_python_controller")
-    controller_module.request_stop_active_run("manual_stop")
-
-def get_console_buffer_view(
-    run_id: str | None,
-    console_name: str,
-    console_path: Path | None,
-    console_state: dict[str, Any],
-    clear_consoles: bool,
-) -> tuple[list[str], int, int, bool, bool]:
-    """Leo solamente los 200 últimos registros del TXT de cada consola."""
-
-    if clear_consoles or run_id is None or console_path is None:
-        console_state["line_number"] = 0
-        return [], 0, 0, True, False
-    lines, _, total = functions.read_console_tail(console_path, 200)
-    console_state["line_number"] = total
-    return lines, 0, total, True, False
-
-def format_elapsed_time(
-    started_at: str | None,
-    ended_at: str | None = None,
-) -> str:
-    """Formateo el tiempo transcurrido desde el inicio del RUN."""
-
-    if not started_at:
-        return "00:00:00"
-    try:
-        started_timestamp = datetime.fromisoformat(
-            started_at.replace("Z", "+00:00")
-        )
-        end_timestamp = datetime.fromisoformat(
-            ended_at.replace("Z", "+00:00")
-        ) if ended_at else datetime.now(timezone.utc)
-    except ValueError:
-        return "00:00:00"
-    elapsed_seconds = max(
-        0,
-        int((end_timestamp - started_timestamp).total_seconds()),
-    )
-    hours, remainder = divmod(elapsed_seconds, 3600)
-    minutes, seconds = divmod(remainder, 60)
-    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-
-def format_presentation_timestamp(
-    value: Any = None,
-    source_timezone: tzinfo | None = None,
-) -> str:
-    """Convierto un timestamp zonificado a la hora oficial del laboratorio."""
-
-    if value is None or value == "":
-        return "-"
-    if isinstance(value, datetime):
-        timestamp = value
-    else:
-        text = str(value).replace("Z", "+00:00")
-        try:
-            timestamp = datetime.fromisoformat(text)
-        except ValueError:
-            return str(value)
-    if timestamp.tzinfo is None:
-        if source_timezone is None:
-            return str(value)
-        timestamp = timestamp.replace(tzinfo=source_timezone)
-    return timestamp.astimezone(PRESENTATION_TIMEZONE).strftime(
-        "%Y-%m-%d %H:%M:%S"
-    )
-
-def format_presentation_log_line(line: str) -> str:
-    """Convierto la marca UTC de un log al horario del laboratorio."""
-
-    timestamp_text, separator, message = line.partition(" | ")
-    if not separator:
-        return line
-    timestamp = format_presentation_timestamp(
-        timestamp_text,
-        source_timezone=timezone.utc,
-    )
-    if timestamp == timestamp_text:
-        return line
-    return f"{timestamp} | {message}"
-
 def _get_consoles_context() -> tuple[Any, ...]:
     """Obtengo el contexto compartido para las seis consolas."""
 
@@ -1948,12 +1720,6 @@ def _get_consoles_context() -> tuple[Any, ...]:
         or st.session_state.start_pending
     )
     run_id = None if st.session_state.start_pending else snapshot["run_id"]
-    if (
-        run_id is not None
-        and snapshot["is_active"]
-        and not st.session_state.stop_pending
-    ):
-        register_heartbeat_for_display(controller_module, run_id)
     paths = (
         DATA_DIRECTORY / "runs" / f"{run_id}_01_python_controller_log.txt",
         DATA_DIRECTORY / "runs" / f"{run_id}_02_alpaca_stream_log.txt",
@@ -1968,3 +1734,67 @@ def _get_consoles_context() -> tuple[Any, ...]:
         and not st.session_state.stop_pending
     )
     return clear_consoles, run_id, *paths, is_active
+
+def _has_active_spark_query(module: ModuleType) -> bool:
+    """Consulto Spark sin propagar errores de conexión a la interfaz."""
+
+    try:
+        return bool(
+            getattr(module, "has_active_query", lambda: False)()
+        )
+    except Exception:
+        return False
+
+def _refresh_heartbeat_display(
+    component_key: str,
+    register: bool = False,
+) -> None:
+    """Muestro el último heartbeat y lo renuevo solo desde el ciclo central."""
+
+    heartbeat_text = "-"
+    heartbeat_debug = "-"
+    active = False
+    if st.session_state.get("stop_pending"):
+        HEARTBEAT_REFRESH_COMPONENT(
+            data={"active": False, "text": heartbeat_text, "debug": heartbeat_debug},
+            key=component_key,
+        )
+        return
+    controller_module = load_page_module("01_python_controller")
+    service = controller_module.get_active_service()
+    if service is not None and service.is_active():
+        active = True
+        run_id = service.get_snapshot().get("run_id")
+    else:
+        run_id = None
+    if run_id and (
+        not register or register_heartbeat_for_display(controller_module, run_id)
+    ):
+        service_snapshot = service.get_snapshot()
+        heartbeat_text = format_presentation_timestamp(
+            service_snapshot.get("last_heartbeat"),
+        ).split()[-1]
+        heartbeat_debug = (
+            f"Heartbeat ID: {service_snapshot.get('heartbeat_id', '-')} | "
+            f"Sesión actual: {controller_module.get_heartbeat_session_id()} | "
+            f"Última sesión: {service_snapshot.get('last_heartbeat_session_id') or '-'} | "
+            f"Heartbeats: {service_snapshot.get('heartbeat_count', 0)}"
+        )
+    HEARTBEAT_REFRESH_COMPONENT(
+        data={"active": active, "text": heartbeat_text, "debug": heartbeat_debug},
+        key=component_key,
+    )
+
+### Intervalos de refresco.
+
+render_heartbeat = st.fragment(render_heartbeat, run_every="5s")
+render_config = st.fragment(render_config, run_every="5s")
+render_controller_console = st.fragment(render_controller_console, run_every="200ms") # Especial: 200ms.
+render_alpaca_console = st.fragment(render_alpaca_console, run_every="5s")
+render_kafka_console = st.fragment(render_kafka_console, run_every="5s")
+render_spark_console = st.fragment(render_spark_console, run_every="5s")
+render_pandas_console = st.fragment(render_pandas_console, run_every="5s")
+render_postgresql_console = st.fragment(render_postgresql_console, run_every="5s")
+render_info = st.fragment(render_info, run_every="5s")
+render_questions = st.fragment(render_questions, run_every="5s")
+render_charts = st.fragment(render_charts, run_every="5s")
