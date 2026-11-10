@@ -1,5 +1,6 @@
 import certifi
 import json
+import os
 import queue
 import re
 import ssl
@@ -23,8 +24,8 @@ _LATEST_METADATA_CACHE: dict[
     tuple[int, int, dict[str, Any] | None],
 ] = {}
 
-ALPACA_API_KEY = "PKJQMFWVYH6PEXUKK34QAABOUW"
-ALPACA_SECRET_KEY = "5xBskyt9ofjunrzuCa77RDwjP5n5fGCDDv6XrfxqzAyk"
+ALPACA_API_KEY = os.getenv("ALPACA_API_KEY", "")
+ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY", "")
 ALL_MARKET_SYMBOL = "*"
 ASSETS_API_URL = "https://paper-api.alpaca.markets/v2/assets"
 CALENDAR_API_URL = "https://paper-api.alpaca.markets/v2/calendar"

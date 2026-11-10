@@ -82,3 +82,45 @@ def read_console_tail(
         return [], 0, 0
     records.reverse()
     return records, file_size, console_line_number(records[-1]) if records else 0
+
+def count_processed_data(path: Path | None, console_name: str) -> int:
+    """Cuento datos procesados sin contar líneas ni lotes del log."""
+
+    if path is None or not path.exists():
+        return 0
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return 0
+    if console_name == "kafka":
+        totals = [
+            int(value)
+            for line in lines
+            if "KAFKA | lote=" in line
+            for value in re.findall(r"\| total=(\d+)", line)
+        ]
+        return max(totals, default=0)
+    if console_name == "spark":
+        return sum(
+            int(value)
+            for line in lines
+            if "LOAD |" in line and "estado=completado" in line
+            for value in re.findall(r"registros=(\d+)", line)
+        )
+    if console_name == "pandas":
+        return sum(
+            int(value)
+            for line in lines
+            if "PARQUET |" in line
+            for value in re.findall(r"nuevos=(\d+)", line)
+        )
+    if console_name == "postgresql":
+        return sum(
+            int(metrics) + int(answers)
+            for line in lines
+            for metrics, answers in re.findall(
+                r"metricas_guardadas=(\d+) \| respuestas_persistidas=(\d+)",
+                line,
+            )
+        )
+    return 0

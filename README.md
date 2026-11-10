@@ -1,13 +1,10 @@
 # Apache Big Data Lab
 
-**Materia:** Procesamiento de Datos  
-**Trabajo práctico:** TP2  
-**Autor:** Nicolás Druetta  
-**Año:** 2026
+**Autor:** Nicolás Druetta
 
 ## 1. Descripción
 
-Desarrollé esta aplicación para trabajar con datos bursátiles de Estados Unidos y practicar el procesamiento de datos con distintas herramientas. El programa descarga operaciones y cotizaciones históricas de Alpaca y las reproduce de forma progresiva para procesarlas con Kafka y Spark. Después calcula métricas con Pandas, las guarda en PostgreSQL y muestra los resultados en Streamlit.
+Desarrollé esta aplicación como un proyecto personal para procesar y analizar datos bursátiles de Estados Unidos mediante distintas herramientas. El programa descarga operaciones y cotizaciones históricas de Alpaca y las reproduce de forma progresiva para procesarlas con Kafka y Spark. Después calcula métricas con Pandas, las guarda en PostgreSQL y muestra los resultados en Streamlit.
 
 Los datos son reales, pero la ejecución reproduce una sesión pasada. No es una conexión en vivo al mercado debido a las limitaciones del plan gratuito de Alpaca para recibir datos en tiempo real de múltiples acciones.
 
@@ -91,13 +88,13 @@ No todos los símbolos tienen suficientes operaciones para calcular volatilidad.
 - `EJECUTAR en Windows.bat` y `EJECUTAR en Mac.command`: inicio de la aplicación.
 - `AGENTS.md`: explicación técnica de la organización interna del proyecto.
 
-La carpeta `data/` no se incluye en la entrega. Es una carpeta de trabajo temporal que se crea cuando se inicia el proyecto. Allí se generan logs, metadatos, archivos Parquet y archivos de trabajo de los servicios. Puede eliminarse con los servicios detenidos para empezar una ejecución limpia. El volumen de PostgreSQL es independiente de esta carpeta.
+La carpeta `data/` no se incluye en el repositorio. Es una carpeta de trabajo temporal que se crea cuando se inicia el proyecto. Allí se generan logs, metadatos, archivos Parquet y archivos de trabajo de los servicios. Puede eliminarse con los servicios detenidos para empezar una ejecución limpia. El volumen de PostgreSQL es independiente de esta carpeta.
 
 ## 7. Cómo ejecutarlo
 
 ### Windows
 
-1. Descomprimir el RAR del proyecto.
+1. Descargar o descomprimir el proyecto.
 2. Abrir Docker Desktop y comprobar que esté funcionando.
 3. Ejecutar `EJECUTAR en Windows.bat`.
 4. Esperar a que Docker construya las imágenes e inicie los servicios.
@@ -133,7 +130,7 @@ Los resultados se identifican mediante el `run_id`. De esta forma se pueden cons
 
 ## 10. Conclusión
 
-El trabajo me permitió integrar herramientas de adquisición, mensajería, procesamiento distribuido, análisis y almacenamiento en una misma aplicación. La interfaz facilita revisar el avance de cada etapa y consultar los resultados de las dos preguntas de investigación.
+Apache Big Data Lab integra herramientas de adquisición, mensajería, procesamiento distribuido, análisis y almacenamiento en una misma aplicación. La interfaz facilita revisar el avance de cada etapa y consultar los resultados de las dos preguntas de investigación.
 
 Las conclusiones estadísticas concretas dependen de los datos obtenidos en cada RUN y deben interpretarse teniendo en cuenta las limitaciones del feed y de la muestra.
 

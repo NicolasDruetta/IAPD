@@ -55,7 +55,7 @@ services:
     hostname: postgres
     environment:
       POSTGRES_DB: apache_big_data_lab
-      POSTGRES_PASSWORD: apache_big_data_lab
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-apache_big_data_lab}
       POSTGRES_USER: bigdata
     volumes:
       - postgres-data:/var/lib/postgresql/data
@@ -196,6 +196,8 @@ services:
   streamlit:
     <<: *lab-image
     hostname: spark-driver
+    env_file:
+      - .env
     cpus: "1.5"
     mem_limit: 4g
     mem_reservation: 2g
@@ -220,7 +222,7 @@ services:
       SPARK_EXECUTOR_MEMORY: 512m
       POSTGRES_DB: apache_big_data_lab
       POSTGRES_HOST: postgres
-      POSTGRES_PASSWORD: apache_big_data_lab
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-apache_big_data_lab}
       POSTGRES_PORT: "5432"
       POSTGRES_USER: bigdata
     depends_on:

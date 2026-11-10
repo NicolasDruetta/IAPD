@@ -58,11 +58,17 @@ CONSOLE_ARROW_COMPONENT = st.components.v2.component(
 
 EXECUTION_TIMER_COMPONENT = st.components.v2.component(
     name="apache_big_data_lab.execution_timer",
-    html='<span class="execution-timer"></span>',
+    html=(
+        '<span class="execution-timer"></span>'
+        '<span class="execution-heartbeat"></span>'
+    ),
     isolate_styles=False,
     js="""
     export default function ({ parentElement, data }) {
         const timerElement = parentElement.querySelector(".execution-timer");
+        const heartbeatElement = parentElement.querySelector(
+            ".execution-heartbeat",
+        );
         const state = parentElement.__executionTimerState || {
             interval: null,
             timerKey: null,
@@ -93,6 +99,11 @@ EXECUTION_TIMER_COMPONENT = st.components.v2.component(
                     ? `${data.prefix} ${elapsed}.`
                     : elapsed
                 : data.text;
+            if (heartbeatElement) {
+                heartbeatElement.textContent = data.active && data.heartbeat_text
+                    ? ` (Último heartbeat: ${data.heartbeat_text}).`
+                    : "";
+            }
         };
         if (
             state.timerKey !== data.timer_key
@@ -106,6 +117,22 @@ EXECUTION_TIMER_COMPONENT = st.components.v2.component(
         }
         render();
         parentElement.__executionTimerState = state;
+        return () => {};
+    }
+    """,
+)
+
+HEARTBEAT_REFRESH_COMPONENT = st.components.v2.component(
+    name="apache_big_data_lab.heartbeat_refresh",
+    html='<span aria-hidden="true"></span>',
+    isolate_styles=False,
+    js="""
+    export default function ({ data }) {
+        const heartbeat = document.querySelector(".execution-heartbeat");
+        if (heartbeat === null) return () => {};
+        heartbeat.textContent = data.active && data.text
+            ? ` (Último heartbeat: ${data.text}).`
+            : "";
         return () => {};
     }
     """,
@@ -303,18 +330,44 @@ def render_live_indicator(title: str, key: str) -> None:
         key=key,
     )
 
-def render_heartbeat() -> None:
-    """Renuevo la actividad del RUN mientras el navegador mantiene la sesión."""
+def _refresh_heartbeat_display(component_key: str) -> None:
+    """Renuevo el heartbeat y actualizo su instante real en la interfaz."""
 
+    heartbeat_text = "-"
+    active = False
     if st.session_state.get("stop_pending"):
+        HEARTBEAT_REFRESH_COMPONENT(
+            data={"active": False, "text": heartbeat_text},
+            key=component_key,
+        )
         return
     controller_module = load_page_module("01_python_controller")
     service = controller_module.get_active_service()
-    if service is None or not service.is_active():
-        return
-    run_id = service.get_snapshot().get("run_id")
+    if service is not None and service.is_active():
+        active = True
+        run_id = service.get_snapshot().get("run_id")
+    else:
+        run_id = None
     if run_id:
-        controller_module.register_heartbeat(run_id)
+        if register_heartbeat_for_display(controller_module, run_id):
+            heartbeat_text = format_presentation_timestamp(
+                service.get_snapshot().get("last_heartbeat"),
+            ).split()[-1]
+    HEARTBEAT_REFRESH_COMPONENT(
+        data={"active": active, "text": heartbeat_text},
+        key=component_key,
+    )
+
+def render_heartbeat() -> None:
+    """Renuevo la actividad del RUN mientras el navegador mantiene la sesión."""
+
+    _refresh_heartbeat_display("heartbeat-refresh-header")
+
+def register_heartbeat_for_display(controller_module: Any, run_id: str) -> bool:
+    """Registro el heartbeat y conservo su instante para mostrarlo en pantalla."""
+
+    registered = controller_module.register_heartbeat(run_id)
+    return registered
 
 def render_header() -> None:
     """Muestro el encabezado general del laboratorio."""
@@ -379,12 +432,10 @@ def render_config() -> None:
     )
     snapshot = controller_module.get_run_snapshot()
     active_run_id = snapshot["run_id"] if snapshot["is_active"] else None
-    session_run_id = st.session_state.alpaca_run_id
-    if session_run_id is None and active_run_id is not None:
+    if st.session_state.alpaca_run_id is None and active_run_id is not None:
         st.session_state.alpaca_run_id = active_run_id
-        session_run_id = active_run_id
-    if session_run_id == active_run_id and active_run_id is not None:
-        controller_module.register_heartbeat(active_run_id)
+    if active_run_id is not None and not st.session_state.stop_pending:
+        register_heartbeat_for_display(controller_module, active_run_id)
         snapshot = controller_module.get_run_snapshot()
     pending_stop_operation = st.session_state.stop_operation
     if (
@@ -534,7 +585,7 @@ def render_config() -> None:
                     run_id = service.get_snapshot()["run_id"]
                     try:
                         st.session_state.alpaca_run_id = run_id
-                        controller_module.register_heartbeat(run_id)
+                        register_heartbeat_for_display(controller_module, run_id)
                         kafka_module.ensure_topic()
                         spark_module.start_streaming(
                             run_id,
@@ -624,6 +675,7 @@ def render_config() -> None:
         elapsed_text = "-"
         market_date = "El último día hábil completo."
         market_time = "-"
+        heartbeat_text = "-"
     else:
         elapsed_text = format_elapsed_time(
             snapshot["started_at"],
@@ -643,6 +695,9 @@ def render_config() -> None:
             presentation_market_timestamp.split(" ", 1)[1]
             if presentation_market_timestamp != "-"
             else "-"
+        )
+        heartbeat_text = format_presentation_timestamp(
+            snapshot.get("last_heartbeat"),
         )
     status_text = "Listo para ejecutar."
     if st.session_state.stop_pending:
@@ -683,8 +738,9 @@ def render_config() -> None:
                         "text": status_text,
                         "timer_key": snapshot["run_id"],
                         "prefix": "Ejecutando...",
+                        "heartbeat_text": heartbeat_text,
                     },
-                    key="execution-timer",
+                    key=f"execution-timer-{heartbeat_text}",
                 )
             else:
                 st.text(status_text)
@@ -749,6 +805,7 @@ def render_config() -> None:
 def render_consoles_part1() -> None:
     """Muestro las primeras cuatro consolas del pipeline."""
 
+    _refresh_heartbeat_display("heartbeat-refresh-console")
     with st.container(key="consoles-part1"):
         (
             clear_consoles,
@@ -816,7 +873,7 @@ def render_consoles_part1() -> None:
                 vertical_alignment="center",
             ):
                 st.caption(
-                    f"Eventos procesados: {execution_state['line_number']}"
+                    f"Eventos recibidos: **{execution_state['line_number']}**."
                 )
                 st.download_button(
                     "↓",
@@ -883,7 +940,9 @@ def render_consoles_part1() -> None:
                 horizontal_alignment="distribute",
                 vertical_alignment="center",
             ):
-                st.caption(f"Eventos procesados: {alpaca_state['line_number']}")
+                st.caption(
+                    f"Datos descargados: **{alpaca_state['line_number']}**."
+                )
                 st.download_button(
                     "↓",
                     data=alpaca_path.read_bytes()
@@ -946,7 +1005,10 @@ def render_consoles_part1() -> None:
                 horizontal_alignment="distribute",
                 vertical_alignment="center",
             ):
-                st.caption(f"Eventos procesados: {kafka_state['line_number']}")
+                st.caption(
+                    f"Eventos recibidos: **{kafka_state['line_number']}**. "
+                    f"Datos procesados: **{functions.count_processed_data(kafka_path, 'kafka')}**."
+                )
                 st.download_button(
                     "↓",
                     data=kafka_path.read_bytes()
@@ -1000,7 +1062,10 @@ def render_consoles_part1() -> None:
                 horizontal_alignment="distribute",
                 vertical_alignment="center",
             ):
-                st.caption(f"Eventos procesados: {spark_state['line_number']}")
+                st.caption(
+                    f"Eventos recibidos: **{spark_state['line_number']}**. "
+                    f"Datos procesados: **{functions.count_processed_data(spark_path, 'spark')}**."
+                )
                 st.download_button(
                     "↓",
                     data=spark_path.read_bytes()
@@ -1089,7 +1154,8 @@ def render_consoles_part2() -> None:
                 vertical_alignment="center",
             ):
                 st.caption(
-                    f"Eventos procesados: {pandas_state['line_number']}"
+                    f"Eventos recibidos: **{pandas_state['line_number']}**. "
+                    f"Datos procesados: **{functions.count_processed_data(pandas_path, 'pandas')}**."
                 )
                 st.download_button(
                     "↓",
@@ -1156,7 +1222,8 @@ def render_consoles_part2() -> None:
                 vertical_alignment="center",
             ):
                 st.caption(
-                    f"Eventos procesados: {postgresql_state['line_number']}"
+                    f"Eventos recibidos: **{postgresql_state['line_number']}**. "
+                    f"Datos procesados: **{functions.count_processed_data(postgresql_path, 'postgresql')}**."
                 )
                 st.download_button(
                     "↓",
@@ -1858,7 +1925,7 @@ def _get_consoles_context() -> tuple[Any, ...]:
         and snapshot["is_active"]
         and not st.session_state.stop_pending
     ):
-        controller_module.register_heartbeat(run_id)
+        register_heartbeat_for_display(controller_module, run_id)
     paths = (
         DATA_DIRECTORY / "runs" / f"{run_id}_01_python_controller_log.txt",
         DATA_DIRECTORY / "runs" / f"{run_id}_02_alpaca_stream_log.txt",

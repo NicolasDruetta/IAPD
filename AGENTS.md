@@ -1,7 +1,7 @@
 # Organización técnica del proyecto
 
-Apache Big Data Lab - TP2 de Procesamiento de Datos  
-Nicolás Druetta - 2026
+Apache Big Data Lab  
+Nicolás Druetta
 
 ## 1. Organización del código
 
@@ -47,7 +47,7 @@ Cada ejecución tiene un `run_id` con formato `YYYYMMDD_HHMMSS`. Ese identificad
 
 Los registros de las seis etapas se guardan en archivos TXT separados. El Controller también genera información estructurada en JSONL. Spark trabaja con fragmentos Parquet y checkpoints y puede consolidar el resultado al finalizar.
 
-La carpeta `data/` se genera automáticamente y se usa para archivos temporales de trabajo. No se distribuye con el RAR y se puede eliminar cuando los servicios están detenidos. La información de PostgreSQL se guarda por separado en su volumen Docker.
+La carpeta `data/` se genera automáticamente y se usa para archivos temporales de trabajo. No se incluye en el repositorio y se puede eliminar cuando los servicios están detenidos. La información de PostgreSQL se guarda por separado en su volumen Docker.
 
 ## 4. Inicio y detención
 
