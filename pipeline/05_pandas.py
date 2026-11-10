@@ -1,3 +1,5 @@
+# Autor: Nicolás Druetta
+
 import math
 import pandas as pd
 

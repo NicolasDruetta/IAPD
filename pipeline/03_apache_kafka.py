@@ -1,3 +1,5 @@
+# Autor: Nicolás Druetta
+
 import atexit
 import json
 import os

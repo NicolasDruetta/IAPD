@@ -1,3 +1,5 @@
+# Autor: Nicolás Druetta
+
 import certifi
 import json
 import os

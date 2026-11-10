@@ -1,3 +1,5 @@
+# Autor: Nicolás Druetta
+
 import streamlit as st
 
 from app import renders

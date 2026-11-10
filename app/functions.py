@@ -1,3 +1,5 @@
+# Autor: Nicolás Druetta
+
 import os
 import re
 import threading

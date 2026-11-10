@@ -1,3 +1,5 @@
+# Autor: Nicolás Druetta
+
 import psycopg
 import sys
 

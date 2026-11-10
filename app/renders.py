@@ -1,3 +1,5 @@
+# Autor: Nicolás Druetta
+
 import importlib.util
 import math
 import os
@@ -799,7 +801,7 @@ def render_info() -> None:
         elapsed_text = "-"
         market_date = "-"
         market_time = "-"
-        downloaded_count = 0
+        downloaded_count = "-"
     else:
         elapsed_text = format_elapsed_time(
             snapshot["started_at"],
