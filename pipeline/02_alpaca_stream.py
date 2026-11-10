@@ -6,6 +6,7 @@ import re
 import ssl
 import threading
 import time
+import uuid
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -195,17 +196,16 @@ class AlpacaStreamingService:
         symbols: list[str],
         started_at: str,
         run_stem: str,
-        universe_metadata: dict[str, Any],
+        universe_metadata: dict[str, Any] | None,
         feed: str = "iex",
         replay_speed: float = 1.0,
+        ranking: str | None = None,
         release_callback: Callable[["AlpacaStreamingService"], None]
         | None = None,
         publish_events_callback: Callable[
             [str, list[dict[str, Any]], threading.Event | None],
             None,
         ] | None = None,
-        append_controller_log_callback: Callable[[str, str, Any], None]
-        | None = None,
         append_run_record_callback: Callable[
             [str, str, dict[str, Any]],
             None,
@@ -214,7 +214,6 @@ class AlpacaStreamingService:
     ) -> None:
         self._api_key = api_key
         self._api_secret = api_secret
-        self._append_controller_log_callback = append_controller_log_callback
         self._append_run_record_callback = append_run_record_callback
         self._append_run_state_callback = append_run_state_callback
         self._download_thread: threading.Thread | None = None
@@ -227,8 +226,11 @@ class AlpacaStreamingService:
         self._finished = False
         self._historical_date: str | None = None
         self._kafka_published_count = 0
+        self._heartbeat_id = f"hb-{uuid.uuid4().hex[:8]}"
+        self._heartbeat_count = 0
         self._last_heartbeat_at: str | None = None
         self._last_heartbeat_monotonic: float | None = None
+        self._last_heartbeat_session_id: str | None = None
         self._lock = threading.RLock()
         self._market_timestamp: str | None = None
         self._pipeline_ready = threading.Event()
@@ -239,6 +241,7 @@ class AlpacaStreamingService:
         self._replay_speed = replay_speed
         self._run_id = run_id
         self._run_stem = run_stem
+        self._ranking = ranking
         self._started_at = started_at
         self._status = "Listo para ejecutar"
         self._stop_event = threading.Event()
@@ -260,6 +263,26 @@ class AlpacaStreamingService:
     def start(self) -> bool:
         """Inicio los hilos de streaming y supervisión del RUN."""
 
+        if self._ranking is not None:
+            self._symbols, self._universe_metadata = (
+                get_sp500_ranked_symbols(
+                    self._api_key,
+                    self._api_secret,
+                    self._ranking,
+                )
+            )
+        elif ALL_MARKET_SYMBOL in self._symbols:
+            self._symbols, self._universe_metadata = (
+                resolve_automatic_symbols(
+                    self._api_key,
+                    self._api_secret,
+                )
+            )
+        elif self._universe_metadata is None:
+            self._universe_metadata = {
+                "selection": "manual",
+                "symbols": list(self._symbols),
+            }
         with self._lock:
             if self.is_active():
                 return False
@@ -310,7 +333,11 @@ class AlpacaStreamingService:
             self._append_run_state_callback(self)
         return True
 
-    def heartbeat(self, run_id: str) -> bool:
+    def heartbeat(
+        self,
+        run_id: str,
+        session_id: str | None = None,
+    ) -> bool:
         """Registro una señal válida proveniente de la sesión visual."""
 
         with self._lock:
@@ -318,6 +345,8 @@ class AlpacaStreamingService:
                 return False
             self._last_heartbeat_monotonic = time.monotonic()
             self._last_heartbeat_at = get_utc_timestamp()
+            self._heartbeat_count += 1
+            self._last_heartbeat_session_id = session_id
             self._append_run_state_callback(self)
         return True
 
@@ -387,6 +416,9 @@ class AlpacaStreamingService:
                 "started_at": self._started_at,
                 "ended_at": self._ended_at,
                 "last_heartbeat": self._last_heartbeat_at,
+                "heartbeat_id": self._heartbeat_id,
+                "heartbeat_count": self._heartbeat_count,
+                "last_heartbeat_session_id": self._last_heartbeat_session_id,
                 "end_reason": self._end_reason,
                 "is_active": self.is_active(),
             }
@@ -599,17 +631,20 @@ class AlpacaStreamingService:
             self._release_callback(self)
 
     def _add_log(self, message: str) -> None:
-        """Informo al Controller un mensaje operativo de Alpaca."""
+        """Registro en la consola de Alpaca un mensaje operativo."""
 
         with self._lock:
             if self._stop_event.is_set() and not message.startswith("DATA | finalizado:"):
                 return
-            if self._append_controller_log_callback is not None:
-                self._append_controller_log_callback(
-                    self._run_id,
-                    message,
-                    self,
-                )
+            timestamp = format_presentation_timestamp(
+                get_utc_timestamp(),
+                source_timezone=timezone.utc,
+            )
+            functions.append_console_log(
+                self._run_id,
+                "alpaca",
+                f"{timestamp} | {message}",
+            )
 
     def _join_threads(self) -> None:
         """Espero el cierre de los hilos sin bloquearse a sí mismos."""

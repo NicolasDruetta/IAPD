@@ -1,13 +1,16 @@
 import atexit
+import builtins
 import json
 import os
 import threading
+import uuid
 
 from app import functions
-from datetime import timezone
 from typing import Any
 
 _ACTIVE_SERVICE: Any = None
+_ACTIVE_SERVICE_REGISTRY_KEY = "_IAPD_ACTIVE_SERVICE"
+_HEARTBEAT_SESSION_ID = f"st-{uuid.uuid4().hex[:8]}"
 _KAFKA_MODULE: Any = None
 _LAST_STOPPED_SNAPSHOT: dict[str, Any] | None = None
 _MANAGER_LOCK = threading.RLock()
@@ -17,27 +20,6 @@ _RUN_SEQUENCES: dict[str, int] = {}
 _SPARK_MODULE: Any = None
 _STREAMING_MODULE: Any = None
 HEARTBEAT_TIMEOUT_MINUTES = 15
-
-def append_controller_log(
-    run_id: str,
-    message: str,
-    service: Any,
-) -> None:
-    """Registro un mensaje y persisto el estado administrado del RUN."""
-
-    streaming_module = _require_streaming_module()
-    timestamp = streaming_module.format_presentation_timestamp(
-        streaming_module.get_utc_timestamp(),
-        source_timezone=timezone.utc,
-    )
-    functions.append_console_log(
-        run_id,
-        "controller",
-        f"{timestamp} | {message}",
-    )
-    with _MANAGER_LOCK:
-        _RUN_LOG_COUNTS[run_id] = _RUN_LOG_COUNTS.get(run_id, 0) + 1
-    append_run_state(service)
 
 def append_run_record(
     run_id: str,
@@ -63,6 +45,9 @@ def append_run_record(
             **payload,
         }
         if record_type == "run_started":
+            functions.append_console_log(
+                run_id, "controller", "Python | RUN registrado | fuente Alpaca preparada"
+            )
             record.update(
                 {
                     "info_controller_file": f"{run_id}_01_python_controller_info.jsonl",
@@ -73,6 +58,12 @@ def append_run_record(
                     "log_pandas_file": f"{run_id}_05_pandas_log.txt",
                     "log_postgresql_file": f"{run_id}_06_postgresql_log.txt",
                 }
+            )
+        if record_type == "run_finished":
+            functions.append_console_log(
+                run_id,
+                "controller",
+                f"Python | RUN terminado | estado={payload.get('status')} | causa={payload.get('end_reason')}",
             )
         run_info_path.parent.mkdir(parents=True, exist_ok=True)
         with run_info_path.open("a", encoding="utf-8") as info_controller_file:
@@ -109,13 +100,18 @@ def fail_active_run(error: str) -> None:
 
     service = get_active_service()
     if service is not None:
+        functions.append_console_log(
+            service.get_snapshot()["run_id"],
+            "controller",
+            f"Python | ejecución finalizada con error | {error}",
+        )
         service.fail(error)
 
 def get_active_service() -> Any:
     """Devuelvo el servicio Alpaca administrado por el controlador."""
 
     with _MANAGER_LOCK:
-        return _ACTIVE_SERVICE
+        return getattr(builtins, _ACTIVE_SERVICE_REGISTRY_KEY, _ACTIVE_SERVICE)
 
 def get_run_snapshot() -> dict[str, Any]:
     """Obtengo el estado activo o la última ejecución persistida."""
@@ -200,7 +196,16 @@ def register_heartbeat(run_id: str) -> bool:
     """Valido y registro el heartbeat de una sesión visual activa."""
 
     service = get_active_service()
-    return service.heartbeat(run_id) if service is not None else False
+    return (
+        service.heartbeat(run_id, _HEARTBEAT_SESSION_ID)
+        if service is not None
+        else False
+    )
+
+def get_heartbeat_session_id() -> str:
+    """Devuelvo el identificador de esta instancia del controlador."""
+
+    return _HEARTBEAT_SESSION_ID
 
 def release_active_pipeline(run_id: str) -> bool:
     """Habilito el primer lote cuando las consultas del RUN están preparadas."""
@@ -218,12 +223,21 @@ def release_active_service(service: Any) -> None:
     with _MANAGER_LOCK:
         if _ACTIVE_SERVICE is service:
             _ACTIVE_SERVICE = None
+        if getattr(builtins, _ACTIVE_SERVICE_REGISTRY_KEY, None) is service:
+            delattr(builtins, _ACTIVE_SERVICE_REGISTRY_KEY)
 
 def request_stop_active_run(end_reason: str) -> None:
     """Solicito la detención inmediata del servicio activo."""
 
     service = get_active_service()
     if service is not None:
+        snapshot = service.get_snapshot()
+        if snapshot.get("end_reason") is None:
+            functions.append_console_log(
+                snapshot["run_id"],
+                "controller",
+                f"Python | detención solicitada | causa={end_reason}",
+            )
         service.request_stop(end_reason)
         return
     if end_reason != "manual_stop":
@@ -237,6 +251,9 @@ def request_stop_active_run(end_reason: str) -> None:
         or not isinstance(run_id, str)
     ):
         return
+    functions.append_console_log(
+        run_id, "controller", "Python | detención manual solicitada"
+    )
     append_run_record(
         run_id,
         "state",
@@ -253,8 +270,10 @@ def configure_streaming_module(streaming_module: Any) -> None:
     global _STREAMING_MODULE
     if _STREAMING_MODULE is streaming_module:
         return
+    active_service = get_active_service()
     _STREAMING_MODULE = streaming_module
-    mark_interrupted_run()
+    if active_service is None:
+        mark_interrupted_run()
 
 def _consolidate_recovered_run(
     spark_module: Any,
@@ -389,29 +408,10 @@ def start_run(
     if _KAFKA_MODULE is None or _SPARK_MODULE is None:
         raise RuntimeError("Kafka y Spark no fueron configurados.")
     with _MANAGER_LOCK:
-        if _ACTIVE_SERVICE is not None and _ACTIVE_SERVICE.is_active():
-            return _ACTIVE_SERVICE
-        if ranking is not None:
-            resolved_symbols, universe_metadata = (
-                streaming_module.get_sp500_ranked_symbols(
-                    api_key,
-                    api_secret,
-                    ranking,
-                )
-            )
-        elif streaming_module.ALL_MARKET_SYMBOL in symbols:
-            resolved_symbols, universe_metadata = (
-                streaming_module.resolve_automatic_symbols(
-                    api_key,
-                    api_secret,
-                )
-            )
-        else:
-            resolved_symbols = symbols
-            universe_metadata = {
-                "selection": "manual",
-                "symbols": list(symbols),
-            }
+        active_service = get_active_service()
+        if active_service is not None and active_service.is_active():
+            _ACTIVE_SERVICE = active_service
+            return active_service
         started_at = streaming_module.get_utc_timestamp()
         run_id = streaming_module.build_run_stem(started_at)
         run_info_path = DATA_DIRECTORY / "runs" / f"{run_id}_01_python_controller_info.jsonl"
@@ -419,22 +419,40 @@ def start_run(
             raise RuntimeError(
                 "El identificador del RUN ya existe; esperá un segundo y volvé a iniciar."
             )
+        functions.append_console_log(
+            run_id,
+            "controller",
+            f"Python | iniciando ejecución | run_id={run_id}",
+        )
+        functions.append_console_log(
+            run_id,
+            "controller",
+            "Python | preparando publicación de eventos en Kafka",
+        )
         _KAFKA_MODULE.initialize_run(run_id)
+        functions.append_console_log(
+            run_id, "controller", "Python | publicación Kafka preparada"
+        )
         _LAST_STOPPED_SNAPSHOT = None
         try:
+            functions.append_console_log(
+                run_id,
+                "controller",
+                "Python | solicitando inicialización de Alpaca",
+            )
             _ACTIVE_SERVICE = streaming_module.AlpacaStreamingService(
                 api_key,
                 api_secret,
                 run_id,
-                resolved_symbols,
+                symbols,
                 started_at,
                 run_id,
-                universe_metadata,
+                None,
                 feed,
                 replay_speed,
+                ranking=ranking,
                 release_callback=release_active_service,
                 publish_events_callback=_KAFKA_MODULE.publish_events,
-                append_controller_log_callback=append_controller_log,
                 append_run_record_callback=append_run_record,
                 append_run_state_callback=append_run_state,
             )
@@ -442,7 +460,13 @@ def start_run(
             raise RuntimeError(
                 "El identificador del RUN ya existe; esperá un segundo y volvé a iniciar."
             ) from error
+        setattr(builtins, _ACTIVE_SERVICE_REGISTRY_KEY, _ACTIVE_SERVICE)
         _ACTIVE_SERVICE.start()
+        functions.append_console_log(
+            run_id,
+            "controller",
+            "Python | servicio Alpaca iniciado | descarga en curso",
+        )
         supervisor_thread = threading.Thread(
             target=_supervise_heartbeat,
             args=(_ACTIVE_SERVICE,),
@@ -450,6 +474,11 @@ def start_run(
             name=f"controller-supervisor-{run_id}",
         )
         supervisor_thread.start()
+        functions.append_console_log(
+            run_id,
+            "controller",
+            "Python | supervisor de heartbeat iniciado | límite=15 min",
+        )
         return _ACTIVE_SERVICE
 
 def stop_active_run(end_reason: str) -> None:
@@ -459,8 +488,18 @@ def stop_active_run(end_reason: str) -> None:
     service = get_active_service()
     try:
         if service is not None:
+            functions.append_console_log(
+                service.get_snapshot()["run_id"],
+                "controller",
+                "Python | finalizando ejecución",
+            )
             service.stop(end_reason)
             _LAST_STOPPED_SNAPSHOT = service.get_snapshot()
+            functions.append_console_log(
+                service.get_snapshot()["run_id"],
+                "controller",
+                "Python | ejecución finalizada",
+            )
     finally:
         if service is not None:
             release_active_service(service)
@@ -487,6 +526,11 @@ def _supervise_heartbeat(service: Any) -> None:
                 return
             if service.heartbeat_elapsed() < HEARTBEAT_TIMEOUT_MINUTES * 60:
                 continue
+            functions.append_console_log(
+                run_id,
+                "controller",
+                "Python | tiempo límite sin heartbeat | solicitando detención",
+            )
             service.request_stop("heartbeat_timeout")
             try:
                 stop_active_run("heartbeat_timeout")

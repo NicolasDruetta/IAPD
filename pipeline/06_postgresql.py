@@ -42,7 +42,7 @@ def analyze_and_persist(
         functions.append_console_log(
             run_id,
             "postgresql",
-            f"POSTGRES | metricas_guardadas={len(analysis['metrics'])} | respuestas_persistidas={len(analysis['answers'])}",
+            f"POSTGRES | persistencia confirmada | run_id={run_id} | métricas={len(analysis['metrics'])} | respuestas={len(analysis['answers'])}",
         )
         return True
     except (OSError, TypeError, ValueError, psycopg.Error) as error:

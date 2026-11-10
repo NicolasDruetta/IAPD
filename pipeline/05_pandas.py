@@ -58,12 +58,12 @@ def analyze(
         functions.append_console_log(
             run_id,
             "pandas",
-            f"PARQUET | lotes={len(state['batches'])} | nuevos={len(frame)}",
+            f"PARQUET | lotes_acumulados={len(state['batches'])} | lotes_nuevos={len(new_paths)} | registros_nuevos={len(frame)}",
         )
         functions.append_console_log(
             run_id,
             "pandas",
-            f"PANDAS | correlaciones_calculadas={len(answers)} | feed={feed}",
+            f"PANDAS | análisis actualizado | símbolos={len(metrics)} | correlaciones={len(answers)} | feed={feed}",
         )
         return analysis
     except (OSError, TypeError, ValueError) as error:

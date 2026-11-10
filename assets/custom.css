@@ -126,6 +126,20 @@ textarea {
     width: 100%;
 }
 
+.execution-heartbeat {
+    color: var(--muted-text-color);
+    font-size: 0.9rem;
+    line-height: 1;
+    margin-left: 0.25rem;
+}
+
+.execution-heartbeat-debug {
+    color: var(--muted-text-color);
+    font-size: 0.9rem;
+    line-height: 1;
+    margin-top: 0.25rem;
+}
+
 .live-dot {
     animation: live-dot-pulse 1.5s ease-in-out infinite;
     background: #dc3545;
@@ -410,7 +424,7 @@ textarea {
 }
 
 .stMainBlockContainer {
-    padding: 1.5rem 3rem !important; /* Custom Nico. */
+    padding: 1rem 3rem !important; /* Custom Nico. */
 }
 
 .stMetric {

@@ -305,6 +305,9 @@ def consolidate_parquet(run_id: str) -> bool:
     if not parts_path.exists() or not any(parts_path.glob("batch_*")):
         status_path.unlink(missing_ok=True)
         return final_path.exists()
+    functions.append_console_log(
+        run_id, "spark", "SPARK | iniciando sesión y consulta Structured Streaming"
+    )
     spark = get_spark_session()
     if spark is None:
         raise RuntimeError("Spark no está disponible para consolidar Parquet.")
@@ -431,6 +434,11 @@ def start_streaming(run_id: str) -> None:
         _STARTING_RUNS.discard(run_id)
         _RUN_STATES[run_id]["query"] = query
         _RUN_STATES[run_id]["query_id"] = str(query.id)
+    functions.append_console_log(
+        run_id,
+        "spark",
+        f"SPARK | consulta activa | query_id={query.id} | origen=Kafka | destino=Parquet",
+    )
 
 def stop_streaming(
     run_id: str | None,

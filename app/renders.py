@@ -61,6 +61,7 @@ EXECUTION_TIMER_COMPONENT = st.components.v2.component(
     html=(
         '<span class="execution-timer"></span>'
         '<span class="execution-heartbeat"></span>'
+        '<div class="execution-heartbeat-debug"></div>'
     ),
     isolate_styles=False,
     js="""
@@ -68,6 +69,9 @@ EXECUTION_TIMER_COMPONENT = st.components.v2.component(
         const timerElement = parentElement.querySelector(".execution-timer");
         const heartbeatElement = parentElement.querySelector(
             ".execution-heartbeat",
+        );
+        const heartbeatDebugElement = parentElement.querySelector(
+            ".execution-heartbeat-debug",
         );
         const state = parentElement.__executionTimerState || {
             interval: null,
@@ -104,6 +108,11 @@ EXECUTION_TIMER_COMPONENT = st.components.v2.component(
                     ? ` (Último heartbeat: ${data.heartbeat_text}).`
                     : "";
             }
+            if (heartbeatDebugElement) {
+                heartbeatDebugElement.textContent = data.active && data.heartbeat_debug
+                    ? ` ${data.heartbeat_debug}`
+                    : "";
+            }
         };
         if (
             state.timerKey !== data.timer_key
@@ -129,10 +138,16 @@ HEARTBEAT_REFRESH_COMPONENT = st.components.v2.component(
     js="""
     export default function ({ data }) {
         const heartbeat = document.querySelector(".execution-heartbeat");
+        const debug = document.querySelector(".execution-heartbeat-debug");
         if (heartbeat === null) return () => {};
         heartbeat.textContent = data.active && data.text
             ? ` (Último heartbeat: ${data.text}).`
             : "";
+        if (debug !== null) {
+            debug.textContent = data.active && data.debug
+                ? ` ${data.debug}`
+                : "";
+        }
         return () => {};
     }
     """,
@@ -334,10 +349,11 @@ def _refresh_heartbeat_display(component_key: str) -> None:
     """Renuevo el heartbeat y actualizo su instante real en la interfaz."""
 
     heartbeat_text = "-"
+    heartbeat_debug = "-"
     active = False
     if st.session_state.get("stop_pending"):
         HEARTBEAT_REFRESH_COMPONENT(
-            data={"active": False, "text": heartbeat_text},
+            data={"active": False, "text": heartbeat_text, "debug": heartbeat_debug},
             key=component_key,
         )
         return
@@ -350,11 +366,18 @@ def _refresh_heartbeat_display(component_key: str) -> None:
         run_id = None
     if run_id:
         if register_heartbeat_for_display(controller_module, run_id):
+            service_snapshot = service.get_snapshot()
             heartbeat_text = format_presentation_timestamp(
-                service.get_snapshot().get("last_heartbeat"),
+                service_snapshot.get("last_heartbeat"),
             ).split()[-1]
+            heartbeat_debug = (
+                f"Heartbeat ID: {service_snapshot.get('heartbeat_id', '-')} | "
+                f"Sesión actual: {controller_module.get_heartbeat_session_id()} | "
+                f"Última sesión: {service_snapshot.get('last_heartbeat_session_id') or '-'} | "
+                f"Heartbeats: {service_snapshot.get('heartbeat_count', 0)}"
+            )
     HEARTBEAT_REFRESH_COMPONENT(
-        data={"active": active, "text": heartbeat_text},
+        data={"active": active, "text": heartbeat_text, "debug": heartbeat_debug},
         key=component_key,
     )
 
@@ -676,6 +699,7 @@ def render_config() -> None:
         market_date = "El último día hábil completo."
         market_time = "-"
         heartbeat_text = "-"
+        heartbeat_debug = "-"
     else:
         elapsed_text = format_elapsed_time(
             snapshot["started_at"],
@@ -698,6 +722,12 @@ def render_config() -> None:
         )
         heartbeat_text = format_presentation_timestamp(
             snapshot.get("last_heartbeat"),
+        ).split()[-1]
+        heartbeat_debug = (
+            f"Heartbeat ID: {snapshot.get('heartbeat_id', '-')} | "
+            f"Sesión actual: {controller_module.get_heartbeat_session_id()} | "
+            f"Última sesión: {snapshot.get('last_heartbeat_session_id') or '-'} | "
+            f"Heartbeats: {snapshot.get('heartbeat_count', 0)}"
         )
     status_text = "Listo para ejecutar."
     if st.session_state.stop_pending:
@@ -739,6 +769,7 @@ def render_config() -> None:
                         "timer_key": snapshot["run_id"],
                         "prefix": "Ejecutando...",
                         "heartbeat_text": heartbeat_text,
+                        "heartbeat_debug": heartbeat_debug,
                     },
                     key=f"execution-timer-{heartbeat_text}",
                 )
@@ -832,16 +863,10 @@ def render_consoles_part1() -> None:
                 gap="small",
             ):
                 st.subheader("1. Log del controlador (Python)", width="content")
-                if (
-                    is_active
-                    and execution_path is not None
-                    and execution_path.exists()
-                    and execution_path.stat().st_size
-                ):
-                    CONSOLE_ARROW_COMPONENT(
-                        key="console-arrow-controller",
-                        width="stretch",
-                    )
+                render_live_indicator(
+                    "1. Log del controlador (Python)",
+                    "live-controller-log",
+                )
             execution_state = get_console_state(
                 "execution-log-console",
                 run_id,
@@ -865,7 +890,7 @@ def render_consoles_part1() -> None:
             )
             if is_placeholder:
                 log_display_lines = [
-                    "Log del controlador | esperando actividad."
+                    "Python | esperando actividad."
                 ]
             with st.container(
                 horizontal=True,
@@ -933,7 +958,7 @@ def render_consoles_part1() -> None:
             )
             if is_placeholder:
                 event_lines = [
-                    "Alpaca | esperando cotizaciones u operaciones."
+                    "Alpaca | esperando cotizaciones y operaciones."
                 ]
             with st.container(
                 horizontal=True,
@@ -999,7 +1024,7 @@ def render_consoles_part1() -> None:
             ]
             is_placeholder = not kafka_lines and kafka_state["line_number"] == 0
             if is_placeholder:
-                kafka_lines = ["Kafka | esperando eventos para publicar."]
+                kafka_lines = ["Kafka | esperando datos para publicar."]
             with st.container(
                 horizontal=True,
                 horizontal_alignment="distribute",
@@ -1056,7 +1081,7 @@ def render_consoles_part1() -> None:
             spark_lines = [format_presentation_log_line(line) for line in spark_records]
             is_placeholder = not spark_lines and spark_state["line_number"] == 0
             if is_placeholder:
-                spark_lines = ["Spark | esperando eventos bursátiles."]
+                spark_lines = ["Spark | esperando datos para procesar."]
             with st.container(
                 horizontal=True,
                 horizontal_alignment="distribute",
@@ -1147,7 +1172,7 @@ def render_consoles_part2() -> None:
             ]
             is_placeholder = not pandas_lines and pandas_state["line_number"] == 0
             if is_placeholder:
-                pandas_lines = ["Pandas | esperando agregados de Spark."]
+                pandas_lines = ["Pandas | esperando datos para analizar."]
             with st.container(
                 horizontal=True,
                 horizontal_alignment="distribute",
@@ -1181,16 +1206,6 @@ def render_consoles_part2() -> None:
                 gap="small",
             ):
                 st.subheader("6. Log de persistencia (PostgreSQL)", width="content")
-                if (
-                    is_active
-                    and postgresql_path is not None
-                    and postgresql_path.exists()
-                    and postgresql_path.stat().st_size
-                ):
-                    CONSOLE_ARROW_COMPONENT(
-                        key="console-arrow-postgresql",
-                        width="stretch",
-                    )
             postgresql_state = get_console_state(
                 "postgresql-log-console",
                 run_id,
@@ -1214,7 +1229,7 @@ def render_consoles_part2() -> None:
             )
             if is_placeholder:
                 postgresql_lines = [
-                    "PostgreSQL | esperando persistencia de resultados."
+                    "PostgreSQL | esperando datos para guardar en la base."
                 ]
             with st.container(
                 horizontal=True,
