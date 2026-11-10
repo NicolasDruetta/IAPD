@@ -124,15 +124,34 @@ def count_processed_data(path: Path | None, console_name: str) -> int:
             int(value)
             for line in lines
             if "PARQUET |" in line
-            for value in re.findall(r"nuevos=(\d+)", line)
+            for value in re.findall(r"registros_nuevos=(\d+)", line)
         )
     if console_name == "postgresql":
-        return sum(
-            int(metrics) + int(answers)
-            for line in lines
-            for metrics, answers in re.findall(
-                r"(?:metricas_guardadas|resultados_enviados)=(\d+) \| (?:respuestas_persistidas|respuestas_enviadas)=(\d+)",
-                line,
-            )
-        )
+        return get_postgresql_counters(path)["total"]
     return 0
+
+def get_postgresql_counters(path: Path | None) -> dict[str, int]:
+    """Leo los últimos contadores confirmados del log PostgreSQL."""
+
+    if path is None or not path.exists():
+        return {"events": 0, "metrics": 0, "answers": 0, "total": 0, "updates": 0}
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return {"events": 0, "metrics": 0, "answers": 0, "total": 0, "updates": 0}
+    for line in reversed(lines):
+        match = re.search(
+            r"eventos_recibidos=(\d+) \| métricas=(\d+) \| respuestas=(\d+) "
+            r"\| filas_totales=(\d+) \| actualizaciones=(\d+)",
+            line,
+        )
+        if match:
+            events, metrics, answers, total, updates = map(int, match.groups())
+            return {
+                "events": events,
+                "metrics": metrics,
+                "answers": answers,
+                "total": total,
+                "updates": updates,
+            }
+    return {"events": 0, "metrics": 0, "answers": 0, "total": 0, "updates": 0}

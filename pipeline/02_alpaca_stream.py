@@ -378,10 +378,10 @@ class AlpacaStreamingService:
             self._add_log(f"DATA | detención solicitada: {end_reason}")
             self._append_run_state_callback(self)
 
-    def fail(self, error: str) -> None:
+    def fail(self, error: str, end_reason: str = "error_alpaca") -> None:
         """Finalizo el RUN con error y libero sus recursos."""
 
-        self._finish("Error", "startup_error", error)
+        self._finish("Error", end_reason, error)
 
     def release_pipeline(self) -> None:
         """Habilito la publicación cuando Kafka y Spark están preparados."""
@@ -424,7 +424,7 @@ class AlpacaStreamingService:
             }
 
     def _run_stream(self) -> None:
-        """Ejecuto la descarga y reproducción histórica en un hilo propio."""
+        """Ejecuto la descarga histórica progresiva en un hilo propio."""
 
         try:
             self._add_log("DATA | worker de datos iniciado")
@@ -433,7 +433,7 @@ class AlpacaStreamingService:
             if not self._stop_event.is_set():
                 self._finish(
                     "Error",
-                    "replay_error",
+                    "error_alpaca",
                     self._safe_error(error),
                 )
         finally:
@@ -581,18 +581,27 @@ class AlpacaStreamingService:
             )
             quote_count = len(events) - trade_count
             self._add_log(
-                f"DATA | lote emitido={self._replay_batch_number} | operaciones={trade_count} | cotizaciones={quote_count} | total_emitidos={self._event_count}"
+                f"DATA | lote emitido={self._replay_batch_number} | operaciones={trade_count} | cotizaciones={quote_count} | total_emitidos={self._event_count}",
+                date_only=True,
             )
             self._append_run_state_callback(self)
         if (
             self._publish_events_callback is not None
             and not self._stop_event.is_set()
         ):
-            self._publish_events_callback(
-                self._run_id,
-                stream_records,
-                self._stop_event,
-            )
+            try:
+                self._publish_events_callback(
+                    self._run_id,
+                    stream_records,
+                    self._stop_event,
+                )
+            except Exception as error:
+                self._finish(
+                    "Error",
+                    "error_kafka",
+                    self._safe_error(error),
+                )
+                return
             with self._lock:
                 self._kafka_published_count += len(stream_records)
 
@@ -630,21 +639,10 @@ class AlpacaStreamingService:
         if self._release_callback is not None:
             self._release_callback(self)
 
-    def _add_log(self, message: str) -> None:
-        """Registro en la consola de Alpaca un mensaje operativo."""
+    def _add_log(self, message: str, date_only: bool = False) -> None:
+        """Conservo la ruta de callback sin escribir mensajes operativos."""
 
-        with self._lock:
-            if self._stop_event.is_set() and not message.startswith("DATA | finalizado:"):
-                return
-            timestamp = format_presentation_timestamp(
-                get_utc_timestamp(),
-                source_timezone=timezone.utc,
-            )
-            functions.append_console_log(
-                self._run_id,
-                "alpaca",
-                f"{timestamp} | {message}",
-            )
+        return
 
     def _join_threads(self) -> None:
         """Espero el cierre de los hilos sin bloquearse a sí mismos."""
@@ -674,7 +672,7 @@ def download_historical_dataset(
     event_callback: Callable[[list[AlpacaEvent]], None] | None = None,
     stop_event: threading.Event | None = None,
 ) -> tuple[int, bool]:
-    """Descargo páginas y entrego eventos ordenados directamente al pipeline."""
+    """Descargo páginas y entrego cada ventana ordenada directamente a Kafka."""
 
     if ALL_MARKET_SYMBOL in symbols:
         raise RuntimeError(
@@ -967,7 +965,7 @@ def get_historical_dataset(
     historical_date_callback: Callable[[str], None] | None = None,
     stop_event: threading.Event | None = None,
 ) -> str:
-    """Obtengo un histórico validado y lo entrego directamente al pipeline."""
+    """Obtengo el histórico validado y entrego sus ventanas directamente a Kafka."""
 
     date_text, session_start, session_end = get_latest_market_session(
         api_key,

@@ -6,18 +6,22 @@ import threading
 import uuid
 
 from app import functions
+from functools import partial
 from typing import Any
 
 _ACTIVE_SERVICE: Any = None
 _ACTIVE_SERVICE_REGISTRY_KEY = "_IAPD_ACTIVE_SERVICE"
+_FAILED_RUNS: set[str] = set()
 _HEARTBEAT_SESSION_ID = f"st-{uuid.uuid4().hex[:8]}"
 _KAFKA_MODULE: Any = None
+_KAFKA_PREPARED_RUNS: set[str] = set()
 _LAST_STOPPED_SNAPSHOT: dict[str, Any] | None = None
 _MANAGER_LOCK = threading.RLock()
 _RECOVERY_THREAD: threading.Thread | None = None
 _RUN_LOG_COUNTS: dict[str, int] = {}
 _RUN_SEQUENCES: dict[str, int] = {}
 _SPARK_MODULE: Any = None
+_SPARK_STARTED_RUNS: set[str] = set()
 _STREAMING_MODULE: Any = None
 HEARTBEAT_TIMEOUT_MINUTES = 15
 
@@ -95,17 +99,65 @@ def append_run_state(service: Any) -> None:
         },
     )
 
+def _cancel_pipeline(run_id: str, reason: str) -> None:
+    """Cancelo las etapas del RUN sin detener los servicios compartidos."""
+
+    if _SPARK_MODULE is not None:
+        try:
+            _SPARK_MODULE.stop_streaming(run_id, finalize=False)
+        except Exception as error:
+            functions.append_console_log(
+                run_id,
+                "controller",
+                f"Python | error al detener Spark durante la cancelación | {error}",
+            )
+    if _KAFKA_MODULE is not None:
+        _KAFKA_MODULE.reset_producer()
+    functions.append_console_log(
+        run_id,
+        "controller",
+        f"Python | cancelando RUN | motivo={reason}",
+    )
+
+def fail_run(run_id: str, error: str, stage: str = "Controller") -> None:
+    """Cancelo globalmente un RUN ante un error fatal de cualquier etapa."""
+
+    with _MANAGER_LOCK:
+        if run_id in _FAILED_RUNS:
+            return
+        _FAILED_RUNS.add(run_id)
+    service = get_active_service()
+    if service is not None and service.get_snapshot().get("run_id") == run_id:
+        functions.append_console_log(
+            run_id,
+            "controller",
+            f"Python | error fatal en {stage} | {error}",
+        )
+        service.fail(error, f"error_{stage.lower()}")
+        return
+    functions.append_console_log(
+        run_id,
+        "controller",
+        f"Python | error fatal en {stage} | {error}",
+    )
+    append_run_record(
+        run_id,
+        "run_finished",
+        {
+            "status": "Error",
+            "end_reason": f"error_{stage.lower()}",
+            "error": error,
+            "ended_at": _require_streaming_module().get_utc_timestamp(),
+        },
+    )
+    _cancel_pipeline(run_id, f"error_{stage.lower()}")
+
 def fail_active_run(error: str) -> None:
     """Finalizo con error el RUN activo cuando falla su inicialización."""
 
     service = get_active_service()
     if service is not None:
-        functions.append_console_log(
-            service.get_snapshot()["run_id"],
-            "controller",
-            f"Python | ejecución finalizada con error | {error}",
-        )
-        service.fail(error)
+        fail_run(service.get_snapshot()["run_id"], error)
 
 def get_active_service() -> Any:
     """Devuelvo el servicio Alpaca administrado por el controlador."""
@@ -208,34 +260,49 @@ def get_heartbeat_session_id() -> str:
     return _HEARTBEAT_SESSION_ID
 
 def start_pipeline(run_id: str) -> None:
-    """Coordino la preparación de Kafka y Spark antes de liberar Alpaca."""
+    """Preparo Kafka y libero Alpaca para publicar la primera ventana."""
 
     if _KAFKA_MODULE is None or _SPARK_MODULE is None:
         raise RuntimeError("Kafka y Spark no fueron configurados.")
-    if not _SPARK_MODULE.has_active_query():
-        functions.append_console_log(
-            run_id, "controller", "Python | verificando tópico de Kafka"
-        )
-        _KAFKA_MODULE.ensure_topic()
-        functions.append_console_log(
-            run_id, "controller", "Python | tópico Kafka disponible"
-        )
-        functions.append_console_log(
-            run_id, "controller", "Python | iniciando procesamiento Spark"
-        )
-        _SPARK_MODULE.start_streaming(run_id)
-        functions.append_console_log(
-            run_id, "controller", "Python | consulta Spark iniciada"
-        )
+    with _MANAGER_LOCK:
+        if run_id in _KAFKA_PREPARED_RUNS:
+            return
+    functions.append_console_log(
+        run_id, "controller", "Python | verificando tópico de Kafka"
+    )
+    _KAFKA_MODULE.ensure_topic()
+    functions.append_console_log(
+        run_id,
+        "controller",
+        "Python | Kafka preparado; esperando la primera publicación",
+    )
+    if release_active_pipeline(run_id):
+        with _MANAGER_LOCK:
+            _KAFKA_PREPARED_RUNS.add(run_id)
+
+def _notify_first_publication(run_id: str) -> None:
+    """Inicio Spark al recibir la señal de primera publicación confirmada."""
+
+    with _MANAGER_LOCK:
+        if run_id in _SPARK_STARTED_RUNS:
+            return
+        _SPARK_STARTED_RUNS.add(run_id)
+    try:
         functions.append_console_log(
             run_id,
             "controller",
-            "Python | análisis Pandas y persistencia PostgreSQL habilitados por microbatch",
+            "Python | primera publicación Kafka confirmada; iniciando Spark",
         )
-    else:
-        _KAFKA_MODULE.ensure_topic()
         _SPARK_MODULE.start_streaming(run_id)
-    release_active_pipeline(run_id)
+    except Exception as error:
+        with _MANAGER_LOCK:
+            _SPARK_STARTED_RUNS.discard(run_id)
+        functions.append_console_log(
+            run_id,
+            "controller",
+            f"Python | error al iniciar Spark tras confirmar Kafka | {error}",
+        )
+        fail_active_run(str(error))
 
 def release_active_pipeline(run_id: str) -> bool:
     """Habilito el primer lote cuando las consultas del RUN están preparadas."""
@@ -255,6 +322,16 @@ def release_active_service(service: Any) -> None:
             _ACTIVE_SERVICE = None
         if getattr(builtins, _ACTIVE_SERVICE_REGISTRY_KEY, None) is service:
             delattr(builtins, _ACTIVE_SERVICE_REGISTRY_KEY)
+        snapshot = service.get_snapshot()
+        run_id = snapshot.get("run_id")
+        if isinstance(run_id, str):
+            _KAFKA_PREPARED_RUNS.discard(run_id)
+            _SPARK_STARTED_RUNS.discard(run_id)
+            if snapshot.get("status") == "Error":
+                _cancel_pipeline(
+                    run_id,
+                    snapshot.get("end_reason") or "error_pipeline",
+                )
 
 def request_stop_active_run(end_reason: str) -> None:
     """Solicito la detención inmediata del servicio activo."""
@@ -360,6 +437,9 @@ def configure_pipeline_modules(
     global _KAFKA_MODULE, _SPARK_MODULE, _RECOVERY_THREAD
     _KAFKA_MODULE = kafka_module
     _SPARK_MODULE = spark_module
+    spark_module.configure_failure_callback(
+        lambda run_id, error: fail_run(run_id, error, "Spark")
+    )
     metadata = _STREAMING_MODULE.get_latest_metadata()
     if (
         metadata is None
@@ -474,7 +554,10 @@ def start_run(
                 replay_speed,
                 ranking=ranking,
                 release_callback=release_active_service,
-                publish_events_callback=_KAFKA_MODULE.publish_events,
+                publish_events_callback=partial(
+                    _KAFKA_MODULE.publish_events,
+                    first_publication_callback=_notify_first_publication,
+                ),
                 append_run_record_callback=append_run_record,
                 append_run_state_callback=append_run_state,
             )

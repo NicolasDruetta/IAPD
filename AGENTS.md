@@ -17,8 +17,8 @@ Separé la aplicación en módulos para que cada archivo tenga una tarea concret
 **Procesamiento**
 
 - `pipeline/01_python_controller.py`: administra el RUN y coordina las etapas.
-- `pipeline/02_alpaca_stream.py`: consulta y reproduce datos de Alpaca.
-- `pipeline/03_apache_kafka.py`: publica los eventos en Kafka.
+- `pipeline/02_alpaca_stream.py`: consulta el histórico de Alpaca por ventanas y entrega cada lote directamente al callback de Kafka.
+- `pipeline/03_apache_kafka.py`: recibe los lotes de Alpaca y publica los eventos en Kafka.
 - `pipeline/04_apache_spark.py`: consume Kafka, procesa microbatches y escribe Parquet.
 - `pipeline/05_pandas.py`: calcula métricas y correlaciones.
 - `pipeline/06_postgresql.py`: coordina la persistencia de los resultados.
@@ -33,13 +33,13 @@ Separé la aplicación en módulos para que cada archivo tenga una tarea concret
 
 ## 2. Recorrido de los datos
 
-El orden del pipeline es: Controller (Orquestación) → Alpaca (Fuente) → Memoria (Buffer) → Kafka (Streaming) → Streaming (Procesamiento de eventos) → Spark (Procesamiento distribuido) → Parquet (Persistencia de datos) → Pandas (Análisis estadístico) → PostgreSQL (Base de datos) → Streamlit (Visualización).
+El orden del pipeline es: Controller (Orquestación) → Alpaca (descarga histórica por ventanas) → Kafka (publicación) → Spark Structured Streaming (procesamiento) → Parquet (Persistencia de datos) → Pandas (Análisis estadístico) → PostgreSQL (Base de datos) → Streamlit (Visualización).
 
-El Controller inicia una ejecución con un identificador propio (`run_id`). Alpaca descarga operaciones y cotizaciones históricas y las emite progresivamente a través de un buffer en memoria. Kafka publica los mensajes en un tópico. La etapa Streaming corresponde al consumo progresivo de ese tópico mediante Spark Structured Streaming; no es otro servicio independiente.
+El Controller inicia una ejecución con un identificador propio (`run_id`), prepara Kafka y coordina los estados. Alpaca consulta la sesión histórica en ventanas, combina y ordena cada ventana completa, y entrega sus eventos directamente al callback del productor Kafka. El Controller no recibe, almacena ni transporta registros bursátiles. Kafka publica cada `TRADE` y `QUOTE` en el tópico. La etapa Streaming corresponde al consumo progresivo de ese tópico mediante Spark Structured Streaming; no es otro servicio independiente.
 
 Spark procesa los microbatches, separa operaciones (`TRADE`) y cotizaciones (`QUOTE`), genera resultados por símbolo y escribe fragmentos Parquet. Pandas lee los fragmentos nuevos y calcula métricas. PostgreSQL guarda los resultados numéricos y Streamlit los consulta para mostrarlos.
 
-El sistema combina reproducción histórica, streaming por microbatches y análisis de resultados. Que se utilice Structured Streaming no significa que se estén recibiendo cotizaciones en vivo.
+El sistema combina descarga histórica progresiva, publicación por lotes confirmados, streaming por microbatches y análisis de resultados. Que se utilice Structured Streaming no significa que se estén recibiendo cotizaciones en vivo.
 
 ## 3. Ejecuciones y archivos
 
@@ -51,13 +51,15 @@ La carpeta `data/` se genera automáticamente y se usa para archivos temporales 
 
 ## 4. Inicio y detención
 
-El botón de inicio prepara un RUN y pone en marcha las etapas correspondientes. El Controller mantiene el estado de la ejecución y el seguimiento de actividad. La falta de actualizaciones del navegador no detiene por sí sola un RUN; la detención manual se solicita desde el botón STOP.
+El botón de inicio prepara un RUN y pone en marcha las etapas correspondientes. El Controller prepara el tópico Kafka y libera la descarga de Alpaca; la primera publicación confirmada emite solamente una señal de estado que permite iniciar Spark. Las ventanas siguientes continúan publicándose directamente desde Alpaca a Kafka. El Controller mantiene el estado de la ejecución y el seguimiento de actividad. La falta de actualizaciones del navegador no detiene por sí sola un RUN; la detención manual se solicita desde el botón STOP.
 
 F5 y las recargas automáticas normales de Streamlit no deben interrumpir un RUN activo. La aplicación conserva los módulos de procesamiento que tienen un servicio Alpaca o una query Spark activa, y reconstruye la pantalla a partir del estado persistido en los JSONL y de los TXT de logs. Por eso, una recarga puede recuperar el RUN y continuar mostrando su actividad sin crear otra ejecución.
 
 El botón STOP tiene un comportamiento separado y deliberadamente más fuerte: ejecuta `os.kill(os.getpid(), signal.SIGTERM)` sobre el proceso de Streamlit. Docker reinicia el servicio `streamlit` mediante `restart: unless-stopped`, mientras Kafka, Spark Master, Spark Workers y PostgreSQL permanecen como servicios independientes. Al terminar el proceso desaparecen los threads Python de Alpaca, Controller y Kafka. Al volver a iniciar Streamlit, el RUN detenido manualmente se recupera desde el JSONL existente y se consolida su Parquet pendiente antes de quedar marcado como finalizado. Si Spark todavía no liberó un recurso externo, la consolidación se reintenta en los refrescos siguientes y no se informa el RUN como finalizado hasta completarla.
 
 Los errores se registran en los logs de las etapas que corresponden. El estado visual de Streamlit no reemplaza la información registrada sobre el procesamiento.
+
+Ante un error crítico de Controller, Alpaca, Kafka, Spark, Parquet, Pandas o PostgreSQL, el Controller persiste el RUN como `Error` y solicita la cancelación coordinada de las demás etapas. Se reutilizan el `stop_event`, los callbacks existentes, `stop_streaming` y el cierre del productor Kafka. El STOP manual conserva su camino separado mediante SIGTERM y no se registra como error.
 
 ## 5. Recargas, persistencia y logs
 
@@ -96,6 +98,10 @@ El proyecto sigue estas convenciones:
 - Consultas y conexiones SQL en `app/database.py`.
 - Interfaz en `main.py` y `app/renders.py`, sin incluir Streamlit en los módulos de procesamiento.
 - Estilos personalizados en `assets/custom.css`.
+- El Controller coordina estados y transiciones, pero no recibe listas, registros ni DataFrames de mercado.
+- Alpaca conserva la descarga paginada y la entrega directa de cada ventana al productor Kafka configurado.
+- No se debe convertir el histórico completo en una entrega única ni agregar reproducción artificial o pausas.
+- Un error crítico cancela el RUN completo y conserva la causa original; no se continúa procesando ni se marca como `Completado`.
 
 Estas decisiones permiten encontrar más fácilmente cada responsabilidad y mantener el proyecto sin mezclar la interfaz con el procesamiento.
 

@@ -19,7 +19,7 @@ DATA_DIRECTORY = Path(__file__).parent.parent / "data"
 PRESENTATION_TIMEZONE = ZoneInfo("America/Argentina/Cordoba")
 SHOW_STOP_DEBUG = False
 SYMBOL_OPTIONS = {
-    "Todos los símbolos del S&P 500": {
+    "Todas los empresas del S&P 500": {
         "value": ("*",),
         "ranking": None,
     },
@@ -27,11 +27,11 @@ SYMBOL_OPTIONS = {
         "value": ("AAPL", "AMZN", "GOOGL", "META", "MSFT", "NVDA", "TSLA"),
         "ranking": None,
     },
-    "Top 20 con más liquidez del S&P 500": {
+    "Top 20 empresas con más liquidez del S&P 500": {
         "value": (),
         "ranking": "trades",
     },
-    "Top 20 con más volumen del S&P 500": {
+    "Top 20 empresas con más volumen del S&P 500": {
         "value": (),
         "ranking": "volume",
     },
@@ -687,13 +687,15 @@ def render_config() -> None:
                 st.text(status_text)
 
     error_placeholder = st.empty()
+    error_text = " ".join(str(snapshot.get("error") or "").split())
     if (
-        snapshot["error"]
+        error_text
         and not snapshot["is_active"]
         and not st.session_state.start_pending
+        and snapshot.get("end_reason") != "manual_stop"
     ):
         error_placeholder.error(
-            "**Error:** " + (" ".join(str(snapshot["error"]).split()))
+            "**Error:** " + error_text
         )
 
     last_execution_notice = get_last_execution_notice(snapshot)
@@ -797,6 +799,7 @@ def render_info() -> None:
         elapsed_text = "-"
         market_date = "-"
         market_time = "-"
+        downloaded_count = 0
     else:
         elapsed_text = format_elapsed_time(
             snapshot["started_at"],
@@ -812,6 +815,10 @@ def render_info() -> None:
             if presentation_market_timestamp != "-"
             else "-"
         )
+        downloaded_count = get_console_state(
+            "alpaca-log-console",
+            snapshot.get("run_id"),
+        )["line_number"]
 
     with st.container(border=True):
         date_col, time_col, elapsed_col, data_col = st.columns(
@@ -843,7 +850,7 @@ def render_info() -> None:
                 st.text(elapsed_text)
         with data_col:
             st.caption("Cantidad de datos descargados")
-            st.text(str(snapshot.get("event_count", 0)))
+            st.text(str(downloaded_count))
 
 def render_charts() -> None:
     """Muestro los gráficos de la última ejecución."""
@@ -1177,10 +1184,13 @@ def render_postgresql_console() -> None:
     postgresql_lines = [format_presentation_log_line(line) for line in postgresql_records]
     if not postgresql_lines and postgresql_state["line_number"] == 0:
         postgresql_lines = ["PostgreSQL | esperando datos para guardar en la base."]
+    postgresql_counters = functions.get_postgresql_counters(postgresql_path)
     with st.container(horizontal=True, horizontal_alignment="distribute", vertical_alignment="center"):
         st.caption(
-            f"Eventos recibidos: **{postgresql_state['line_number']}**. "
-            f"Datos guardados: **{functions.count_processed_data(postgresql_path, 'postgresql')}**."
+            f"Eventos recibidos: **{postgresql_counters['events']}**. "
+            f"Registros nuevos: **{postgresql_counters['total']}** "
+            f"({postgresql_counters['metrics']} métricas, {postgresql_counters['answers']} respuestas). "
+            f"Actualizaciones realizadas: **{postgresql_counters['updates']}**."
         )
         st.download_button(
             "↓",

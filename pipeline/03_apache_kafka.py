@@ -9,8 +9,9 @@ from kafka import KafkaAdminClient, KafkaProducer
 from kafka.admin import NewTopic
 from kafka.errors import KafkaError
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
+_FIRST_PUBLICATION_RUNS: set[str] = set()
 _KAFKA_LOCK = threading.RLock()
 _KAFKA_PRODUCER: KafkaProducer | None = None
 _RUN_STATS: dict[str, dict[str, Any]] = {}
@@ -18,6 +19,7 @@ KAFKA_BOOTSTRAP_SERVERS = os.getenv(
     "KAFKA_BOOTSTRAP_SERVERS",
     "kafka:9092",
 )
+KAFKA_MAX_RETRY_ATTEMPTS = 5
 KAFKA_RETRY_BACKOFF_SECONDS = 2
 KAFKA_TOPIC = os.getenv("KAFKA_TOPIC", "iapd-market-events")
 
@@ -91,6 +93,7 @@ def initialize_run(run_id: str) -> Path:
     path = get_log_path(run_id)
     with _KAFKA_LOCK:
         path.parent.mkdir(parents=True, exist_ok=True)
+        _FIRST_PUBLICATION_RUNS.discard(run_id)
         _RUN_STATS.pop(run_id, None)
     return path
 
@@ -107,6 +110,7 @@ def publish_events(
     run_id: str,
     events: list[dict[str, Any]],
     stop_event: threading.Event | None = None,
+    first_publication_callback: Callable[[str], None] | None = None,
 ) -> None:
     """Publico un lote confirmado de eventos originales en Kafka."""
 
@@ -127,6 +131,10 @@ def publish_events(
             break
         except KafkaError as error:
             reset_producer()
+            if attempt >= KAFKA_MAX_RETRY_ATTEMPTS:
+                raise RuntimeError(
+                    f"Kafka no está disponible después de {attempt} intentos."
+                ) from error
             if stop_event is not None and stop_event.is_set():
                 raise InterruptedError("Publicación Kafka detenida.") from error
             functions.append_console_log(
@@ -162,6 +170,10 @@ def publish_events(
         except KafkaError as error:
             reset_producer()
             attempt += 1
+            if attempt >= KAFKA_MAX_RETRY_ATTEMPTS:
+                raise RuntimeError(
+                    f"Kafka no confirmó la publicación después de {attempt} intentos."
+                ) from error
             if stop_event is not None and stop_event.is_set():
                 raise InterruptedError("Publicación Kafka detenida.") from error
             functions.append_console_log(
@@ -189,6 +201,11 @@ def publish_events(
                         )
                 except KafkaError as metadata_error:
                     reset_producer()
+                    if attempt >= KAFKA_MAX_RETRY_ATTEMPTS:
+                        raise RuntimeError(
+                            "Kafka no informó particiones después de "
+                            f"{attempt} intentos."
+                        ) from metadata_error
                     if stop_event is not None and stop_event.is_set():
                         raise InterruptedError(
                             "Publicación Kafka detenida."
@@ -212,6 +229,12 @@ def publish_events(
                 f"KAFKA | run={run_id} | error_publicacion={error}",
             )
             raise
+    with _KAFKA_LOCK:
+        first_publication = run_id not in _FIRST_PUBLICATION_RUNS
+        if first_publication:
+            _FIRST_PUBLICATION_RUNS.add(run_id)
+    if first_publication and first_publication_callback is not None:
+        first_publication_callback(run_id)
     partition_counts = {partition: 0 for partition in partitions}
     for record_metadata in metadata:
         partition_counts[record_metadata.partition] = partition_counts.get(

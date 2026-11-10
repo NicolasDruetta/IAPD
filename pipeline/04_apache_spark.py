@@ -12,9 +12,10 @@ from pyspark import SparkContext
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.functions import (col,count,from_json)
 from pyspark.sql.types import DoubleType, StringType, StructField, StructType
-from typing import Any
+from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
+_FATAL_ERROR_CALLBACK: Callable[[str, str], None] | None = None
 _RUN_STATES: dict[str, dict[str, Any]] = {}
 _SPARK_ERROR: str | None = None
 _SPARK_LOCK = threading.RLock()
@@ -48,6 +49,25 @@ SPARK_BLOCK_MANAGER_PORT = os.getenv("SPARK_BLOCK_MANAGER_PORT", "4042")
 SPARK_DRIVER_HOST = os.getenv("SPARK_DRIVER_HOST", "spark-driver")
 SPARK_DRIVER_PORT = os.getenv("SPARK_DRIVER_PORT", "4041")
 SPARK_MASTER = os.getenv("SPARK_MASTER_URL", "spark://spark-master:7077")
+
+def configure_failure_callback(
+    callback: Callable[[str, str], None] | None,
+) -> None:
+    """Registro el callback único para errores fatales del RUN."""
+
+    global _FATAL_ERROR_CALLBACK
+    _FATAL_ERROR_CALLBACK = callback
+
+def _notify_fatal_error(run_id: str, error: str) -> None:
+    """Notifico una sola vez un error que impide continuar el RUN."""
+
+    with _SPARK_LOCK:
+        state = _RUN_STATES.get(run_id)
+        if state is None or state.get("failure_reported"):
+            return
+        state["failure_reported"] = True
+    if _FATAL_ERROR_CALLBACK is not None:
+        _FATAL_ERROR_CALLBACK(run_id, error)
 
 def get_checkpoint(run_id: str | None) -> dict[str, Any] | None:
     """Leo el checkpoint estructurado de un RUN."""
@@ -260,6 +280,10 @@ def process_batch(run_id: str, data_frame: DataFrame, batch_id: int) -> None:
         functions.append_console_log(
             run_id, "spark", f"ERROR | batch_id={batch_id} | procesamiento={error}"
         )
+        _notify_fatal_error(
+            run_id,
+            f"error en microbatch {batch_id}: {error}",
+        )
         raise
     finally:
         input_frame.unpersist()
@@ -386,6 +410,7 @@ def start_streaming(run_id: str) -> None:
             "query_id": None,
             "status": "iniciando",
             "stopping": False,
+            "failure_reported": False,
         }
     spark = get_spark_session()
     if spark is None:
@@ -480,6 +505,10 @@ def stop_streaming(
                 run_id,
                 "spark",
                 f"ERROR | consolidación Parquet: {error}",
+            )
+            _notify_fatal_error(
+                run_id,
+                f"error de consolidación Parquet: {error}",
             )
             if not has_active_query():
                 reset_spark_runtime()
