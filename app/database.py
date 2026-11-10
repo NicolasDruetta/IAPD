@@ -1,4 +1,4 @@
-# Autor: Nicolás Druetta
+# Autor: Nicolás Druetta.
 
 import os
 import psycopg

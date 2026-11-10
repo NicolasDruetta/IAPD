@@ -4,7 +4,7 @@
 
 ## 1. Descripción
 
-Desarrollé esta aplicación como un proyecto personal para procesar y analizar datos bursátiles de Estados Unidos mediante distintas herramientas. El programa descarga operaciones y cotizaciones históricas de Alpaca por ventanas y entrega cada lote directamente a Kafka para procesarlo con Spark. Después calcula métricas con Pandas, las guarda en PostgreSQL y muestra los resultados en Streamlit.
+Desarrollé esta aplicación como un proyecto personal para procesar y analizar datos bursátiles de Estados Unidos mediante distintas herramientas. El programa descarga operaciones y cotizaciones históricas de Alpaca por ventanas, agrupa los eventos según su segundo bursátil original y entrega cada lote directamente a Kafka para procesarlo con Spark. Después calcula métricas con Pandas, las guarda en PostgreSQL y muestra los resultados en Streamlit.
 
 Los datos son reales, pero la ejecución reproduce una sesión pasada. No es una conexión en vivo al mercado debido a las limitaciones del plan gratuito de Alpaca para recibir datos en tiempo real de múltiples acciones.
 
@@ -42,8 +42,8 @@ Controller (Orquestación) -> Alpaca (Fuente) -> Memoria (Buffer) -> Kafka (Stre
 El Controller administra cada ejecución, identificada por un `run_id`.
 
 1. **Controller:** inicia la ejecución, coordina las etapas y registra su estado.
-2. **Alpaca:** obtiene datos de una sesión bursátil anterior, recorre la paginación y entrega cada ventana completa directamente al productor Kafka.
-3. **Kafka:** recibe esos lotes y publica los eventos individuales en un tópico.
+2. **Alpaca:** obtiene datos de una sesión bursátil anterior mediante ventanas temporales. En cada ventana consulta todos los grupos de símbolos, completa su paginación, combina y ordena los `TRADE` y `QUOTE` por sus timestamps originales y los agrupa por segundo bursátil histórico.
+3. **Kafka:** recibe directamente un lote variable por cada segundo con eventos y publica sus registros individuales en un tópico. No se mezclan segundos distintos ni se introducen pausas: el segundo histórico no representa tiempo real de ejecución.
 4. **Streaming:** permite que Spark consuma los eventos de Kafka de forma progresiva mediante Structured Streaming. No es un servicio adicional.
 5. **Spark:** procesa los eventos en microbatches, distingue `TRADE` de `QUOTE` y escribe archivos Parquet. Se utiliza un Master y dos Workers.
 6. **Parquet:** almacena los datos procesados que Pandas necesita para el análisis.
@@ -125,7 +125,7 @@ Los resultados se identifican mediante el `run_id`. De esta forma se pueden cons
 ## 9. Limitaciones
 
 - El feed IEX de Alpaca no representa todas las operaciones del mercado estadounidense.
-- Los datos se descargan de una sesión histórica y se publican progresivamente por ventanas; esto no es un feed en vivo.
+- Los datos se descargan de una sesión histórica y se publican incrementalmente por ventanas, en lotes variables agrupados por el segundo bursátil original. Esto no es un feed en vivo ni una reproducción con velocidad controlada.
 - Algunas acciones pueden tener pocas operaciones o cotizaciones y no permitir cálculos estadísticos completos.
 - El rendimiento depende de los recursos asignados a Docker y de la disponibilidad de las APIs utilizadas.
 - Una detención anticipada puede dejar fragmentos temporales mientras Spark libera recursos; Streamlit los consolida automáticamente al volver y reintenta si todavía no puede acceder a ellos.

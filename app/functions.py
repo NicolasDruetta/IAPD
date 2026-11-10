@@ -1,4 +1,4 @@
-# Autor: Nicolás Druetta
+# Autor: Nicolás Druetta.
 
 import os
 import re
@@ -96,6 +96,39 @@ def read_console_tail(
         return [], 0, 0
     records.reverse()
     return records, file_size, console_line_number(records[-1]) if records else 0
+
+def read_console_buffer(
+    path: Path,
+    file_position: int,
+) -> tuple[list[str], int]:
+    """Leo solamente las líneas agregadas después del cursor visual."""
+
+    if not path.exists():
+        return [], file_position
+    try:
+        with path.open("rb") as console_file:
+            file_size = console_file.seek(0, os.SEEK_END)
+            if file_position > file_size:
+                file_position = 0
+            console_file.seek(file_position)
+            content = console_file.read()
+    except (OSError, UnicodeDecodeError):
+        return [], file_position
+    try:
+        return content.decode("utf-8").splitlines(), file_size
+    except UnicodeDecodeError:
+        return [], file_position
+
+def append_console_buffer(
+    buffer: list[str],
+    lines: list[str],
+    line_limit: int = 200,
+) -> None:
+    """Agrego líneas al buffer visual y conservo solo las más recientes."""
+
+    buffer.extend(lines)
+    if len(buffer) > line_limit:
+        del buffer[:-line_limit]
 
 def count_processed_data(path: Path | None, console_name: str) -> int:
     """Cuento datos procesados sin contar líneas ni lotes del log."""

@@ -1,4 +1,4 @@
-# Autor: Nicolás Druetta
+# Autor: Nicolás Druetta.
 
 import math
 import pandas as pd

@@ -1,4 +1,4 @@
-# Autor: Nicolás Druetta
+# Autor: Nicolás Druetta.
 
 import importlib.util
 import math
@@ -1332,14 +1332,33 @@ def get_console_buffer_view(
     console_state: dict[str, Any],
     clear_consoles: bool,
 ) -> tuple[list[str], int, int, bool, bool]:
-    """Leo solamente los 200 últimos registros del TXT de cada consola."""
+    """Mantengo hasta 200 líneas visibles y leo solo lo nuevo del TXT."""
 
     if clear_consoles or run_id is None or console_path is None:
         console_state["line_number"] = 0
+        console_state["buffer"] = []
+        console_state["file_position"] = 0
         return [], 0, 0, True, False
-    lines, _, total = functions.read_console_tail(console_path, 200)
-    console_state["line_number"] = total
-    return lines, 0, total, True, False
+    if "buffer" not in console_state:
+        lines, file_size, total = functions.read_console_tail(console_path, 200)
+        console_state["buffer"] = lines
+        console_state["file_position"] = file_size
+        console_state["line_number"] = total
+    else:
+        new_lines, file_size = functions.read_console_buffer(
+            console_path,
+            console_state.get("file_position", 0),
+        )
+        functions.append_console_buffer(
+            console_state["buffer"],
+            new_lines,
+        )
+        console_state["file_position"] = file_size
+        if new_lines:
+            console_state["line_number"] = functions.console_line_number(
+                new_lines[-1]
+            )
+    return console_state["buffer"], 0, console_state["line_number"], True, False
 
 def get_console_state(console_id: str, run_id: str | None) -> dict[str, Any]:
     """Mantengo el contador visual independiente de cada consola y RUN."""
@@ -1813,7 +1832,7 @@ def _refresh_heartbeat_display(
 render_heartbeat = st.fragment(render_heartbeat, run_every="5s")
 render_config = st.fragment(render_config, run_every="5s")
 render_controller_console = st.fragment(render_controller_console, run_every="200ms") # Especial: 200ms.
-render_alpaca_console = st.fragment(render_alpaca_console, run_every="5s")
+render_alpaca_console = st.fragment(render_alpaca_console, run_every="1s") # Especial: 1s.
 render_kafka_console = st.fragment(render_kafka_console, run_every="5s")
 render_spark_console = st.fragment(render_spark_console, run_every="5s")
 render_pandas_console = st.fragment(render_pandas_console, run_every="5s")

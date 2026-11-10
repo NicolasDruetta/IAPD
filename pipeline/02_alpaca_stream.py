@@ -1,4 +1,4 @@
-# Autor: Nicolás Druetta
+# Autor: Nicolás Druetta.
 
 import certifi
 import json
@@ -38,7 +38,6 @@ HTTP_MAX_RETRIES = 5
 MAX_HTTP_CONCURRENCY = 6
 NEW_YORK_TIMEZONE = ZoneInfo("America/New_York")
 RANKED_SYMBOL_COUNT = 20
-REPLAY_BATCH_SIZE = 100
 REPLAY_WINDOW_MINUTES = 1
 SP500_COMPONENTS_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 STOCK_SNAPSHOTS_URL = "https://data.alpaca.markets/v2/stocks/snapshots"
@@ -538,17 +537,10 @@ class AlpacaStreamingService:
             self._append_run_state_callback(self)
 
     def _emit_replay_batch(self, events: list[AlpacaEvent]) -> None:
-        """Preparo y publico un lote cronológico con ritmo controlado."""
+        """Preparo y publico el lote completo de un segundo histórico."""
 
-        for start in range(0, len(events), REPLAY_BATCH_SIZE):
-            if self._stop_event.is_set():
-                return
-            batch = events[start:start + REPLAY_BATCH_SIZE]
-            self._persist_event_batch(batch)
-            if self._replay_speed > 0 and self._stop_event.wait(
-                self._replay_speed
-            ):
-                return
+        if not self._stop_event.is_set():
+            self._persist_event_batch(events)
 
     def _persist_event_batch(self, events: list[AlpacaEvent]) -> None:
         """Publico un lote completo sin sincronizar una vez por evento."""
@@ -838,8 +830,8 @@ def download_historical_dataset(
 
     def merge_window(
         group_records: list[tuple[int, list[dict[str, Any]]]],
-    ) -> tuple[int, list[AlpacaEvent]]:
-        """Mezclo en memoria los eventos ordenados de la ventana."""
+    ) -> int:
+        """Mezclo la ventana y entrego lotes completos de cada segundo."""
 
         ordered_records = [
             (
@@ -850,14 +842,22 @@ def download_historical_dataset(
             for position, record in enumerate(records)
         ]
         ordered_records.sort(key=lambda item: item[0])
-        batch: list[AlpacaEvent] = []
+        second_batch: list[AlpacaEvent] = []
+        current_second: datetime | None = None
         for _, record in ordered_records:
-            if event_callback is not None:
-                batch.append(event_from_record(record))
-                if len(batch) == REPLAY_BATCH_SIZE:
-                    event_callback(batch)
-                    batch = []
-        return len(ordered_records), batch
+            event = event_from_record(record)
+            event_second = datetime.fromisoformat(
+                event.timestamp.replace("Z", "+00:00")
+            ).replace(microsecond=0)
+            if current_second is not None and event_second != current_second:
+                if event_callback is not None:
+                    event_callback(second_batch)
+                second_batch = []
+            current_second = event_second
+            second_batch.append(event)
+        if event_callback is not None and second_batch:
+            event_callback(second_batch)
+        return len(ordered_records)
 
     window_start = session_start
     day_end = session_end
@@ -911,10 +911,8 @@ def download_historical_dataset(
             f"DATA | ventana={format_presentation_timestamp(window_start)}-{format_presentation_timestamp(window_end)} | grupos={completed_groups}/{len(symbol_groups)} | respuestas={window_responses} | páginas_con_operaciones={window_responses_with_trades} | páginas_con_cotizaciones={window_responses_with_quotes} | descargados={window_downloaded}"
                     )
         group_records.sort(key=lambda item: item[0])
-        merged_count, pending_batch = merge_window(group_records)
+        merged_count = merge_window(group_records)
         event_count += merged_count
-        if event_callback is not None and pending_batch:
-            event_callback(pending_batch)
         if progress_callback is not None:
             progress_callback(
                 f"DATA | ventana={format_presentation_timestamp(window_start)}-{format_presentation_timestamp(window_end)} | respuestas={window_responses} | páginas_con_operaciones={window_responses_with_trades} | páginas_con_cotizaciones={window_responses_with_quotes} | descargados={window_downloaded} | emitidos_acumulados={event_count}"
