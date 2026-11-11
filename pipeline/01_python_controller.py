@@ -436,9 +436,13 @@ def _coordinate_written_batch(
             raise RuntimeError("Pandas no está configurado en el Controller.")
         analysis = pandas_module.analyze(run_id, batch_id=batch_id)
         if analysis is None:
-            raise RuntimeError(
-                f"Pandas no produjo resultados para batch_id={batch_id}."
+            functions.append_console_log(
+                run_id,
+                "controller",
+                "Python | Pandas sin resultados "
+                f"para batch_id={batch_id}; se continúa sin persistir.",
             )
+            return True
     except Exception as error:
         fail_run(run_id, str(error), "Pandas")
         return False
@@ -469,9 +473,9 @@ def release_active_service(service: Any) -> None:
     """Libero el RUN terminado para permitir una nueva ejecución."""
 
     global _ACTIVE_SERVICE
+    snapshot = service.get_snapshot()
+    run_id = snapshot.get("run_id")
     with _MANAGER_LOCK:
-        snapshot = service.get_snapshot()
-        run_id = snapshot.get("run_id")
         registered_service = getattr(
             builtins,
             _ACTIVE_SERVICE_REGISTRY_KEY,
@@ -495,6 +499,13 @@ def release_active_service(service: Any) -> None:
         "Python | liberando recursos...",
     )
     release_errors = _release_run_resources(run_id)
+    wait_for_workers = getattr(service, "wait_for_workers", None)
+    if callable(wait_for_workers):
+        pending_workers = wait_for_workers()
+        if pending_workers:
+            release_errors.append(
+                "Alpaca: hilos pendientes=" + ",".join(pending_workers)
+            )
     if not release_errors:
         functions.append_console_log(
             run_id,
@@ -848,7 +859,21 @@ def stop_run_async(
                 )
             request_stop_active_run("manual_stop")
             operation["debug"].append("RUN marcado para detener")
-            os.kill(os.getpid(), signal.SIGTERM)
+            try:
+                stop_active_run("manual_stop")
+                operation["debug"].append("recursos del RUN liberados")
+            except Exception as error:
+                operation["debug"].append(
+                    f"ERROR durante la liberación: {error}"
+                )
+                if stopping_run_id:
+                    functions.append_console_log(
+                        stopping_run_id,
+                        "controller",
+                        f"Python | error durante la liberación antes de STOP | {error}",
+                    )
+            finally:
+                os.kill(os.getpid(), signal.SIGTERM)
         except Exception as error:
             operation["error"] = error
             operation["debug"].append(f"ERROR: {error}")

@@ -41,6 +41,7 @@ RANKED_SYMBOL_COUNT = 20
 REPLAY_WINDOW_MINUTES = 1
 SP500_COMPONENTS_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 STOCK_SNAPSHOTS_URL = "https://data.alpaca.markets/v2/stocks/snapshots"
+WORKER_JOIN_TIMEOUT_SECONDS = 3
 
 class SP500TableParser(HTMLParser):
     """Extraigo filas de tablas HTML para localizar la columna Symbol."""
@@ -365,7 +366,6 @@ class AlpacaStreamingService:
 
         self.request_stop(end_reason)
         self._finish("Detenido", end_reason)
-        self._join_threads()
 
     def request_stop(self, end_reason: str) -> None:
         """Solicito el cierre inmediato sin esperar los hilos de trabajo."""
@@ -653,22 +653,33 @@ class AlpacaStreamingService:
                 },
             )
             self._append_run_state_callback(self)
-        self._join_threads()
         if self._release_callback is not None:
             self._release_callback(self)
+        else:
+            self._join_threads()
+
+    def wait_for_workers(self) -> list[str]:
+        """Espero de forma acotada los hilos propios antes de confirmar la limpieza."""
+
+        return self._join_threads()
 
     def _add_log(self, message: str, date_only: bool = False) -> None:
         """Conservo la ruta de callback sin escribir mensajes operativos."""
 
         return
 
-    def _join_threads(self) -> None:
+    def _join_threads(self) -> list[str]:
         """Espero el cierre acotado de red y publicación sin auto-bloquearme."""
 
         current_thread = threading.current_thread()
         for thread in (self._stream_thread, self._download_thread):
             if thread is not None and thread is not current_thread:
-                thread.join(timeout=35)
+                thread.join(timeout=WORKER_JOIN_TIMEOUT_SECONDS)
+        return [
+            thread.name
+            for thread in (self._stream_thread, self._download_thread)
+            if thread is not None and thread.is_alive()
+        ]
 
     def _safe_error(self, error: Exception) -> str:
         """Devuelvo un error útil sin incluir secretos de autenticación."""

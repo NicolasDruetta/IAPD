@@ -21,9 +21,22 @@ KAFKA_BOOTSTRAP_SERVERS = os.getenv(
     "KAFKA_BOOTSTRAP_SERVERS",
     "kafka:9092",
 )
-KAFKA_MAX_RETRY_ATTEMPTS = 5
 KAFKA_RETRY_BACKOFF_SECONDS = 2
 KAFKA_TOPIC = os.getenv("KAFKA_TOPIC", "iapd-market-events")
+
+def _is_transient_kafka_error(error: KafkaError) -> bool:
+    """Identifico fallos de conexión que pueden resolverse al volver el broker."""
+
+    transient_names = {
+        "KafkaTimeoutError",
+        "NoBrokersAvailable",
+        "KafkaConnectionError",
+        "NodeNotReadyError",
+        "NetworkException",
+    }
+    return bool(getattr(error, "retriable", False)) or (
+        error.__class__.__name__ in transient_names
+    )
 
 def close_producer() -> None:
     """Cierro el productor Kafka compartido cuando finaliza el proceso."""
@@ -133,9 +146,9 @@ def publish_events(
             break
         except KafkaError as error:
             reset_producer()
-            if attempt >= KAFKA_MAX_RETRY_ATTEMPTS:
+            if not _is_transient_kafka_error(error):
                 raise RuntimeError(
-                    f"Kafka no está disponible después de {attempt} intentos."
+                    f"Kafka devolvió un error no retriable: {error}"
                 ) from error
             if stop_event is not None and stop_event.is_set():
                 raise InterruptedError("Publicación Kafka detenida.") from error
@@ -172,9 +185,9 @@ def publish_events(
         except KafkaError as error:
             reset_producer()
             attempt += 1
-            if attempt >= KAFKA_MAX_RETRY_ATTEMPTS:
+            if not _is_transient_kafka_error(error):
                 raise RuntimeError(
-                    f"Kafka no confirmó la publicación después de {attempt} intentos."
+                    f"Kafka devolvió un error no retriable al publicar: {error}"
                 ) from error
             if stop_event is not None and stop_event.is_set():
                 raise InterruptedError("Publicación Kafka detenida.") from error
@@ -203,10 +216,10 @@ def publish_events(
                         )
                 except KafkaError as metadata_error:
                     reset_producer()
-                    if attempt >= KAFKA_MAX_RETRY_ATTEMPTS:
+                    if not _is_transient_kafka_error(metadata_error):
                         raise RuntimeError(
-                            "Kafka no informó particiones después de "
-                            f"{attempt} intentos."
+                            "Kafka devolvió un error no retriable al consultar "
+                            f"las particiones: {metadata_error}"
                         ) from metadata_error
                     if stop_event is not None and stop_event.is_set():
                         raise InterruptedError(
