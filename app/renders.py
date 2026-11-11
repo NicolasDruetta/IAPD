@@ -782,7 +782,6 @@ def render_config() -> None:
 def render_consoles_part1() -> None:
     """Muestro las primeras cuatro consolas del pipeline."""
 
-    _refresh_heartbeat_display("heartbeat-refresh-console")
     with st.container(key="consoles-part1"):
         execution_column, alpaca_column = st.columns(
             2,
@@ -1909,7 +1908,7 @@ def _refresh_heartbeat_display(
 
 render_heartbeat = st.fragment(render_heartbeat, run_every="3s")
 render_config = st.fragment(render_config, run_every="3s")
-render_controller_console = st.fragment(render_controller_console, run_every="200ms") # Especial: 200ms.
+render_controller_console = st.fragment(render_controller_console, run_every="1s") # Especial: 1s.
 render_alpaca_console = st.fragment(render_alpaca_console, run_every="3s")
 render_kafka_console = st.fragment(render_kafka_console, run_every="3s")
 render_spark_console = st.fragment(render_spark_console, run_every="3s")

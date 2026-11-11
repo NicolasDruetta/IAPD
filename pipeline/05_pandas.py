@@ -28,7 +28,15 @@ def analyze(
     """Leo lotes Parquet nuevos y preparo resultados acumulados."""
 
     parquet_path = DATA_DIRECTORY / "spark" / f"{run_id}_04_apache_spark_data.parquet.parts"
-    batch_paths = sorted(parquet_path.glob("batch_*")) if parquet_path.is_dir() else []
+    batch_paths = (
+        sorted(
+            path
+            for path in parquet_path.glob("batch_*")
+            if path.is_dir() and any(path.glob("*.parquet"))
+        )
+        if parquet_path.is_dir()
+        else []
+    )
     if not batch_paths:
         return None
     try:
