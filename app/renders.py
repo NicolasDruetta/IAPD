@@ -481,7 +481,27 @@ def render_config() -> None:
     universe = snapshot.get("universe", {})
     option_labels = list(SYMBOL_OPTIONS)
     default_option = option_labels[0]
-    if snapshot["is_active"] and universe.get("selection") == "manual":
+    universe_selection = universe.get("selection")
+    if universe_selection == "sp500":
+        default_option = next(
+            (
+                label
+                for label, option in SYMBOL_OPTIONS.items()
+                if option["value"] == ("*",)
+            ),
+            default_option,
+        )
+    elif universe_selection == "sp500_ranked":
+        ranking = universe.get("ranking")
+        default_option = next(
+            (
+                label
+                for label, option in SYMBOL_OPTIONS.items()
+                if option["ranking"] == ranking
+            ),
+            default_option,
+        )
+    elif universe_selection == "manual":
         manual_symbols = tuple(snapshot["symbols"])
         default_option = next(
             (
@@ -491,6 +511,8 @@ def render_config() -> None:
             ),
             default_option,
         )
+    if snapshot.get("run_id") and not st.session_state.start_pending:
+        st.session_state["symbol-universe"] = default_option
 
     st.write(f"**Empresas a analizar:**")
     symbols_col, actions_col = st.columns(
