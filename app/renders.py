@@ -861,6 +861,13 @@ def render_info() -> None:
         downloaded_count = "-"
         spark_processed_count = "-"
         pandas_analyzed_count = "-"
+    elif not isinstance(snapshot.get("run_id"), str):
+        elapsed_text = "-"
+        market_date = "-"
+        market_time = "-"
+        downloaded_count = "-"
+        spark_processed_count = "-"
+        pandas_analyzed_count = "-"
     else:
         elapsed_text = format_elapsed_time(
             snapshot["started_at"],
@@ -1408,7 +1415,7 @@ def format_elapsed_time(
     """Formateo el tiempo transcurrido desde el inicio del RUN."""
 
     if not started_at:
-        return "00:00:00"
+        return "-"
     try:
         started_timestamp = datetime.fromisoformat(
             started_at.replace("Z", "+00:00")
@@ -1417,7 +1424,7 @@ def format_elapsed_time(
             ended_at.replace("Z", "+00:00")
         ) if ended_at else datetime.now(timezone.utc)
     except ValueError:
-        return "00:00:00"
+        return "-"
     elapsed_seconds = max(
         0,
         int((end_timestamp - started_timestamp).total_seconds()),

@@ -5,6 +5,9 @@ import os
 import shutil
 import threading
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 
 from app import functions
 from datetime import datetime, timedelta, timezone
@@ -51,6 +54,8 @@ SPARK_BLOCK_MANAGER_PORT = os.getenv("SPARK_BLOCK_MANAGER_PORT", "4042")
 SPARK_DRIVER_HOST = os.getenv("SPARK_DRIVER_HOST", "spark-driver")
 SPARK_DRIVER_PORT = os.getenv("SPARK_DRIVER_PORT", "4041")
 SPARK_MASTER = os.getenv("SPARK_MASTER_URL", "spark://spark-master:7077")
+SPARK_UI_URL = os.getenv("SPARK_UI_URL", "http://localhost:4040").rstrip("/")
+SPARK_UI_REQUEST_TIMEOUT_SECONDS = 0.75
 
 def configure_failure_callback(
     callback: Callable[[str, str], None] | None,
@@ -81,6 +86,137 @@ def _notify_fatal_error(run_id: str, error: str) -> None:
         state["failure_reported"] = True
     if _FATAL_ERROR_CALLBACK is not None:
         _FATAL_ERROR_CALLBACK(run_id, error)
+
+def _spark_ui_json(path: str) -> Any:
+    """Leo una respuesta puntual de la API REST nativa de Spark UI."""
+
+    try:
+        request = urllib.request.Request(f"{SPARK_UI_URL}{path}")
+        with urllib.request.urlopen(
+            request,
+            timeout=SPARK_UI_REQUEST_TIMEOUT_SECONDS,
+        ) as response:
+            return json.load(response)
+    except (OSError, ValueError, urllib.error.URLError):
+        return None
+
+def _completed_stage_keys(application_id: str) -> set[tuple[int, int]]:
+    """Obtengo los stages terminados que expone la Spark UI."""
+
+    encoded_application_id = urllib.parse.quote(application_id, safe="")
+    stages = _spark_ui_json(
+        f"/api/v1/applications/{encoded_application_id}/stages?status=complete"
+    )
+    if not isinstance(stages, list):
+        return set()
+    return {
+        (int(stage["stageId"]), int(stage.get("attemptId", 0)))
+        for stage in stages
+        if isinstance(stage, dict) and "stageId" in stage
+    }
+
+def _worker_label(host: str) -> str:
+    """Identifico el Worker por el hostname real informado por Spark."""
+
+    normalized_host = host.lower()
+    if "spark-worker-1" in normalized_host:
+        return "SPARK WORKER 1"
+    if "spark-worker-2" in normalized_host:
+        return "SPARK WORKER 2"
+    if host:
+        return "SPARK EXECUTOR"
+    return "SPARK EXECUTOR"
+
+def _task_record_count(task: dict[str, Any]) -> tuple[int, bool]:
+    """Obtengo registros solo cuando Spark expone una métrica de tarea."""
+
+    metrics = task.get("taskMetrics")
+    if not isinstance(metrics, dict):
+        return 0, False
+    for metric_name in ("inputMetrics", "outputMetrics"):
+        metric = metrics.get(metric_name)
+        if isinstance(metric, dict) and isinstance(metric.get("recordsRead"), int):
+            return int(metric["recordsRead"]), True
+        if isinstance(metric, dict) and isinstance(metric.get("recordsWritten"), int):
+            return int(metric["recordsWritten"]), True
+    return 0, False
+
+def _append_worker_task_logs(
+    run_id: str,
+    batch_id: int,
+    spark: SparkSession,
+) -> None:
+    """Registro resúmenes reales de tareas terminadas en los Workers."""
+
+    application_id = str(spark.sparkContext.applicationId)
+    with _SPARK_LOCK:
+        state = _RUN_STATES.get(run_id)
+        if state is None:
+            return
+        observed_stages = state.setdefault("observed_stage_keys", set())
+        baseline_stages = set(observed_stages)
+    stage_keys = _completed_stage_keys(application_id)
+    new_stage_keys = stage_keys - baseline_stages
+    if not new_stage_keys:
+        with _SPARK_LOCK:
+            state = _RUN_STATES.get(run_id)
+            if state is not None:
+                state["observed_stage_keys"].update(stage_keys)
+        return
+    encoded_application_id = urllib.parse.quote(application_id, safe="")
+    summaries: dict[tuple[str, int, str, str, str], dict[str, Any]] = {}
+    fetched_stage_keys: set[tuple[int, int]] = set()
+    for stage_id, attempt_id in sorted(new_stage_keys):
+        tasks = _spark_ui_json(
+            "/api/v1/applications/"
+            f"{encoded_application_id}/stages/{stage_id}/{attempt_id}/taskList"
+            "?length=10000"
+        )
+        if not isinstance(tasks, list):
+            continue
+        fetched_stage_keys.add((stage_id, attempt_id))
+        for task in tasks:
+            if not isinstance(task, dict):
+                continue
+            host = str(task.get("host") or "")
+            executor_id = str(task.get("executorId") or "-")
+            status = str(task.get("status") or "UNKNOWN")
+            key = (_worker_label(host), stage_id, executor_id, host, status)
+            summary = summaries.setdefault(
+                key,
+                {"task_ids": [], "records": 0, "has_records": False},
+            )
+            task_id = task.get("taskId")
+            if task_id is not None:
+                summary["task_ids"].append(str(task_id))
+            records, has_records = _task_record_count(task)
+            summary["records"] += records
+            summary["has_records"] |= has_records
+    for (worker, stage_id, executor_id, host, status), summary in sorted(
+        summaries.items()
+    ):
+        task_id_values = summary["task_ids"]
+        if len(task_id_values) > 12:
+            task_ids = (
+                ",".join(task_id_values[:6])
+                + ",...,"
+                + ",".join(task_id_values[-6:])
+                + f" (+{len(task_id_values) - 12})"
+            )
+        else:
+            task_ids = ",".join(task_id_values)
+        message = (
+            f"{worker} | TASK | batch_id={batch_id} | stage={stage_id} | "
+            f"tasks={task_ids or '-'} | executor={executor_id} | "
+            f"host={host or '-'} | estado={status}"
+        )
+        if summary["has_records"]:
+            message += f" | registros={summary['records']}"
+        functions.append_console_log(run_id, "spark", message)
+    with _SPARK_LOCK:
+        state = _RUN_STATES.get(run_id)
+        if state is not None:
+            state["observed_stage_keys"].update(fetched_stage_keys)
 
 def get_checkpoint(run_id: str | None) -> dict[str, Any] | None:
     """Leo el checkpoint estructurado de un RUN."""
@@ -213,7 +349,7 @@ def process_batch(run_id: str, data_frame: DataFrame, batch_id: int) -> None:
         functions.append_console_log(
             run_id,
             "spark",
-            f"EXTRACT | batch_id={batch_id} | eventos={input_count} | origen=Kafka",
+            f"SPARK DRIVER | EXTRACT | batch_id={batch_id} | eventos={input_count} | origen=Kafka",
         )
         valid_frame = input_frame.where(
             col("run_id").isNotNull()
@@ -271,10 +407,11 @@ def process_batch(run_id: str, data_frame: DataFrame, batch_id: int) -> None:
             ) + "\n")
             info_file.flush()
             os.fsync(info_file.fileno())
+        _append_worker_task_logs(run_id, batch_id, _SPARK_SESSION)
         for message in (
-            f"TRANSFORM | batch_id={batch_id} | entrada={input_count} | validos={valid_count} | invalidos={input_count - valid_count} | duplicados_eliminados={valid_count - processed_count}",
-            f"LOAD | batch_id={batch_id} | ruta={parts_path} | registros={processed_count} | estado=completado",
-            f"EDA | batch_id={batch_id} | simbolos={symbol_count} | trades={checkpoint['processed_events_by_type']['TRADE']} | quotes={checkpoint['processed_events_by_type']['QUOTE']}",
+            f"SPARK DRIVER | TRANSFORM | batch_id={batch_id} | entrada={input_count} | validos={valid_count} | invalidos={input_count - valid_count} | duplicados_eliminados={valid_count - processed_count}",
+            f"SPARK DRIVER | LOAD | batch_id={batch_id} | ruta={parts_path} | registros={processed_count} | estado=completado",
+            f"SPARK DRIVER | EDA | batch_id={batch_id} | simbolos={symbol_count} | trades={checkpoint['processed_events_by_type']['TRADE']} | quotes={checkpoint['processed_events_by_type']['QUOTE']}",
         ):
             functions.append_console_log(run_id, "spark", message)
         if (
@@ -436,6 +573,7 @@ def start_streaming(run_id: str) -> None:
             "status": "iniciando",
             "stopping": False,
             "failure_reported": False,
+            "observed_stage_keys": set(),
         }
     spark = get_spark_session()
     if spark is None:
@@ -456,6 +594,12 @@ def start_streaming(run_id: str) -> None:
     starting_timestamp_milliseconds = int(starting_timestamp.timestamp() * 1000)
     try:
         initialize_parquet_output(run_id, spark)
+        with _SPARK_LOCK:
+            state = _RUN_STATES.get(run_id)
+            if state is not None:
+                state["observed_stage_keys"] = _completed_stage_keys(
+                    str(spark.sparkContext.applicationId)
+                )
         events = (
             spark.readStream.format("kafka")
             .option("kafka.bootstrap.servers", KAFKA_BOOTSTRAP_SERVERS)
