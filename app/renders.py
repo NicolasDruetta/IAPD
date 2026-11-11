@@ -782,6 +782,7 @@ def render_config() -> None:
 def render_consoles_part1() -> None:
     """Muestro las primeras cuatro consolas del pipeline."""
 
+    st.write("")
     with st.container(key="consoles-part1"):
         execution_column, alpaca_column = st.columns(
             2,
@@ -807,6 +808,7 @@ def render_consoles_part1() -> None:
 def render_consoles_part2() -> None:
     """Muestro las consolas de análisis y persistencia del pipeline."""
 
+    st.write("")
     with st.container(key="consoles-part2"):
         pandas_column, postgresql_column = st.columns(
             2,
