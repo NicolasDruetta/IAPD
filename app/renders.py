@@ -1605,7 +1605,6 @@ def mark_start_pending() -> None:
     st.session_state.manual_stop_status = False
     st.session_state.start_requested = True
     st.session_state.start_pending = True
-    st.rerun()
 
 def register_heartbeat_for_display(controller_module: Any, run_id: str) -> bool:
     """Registro el heartbeat y conservo su instante para mostrarlo en pantalla."""
