@@ -383,8 +383,9 @@ textarea {
     border-color: var(--border-color) !important;
 }
 
-.stApp:has(.st-key-theme-dark) .st-key-consoles-part1 a {
+.stApp:has(.st-key-theme-dark) a {
     color: #66b3ff !important;
+    -webkit-text-fill-color: #66b3ff !important;
 }
 
 .stApp:has(.st-key-theme-dark) button {
