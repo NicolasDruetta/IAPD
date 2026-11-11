@@ -227,6 +227,70 @@ LOG_CONSOLE_COMPONENT = st.components.v2.component(
     """,
 )
 
+SAVE_INDICATOR_COMPONENT = st.components.v2.component(
+    name="apache_big_data_lab.save_indicator",
+    html=(
+        '<span class="save-indicator-anchor" aria-hidden="true"></span>'
+    ),
+    isolate_styles=False,
+    js="""
+    export default function ({ data }) {
+        let cancelled = false;
+
+        const update = () => {
+            if (cancelled) return;
+            const headings = Array.from(
+                document.querySelectorAll("h1, h2, h3, h4, h5, h6"),
+            );
+            const heading = headings.find(
+                (element) => element.textContent.trim().startsWith(data.title),
+            );
+            if (heading === undefined) return;
+            let indicator = heading.querySelector(":scope > .save-indicator");
+            if (indicator === null) {
+                const saveIndicator = document.createElement("span");
+                saveIndicator.className = "save-indicator";
+                saveIndicator.style.cssText =
+                    "align-items:center;color:#1f6fb2;display:inline-flex;" +
+                    "font-size:0.75rem;font-weight:700;gap:0.35rem;" +
+                    "line-height:1;position:relative;top:-3px;left:3px;";
+                saveIndicator.innerHTML =
+                    '<span class="save-icon" aria-hidden="true">💾</span>' +
+                    '<span>SAVE</span>';
+                heading.appendChild(saveIndicator);
+                indicator = saveIndicator;
+            }
+            indicator.style.display = data.active ? "inline-flex" : "none";
+            const icon = indicator.querySelector(".save-icon");
+            if (icon !== null) {
+                if (data.active && indicator.__saveAnimation === undefined) {
+                    indicator.__saveAnimation = icon.animate(
+                        [
+                            { opacity: "1" },
+                            { opacity: "0.35" },
+                            { opacity: "1" },
+                        ],
+                        { duration: 1500, iterations: Infinity },
+                    );
+                } else if (!data.active && indicator.__saveAnimation !== undefined) {
+                    indicator.__saveAnimation.cancel();
+                    indicator.__saveAnimation = undefined;
+                }
+            }
+        };
+
+        update();
+        const retryTimer = setInterval(update, 50);
+        const stopRetry = setTimeout(() => clearInterval(retryTimer), 2000);
+        return () => {
+            cancelled = true;
+            clearInterval(retryTimer);
+            clearTimeout(stopRetry);
+        };
+    }
+    """,
+)
+
 SYSTEM_THEME_COMPONENT = st.components.v2.component(
     name="apache_big_data_lab.system_theme",
     html='<span class="system-theme-detector"></span>',
@@ -525,7 +589,6 @@ def render_config() -> None:
                         st.session_state.alpaca_run_id = run_id
                         register_heartbeat_for_display(controller_module, run_id)
                         controller_module.start_pipeline(run_id)
-                        st.session_state.controller_log_animation_run_id = run_id
                         st.session_state.start_pending = False
                         st.session_state.start_operation = None
                         snapshot = controller_module.get_run_snapshot()
@@ -1012,19 +1075,9 @@ def render_controller_console() -> None:
     log_lines, _, total_lines, _, _ = get_console_buffer_view(
         run_id, "controller", execution_path, execution_state, clear_consoles
     )
-    if clear_consoles:
-        execution_state["display_line_number"] = 0
-    elif "display_line_number" not in execution_state:
-        execution_state["display_line_number"] = (
-            0
-            if st.session_state.get("controller_log_animation_run_id") == run_id
-            else total_lines
-        )
-    if execution_state["display_line_number"] < total_lines:
-        execution_state["display_line_number"] += 1
     log_display_lines = [
         format_presentation_log_line(line)
-        for line in log_lines[:min(execution_state["display_line_number"], len(log_lines))]
+        for line in log_lines
     ]
     if not log_display_lines and execution_state["line_number"] == 0:
         log_display_lines = ["Python | esperando actividad."]
@@ -1204,6 +1257,10 @@ def render_postgresql_console() -> None:
     clear_consoles, run_id, _, _, _, _, _, postgresql_path, _ = _get_consoles_context()
     with st.container(horizontal=True, vertical_alignment="center", gap="small"):
         st.subheader("6. Log de persistencia (PostgreSQL)", width="content")
+        render_save_indicator(
+            "6. Log de persistencia (PostgreSQL)",
+            "save-postgresql-log",
+        )
     postgresql_state = get_console_state("postgresql-log-console", run_id)
     postgresql_records, _, _, _, _ = get_console_buffer_view(
         run_id, "postgresql", postgresql_path, postgresql_state, clear_consoles
@@ -1370,6 +1427,18 @@ def get_console_buffer_view(
         console_state["file_position"] = file_size
         console_state["line_number"] = total
     else:
+        previous_position = console_state.get("file_position", 0)
+        try:
+            file_was_replaced = (
+                console_path.exists()
+                and previous_position > console_path.stat().st_size
+            )
+        except OSError:
+            file_was_replaced = False
+        if file_was_replaced:
+            console_state["buffer"] = []
+            console_state["line_number"] = 0
+            console_state["file_position"] = 0
         new_lines, file_size = functions.read_console_buffer(
             console_path,
             console_state.get("file_position", 0),
@@ -1383,6 +1452,15 @@ def get_console_buffer_view(
             console_state["line_number"] = functions.console_line_number(
                 new_lines[-1]
             )
+    if (
+        not console_state["buffer"]
+        and console_path.exists()
+        and console_path.stat().st_size > 0
+    ):
+        lines, file_size, total = functions.read_console_tail(console_path, 200)
+        console_state["buffer"] = lines
+        console_state["file_position"] = file_size
+        console_state["line_number"] = total
     return console_state["buffer"], 0, console_state["line_number"], True, False
 
 def get_console_state(console_id: str, run_id: str | None) -> dict[str, Any]:
@@ -1602,6 +1680,34 @@ def render_live_indicator(title: str, key: str) -> None:
         and not st.session_state.manual_stop_status
     )
     LIVE_INDICATOR_COMPONENT(
+        data={"active": is_active, "title": title},
+        key=key,
+    )
+
+def render_save_indicator(title: str, key: str) -> None:
+    """Muestro SAVE únicamente durante una ejecución activa."""
+
+    controller_module = load_page_module("01_python_controller")
+    snapshot = controller_module.get_run_snapshot()
+    is_active = bool(
+        snapshot.get("is_active")
+        and not st.session_state.start_pending
+        and not st.session_state.stop_pending
+        and not st.session_state.manual_stop_status
+    )
+    if is_active:
+        run_id = snapshot.get("run_id")
+        postgresql_path = (
+            DATA_DIRECTORY / "runs" / f"{run_id}_06_postgresql_log.txt"
+            if isinstance(run_id, str)
+            else None
+        )
+        is_active = bool(
+            postgresql_path is not None
+            and postgresql_path.exists()
+            and postgresql_path.stat().st_size > 0
+        )
+    SAVE_INDICATOR_COMPONENT(
         data={"active": is_active, "title": title},
         key=key,
     )
@@ -1854,14 +1960,14 @@ def _refresh_heartbeat_display(
 
 ### Intervalos de refresco.
 
-render_heartbeat = st.fragment(render_heartbeat, run_every="5s")
-render_config = st.fragment(render_config, run_every="5s")
+render_heartbeat = st.fragment(render_heartbeat, run_every="4s")
+render_config = st.fragment(render_config, run_every="4s")
 render_controller_console = st.fragment(render_controller_console, run_every="200ms") # Especial: 200ms.
-render_alpaca_console = st.fragment(render_alpaca_console, run_every="1s") # Especial: 1s.
-render_kafka_console = st.fragment(render_kafka_console, run_every="5s")
-render_spark_console = st.fragment(render_spark_console, run_every="5s")
-render_pandas_console = st.fragment(render_pandas_console, run_every="5s")
-render_postgresql_console = st.fragment(render_postgresql_console, run_every="5s")
-render_info = st.fragment(render_info, run_every="5s")
-render_questions = st.fragment(render_questions, run_every="5s")
-render_charts = st.fragment(render_charts, run_every="5s")
+render_alpaca_console = st.fragment(render_alpaca_console, run_every="4s")
+render_kafka_console = st.fragment(render_kafka_console, run_every="4s")
+render_spark_console = st.fragment(render_spark_console, run_every="4s")
+render_pandas_console = st.fragment(render_pandas_console, run_every="4s")
+render_postgresql_console = st.fragment(render_postgresql_console, run_every="4s")
+render_info = st.fragment(render_info, run_every="4s")
+render_questions = st.fragment(render_questions, run_every="4s")
+render_charts = st.fragment(render_charts, run_every="4s")

@@ -642,6 +642,7 @@ class AlpacaStreamingService:
                 },
             )
             self._append_run_state_callback(self)
+        self._join_threads()
         if self._release_callback is not None:
             self._release_callback(self)
 
@@ -651,12 +652,12 @@ class AlpacaStreamingService:
         return
 
     def _join_threads(self) -> None:
-        """Espero el cierre de los hilos sin bloquearse a sí mismos."""
+        """Espero el cierre acotado de red y publicación sin auto-bloquearme."""
 
         current_thread = threading.current_thread()
         for thread in (self._stream_thread, self._download_thread):
             if thread is not None and thread is not current_thread:
-                thread.join(timeout=3)
+                thread.join(timeout=35)
 
     def _safe_error(self, error: Exception) -> str:
         """Devuelvo un error útil sin incluir secretos de autenticación."""

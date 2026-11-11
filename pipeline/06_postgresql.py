@@ -1,9 +1,9 @@
 # Autor: Nicolás Druetta.
 
 import psycopg
-import sys
 
 from app import database, functions
+from typing import Any
 
 FEED_NAME = "IEX"
 _STATUS_CALLBACK: object | None = None
@@ -14,29 +14,14 @@ def configure_status_callback(callback: object | None) -> None:
     global _STATUS_CALLBACK
     _STATUS_CALLBACK = callback
 
-def analyze_and_persist(
+def persist_analysis(
     run_id: str,
+    analysis: dict[str, Any],
     feed: str = FEED_NAME,
 ) -> bool:
-    """Persisto en PostgreSQL los resultados preparados por Pandas."""
+    """Persisto resultados analíticos recibidos del Controller."""
 
-    analysis_module = sys.modules.get("05_pandas")
-    if analysis_module is None:
-        functions.append_console_log(
-            run_id,
-            "postgresql",
-            "ERROR | persistencia=análisis Pandas no disponible",
-        )
-        return False
     try:
-        analysis = analysis_module.analyze(run_id, feed)
-        if analysis is None:
-            functions.append_console_log(
-                run_id,
-                "postgresql",
-                "ERROR | persistencia=análisis Pandas no disponible",
-            )
-            return False
         if _STATUS_CALLBACK is not None:
             _STATUS_CALLBACK(run_id, "PostgreSQL_start")
         with database.get_postgresql_connection() as connection:
@@ -90,4 +75,4 @@ def analyze_and_persist(
             "postgresql",
             f"ERROR | persistencia={error}",
         )
-        return False
+        raise

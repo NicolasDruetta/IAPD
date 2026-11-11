@@ -3,7 +3,6 @@
 import json
 import os
 import shutil
-import sys
 import threading
 import time
 
@@ -17,6 +16,7 @@ from pyspark.sql.types import DoubleType, StringType, StructField, StructType
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
+_BATCH_WRITTEN_CALLBACK: Callable[[str, int], bool] | None = None
 _FATAL_ERROR_CALLBACK: Callable[[str, str], None] | None = None
 _RUN_STATES: dict[str, dict[str, Any]] = {}
 _SPARK_ERROR: str | None = None
@@ -59,6 +59,17 @@ def configure_failure_callback(
 
     global _FATAL_ERROR_CALLBACK
     _FATAL_ERROR_CALLBACK = callback
+
+def configure_batch_written_callback(
+    callback: Callable[[str, int], bool] | None,
+) -> None:
+    """Registro la coordinación del Controller posterior a Parquet."""
+
+    global _BATCH_WRITTEN_CALLBACK
+    _BATCH_WRITTEN_CALLBACK = callback
+
+class _DownstreamStageFailure(RuntimeError):
+    """Indica que el Controller ya registró un fallo de otra etapa."""
 
 def _notify_fatal_error(run_id: str, error: str) -> None:
     """Notifico una sola vez un error que impide continuar el RUN."""
@@ -191,6 +202,10 @@ def process_batch(run_id: str, data_frame: DataFrame, batch_id: int) -> None:
 
     input_frame = data_frame.persist()
     processed_frame = None
+    with _SPARK_LOCK:
+        state = _RUN_STATES.get(run_id)
+        if state is not None:
+            state["foreach_batch_thread_id"] = threading.get_ident()
     try:
         input_count = input_frame.count()
         if not input_count:
@@ -224,11 +239,6 @@ def process_batch(run_id: str, data_frame: DataFrame, batch_id: int) -> None:
                 str(temporary_path)
             )
             os.replace(temporary_path, batch_path)
-        analysis_module = sys.modules.get("06_postgresql")
-        if analysis_module is None:
-            raise RuntimeError("PostgreSQL no está disponible para persistir el batch.")
-        if not analysis_module.analyze_and_persist(run_id):
-            raise RuntimeError("El análisis o la persistencia del batch no se completó.")
         trade_count = processed_frame.where(
             col("event_type") == "TRADE"
         ).count()
@@ -267,6 +277,15 @@ def process_batch(run_id: str, data_frame: DataFrame, batch_id: int) -> None:
             f"EDA | batch_id={batch_id} | simbolos={symbol_count} | trades={checkpoint['processed_events_by_type']['TRADE']} | quotes={checkpoint['processed_events_by_type']['QUOTE']}",
         ):
             functions.append_console_log(run_id, "spark", message)
+        if (
+            _BATCH_WRITTEN_CALLBACK is not None
+            and not _BATCH_WRITTEN_CALLBACK(run_id, batch_id)
+        ):
+            raise _DownstreamStageFailure(
+                f"El Controller rechazó la coordinación del batch {batch_id}."
+            )
+    except _DownstreamStageFailure:
+        raise
     except Exception as error:
         with _SPARK_LOCK:
             stopping = bool(
@@ -288,6 +307,10 @@ def process_batch(run_id: str, data_frame: DataFrame, batch_id: int) -> None:
         )
         raise
     finally:
+        with _SPARK_LOCK:
+            state = _RUN_STATES.get(run_id)
+            if state is not None:
+                state.pop("foreach_batch_thread_id", None)
         input_frame.unpersist()
         if processed_frame is not None:
             processed_frame.unpersist()
@@ -476,6 +499,11 @@ def stop_streaming(
             return True
         state["stopping"] = True
         query = state.get("query") if state else None
+        called_from_batch = (
+            state.get("foreach_batch_thread_id") == threading.get_ident()
+        )
+    if called_from_batch:
+        return False
     if query is not None:
         try:
             if query.isActive:

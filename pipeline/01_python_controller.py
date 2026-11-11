@@ -24,6 +24,7 @@ _RECOVERY_THREAD: threading.Thread | None = None
 _RUN_LOG_COUNTS: dict[str, int] = {}
 _RUN_SEQUENCES: dict[str, int] = {}
 _SPARK_MODULE: Any = None
+_SPARK_PENDING_RUNS: set[str] = set()
 _SPARK_STARTED_RUNS: set[str] = set()
 _STAGE_NOTIFICATIONS: set[tuple[str, str]] = set()
 _STREAMING_MODULE: Any = None
@@ -123,6 +124,28 @@ def _cancel_pipeline(run_id: str, reason: str) -> None:
         "controller",
         f"Python | cancelando RUN | motivo={reason}",
     )
+
+def _release_run_resources(run_id: str) -> None:
+    """Libero Spark y Kafka del RUN sin reemplazar el resultado original."""
+
+    if _SPARK_MODULE is not None:
+        try:
+            _SPARK_MODULE.stop_streaming(run_id, finalize=False)
+        except Exception as error:
+            functions.append_console_log(
+                run_id,
+                "controller",
+                f"Python | error al liberar Spark | {error}",
+            )
+    if _KAFKA_MODULE is not None:
+        try:
+            _KAFKA_MODULE.reset_producer()
+        except Exception as error:
+            functions.append_console_log(
+                run_id,
+                "controller",
+                f"Python | error al liberar Kafka | {error}",
+            )
 
 def fail_run(run_id: str, error: str, stage: str = "Controller") -> None:
     """Cancelo globalmente un RUN ante un error fatal de cualquier etapa."""
@@ -295,18 +318,32 @@ def start_pipeline(run_id: str) -> None:
             _KAFKA_PREPARED_RUNS.add(run_id)
 
 def _notify_first_publication(run_id: str) -> None:
-    """Inicio Spark al recibir la señal de primera publicación confirmada."""
+    """Registro la primera publicación y solicito el inicio desacoplado de Spark."""
 
     with _MANAGER_LOCK:
+        if (
+            run_id in _SPARK_PENDING_RUNS
+            or run_id in _SPARK_STARTED_RUNS
+        ):
+            return
+        _SPARK_PENDING_RUNS.add(run_id)
+    functions.append_console_log(
+        run_id,
+        "controller",
+        "Python | primera publicación Kafka confirmada",
+    )
+
+def _start_pending_spark(run_id: str) -> None:
+    """Inicio Spark desde el supervisor, fuera del callback de Kafka."""
+
+    with _MANAGER_LOCK:
+        if run_id not in _SPARK_PENDING_RUNS:
+            return
+        _SPARK_PENDING_RUNS.discard(run_id)
         if run_id in _SPARK_STARTED_RUNS:
             return
         _SPARK_STARTED_RUNS.add(run_id)
     try:
-        functions.append_console_log(
-            run_id,
-            "controller",
-            "Python | primera publicación Kafka confirmada",
-        )
         functions.append_console_log(run_id, "controller", "Python | iniciando Spark")
         _SPARK_MODULE.start_streaming(run_id)
         if not _SPARK_MODULE.has_active_query():
@@ -351,6 +388,39 @@ def _notify_stage_status(
             message.format(error=error or "causa no especificada"),
         )
 
+def _coordinate_written_batch(
+    run_id: str,
+    batch_id: int,
+    pandas_module: Any,
+    postgresql_module: Any,
+) -> bool:
+    """Coordino Pandas y PostgreSQL después de Parquet confirmado."""
+
+    try:
+        if pandas_module is None:
+            raise RuntimeError("Pandas no está configurado en el Controller.")
+        analysis = pandas_module.analyze(run_id, batch_id=batch_id)
+        if analysis is None:
+            raise RuntimeError(
+                f"Pandas no produjo resultados para batch_id={batch_id}."
+            )
+    except Exception as error:
+        fail_run(run_id, str(error), "Pandas")
+        return False
+    try:
+        if postgresql_module is None:
+            raise RuntimeError(
+                "PostgreSQL no está configurado en el Controller."
+            )
+        if not postgresql_module.persist_analysis(run_id, analysis):
+            raise RuntimeError(
+                f"PostgreSQL no confirmó batch_id={batch_id}."
+            )
+    except Exception as error:
+        fail_run(run_id, str(error), "PostgreSQL")
+        return False
+    return True
+
 def release_active_pipeline(run_id: str) -> bool:
     """Habilito el primer lote cuando las consultas del RUN están preparadas."""
 
@@ -365,20 +435,32 @@ def release_active_service(service: Any) -> None:
 
     global _ACTIVE_SERVICE
     with _MANAGER_LOCK:
+        snapshot = service.get_snapshot()
+        run_id = snapshot.get("run_id")
+        registered_service = getattr(
+            builtins,
+            _ACTIVE_SERVICE_REGISTRY_KEY,
+            _ACTIVE_SERVICE,
+        )
+        if (
+            not isinstance(run_id, str)
+            or (_ACTIVE_SERVICE is not service and registered_service is not service)
+        ):
+            return
         if _ACTIVE_SERVICE is service:
             _ACTIVE_SERVICE = None
         if getattr(builtins, _ACTIVE_SERVICE_REGISTRY_KEY, None) is service:
             delattr(builtins, _ACTIVE_SERVICE_REGISTRY_KEY)
-        snapshot = service.get_snapshot()
-        run_id = snapshot.get("run_id")
-        if isinstance(run_id, str):
-            _KAFKA_PREPARED_RUNS.discard(run_id)
-            _SPARK_STARTED_RUNS.discard(run_id)
-            if snapshot.get("status") == "Error":
-                _cancel_pipeline(
-                    run_id,
-                    snapshot.get("end_reason") or "error_pipeline",
-                )
+        _KAFKA_PREPARED_RUNS.discard(run_id)
+        _SPARK_PENDING_RUNS.discard(run_id)
+        _SPARK_STARTED_RUNS.discard(run_id)
+    _release_run_resources(run_id)
+    if snapshot.get("status") == "Error":
+        functions.append_console_log(
+            run_id,
+            "controller",
+            f"Python | cancelando RUN | motivo={snapshot.get('end_reason') or 'error_pipeline'}",
+        )
 
 def request_stop_active_run(end_reason: str) -> None:
     """Solicito la detención inmediata del servicio activo."""
@@ -488,11 +570,19 @@ def configure_pipeline_modules(
         lambda run_id, error: fail_run(run_id, error, "Spark")
     )
     pandas_module = sys.modules.get("05_pandas")
+    postgresql_module = sys.modules.get("06_postgresql")
     if pandas_module is not None:
         pandas_module.configure_status_callback(_notify_stage_status)
-    postgresql_module = sys.modules.get("06_postgresql")
     if postgresql_module is not None:
         postgresql_module.configure_status_callback(_notify_stage_status)
+    spark_module.configure_batch_written_callback(
+        lambda batch_run_id, batch_id: _coordinate_written_batch(
+            batch_run_id,
+            batch_id,
+            pandas_module,
+            postgresql_module,
+        )
+    )
     metadata = _STREAMING_MODULE.get_latest_metadata()
     if (
         metadata is None
@@ -674,6 +764,7 @@ def _supervise_heartbeat(service: Any) -> None:
     while service.is_active():
         if service.get_snapshot()["end_reason"] is not None:
             return
+        _start_pending_spark(run_id)
         if service.heartbeat_elapsed() >= HEARTBEAT_TIMEOUT_MINUTES * 60:
             # Detengo la fuente primero; después cancelo Spark para este RUN.
             if get_active_service() is not service:

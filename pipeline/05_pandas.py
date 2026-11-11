@@ -23,6 +23,7 @@ def configure_status_callback(callback: Any) -> None:
 def analyze(
     run_id: str,
     feed: str = FEED_NAME,
+    batch_id: int | None = None,
 ) -> dict[str, Any] | None:
     """Leo lotes Parquet nuevos y preparo resultados acumulados."""
 
@@ -39,6 +40,9 @@ def analyze(
         else:
             known_batches = state["batches"]
             new_paths = [path for path in batch_paths if path.name not in known_batches]
+        if batch_id is not None:
+            target_batch = f"batch_{batch_id:020d}"
+            new_paths = [path for path in new_paths if path.name == target_batch]
         if not new_paths:
             return state["analysis"]
         if _STATUS_CALLBACK is not None:
@@ -88,7 +92,7 @@ def analyze(
             "pandas",
             f"ERROR | análisis={error}",
         )
-        return None
+        raise
 
 def prepare_chart_data(
     state: dict[str, Any],
