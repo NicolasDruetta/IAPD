@@ -451,35 +451,46 @@ class AlpacaStreamingService:
             maxsize=4
         )
         result_queue: queue.Queue[object] = queue.Queue(maxsize=1)
+        pending_events: list[AlpacaEvent] = []
 
-        def enqueue_batch(events: list[AlpacaEvent]) -> None:
+        def put_batch(batch: list[AlpacaEvent]) -> None:
             """Entrego un lote al consumidor respetando la presión."""
 
             while not self._stop_event.is_set():
                 try:
-                    batch_queue.put(events, timeout=0.5)
+                    batch_queue.put(batch, timeout=0.5)
                     return
                 except queue.Full:
                     continue
             raise InterruptedError("Descarga histórica detenida.")
 
+        def enqueue_batch(events: list[AlpacaEvent]) -> None:
+            """Acumulo eventos y entrego únicamente lotes completos de 100."""
+
+            pending_events.extend(events)
+            while len(pending_events) >= 100:
+                put_batch(pending_events[:100])
+                del pending_events[:100]
+
         def download() -> None:
             """Descargo en segundo plano mientras consumo lotes."""
 
             try:
-                result_queue.put(
-                    get_historical_dataset(
-                        self._api_key,
-                        self._api_secret,
-                        self._symbols,
-                        self._feed,
-                        download_count_callback=self._register_downloaded_count,
-                        event_callback=enqueue_batch,
-                        historical_date_callback=self._set_historical_date,
-                        progress_callback=self._add_log,
-                        stop_event=self._stop_event,
-                    )
+                historical_date = get_historical_dataset(
+                    self._api_key,
+                    self._api_secret,
+                    self._symbols,
+                    self._feed,
+                    download_count_callback=self._register_downloaded_count,
+                    event_callback=enqueue_batch,
+                    historical_date_callback=self._set_historical_date,
+                    progress_callback=self._add_log,
+                    stop_event=self._stop_event,
                 )
+                if pending_events and not self._stop_event.is_set():
+                    put_batch(pending_events[:])
+                    pending_events.clear()
+                result_queue.put(historical_date)
             except BaseException as error:
                 result_queue.put(error)
             finally:
@@ -845,7 +856,7 @@ def download_historical_dataset(
     def merge_window(
         group_records: list[tuple[int, list[dict[str, Any]]]],
     ) -> int:
-        """Mezclo la ventana y entrego lotes completos de cada segundo."""
+        """Mezclo la ventana y entrego sus eventos en orden cronológico."""
 
         ordered_records = [
             (
@@ -856,21 +867,11 @@ def download_historical_dataset(
             for position, record in enumerate(records)
         ]
         ordered_records.sort(key=lambda item: item[0])
-        second_batch: list[AlpacaEvent] = []
-        current_second: datetime | None = None
-        for _, record in ordered_records:
-            event = event_from_record(record)
-            event_second = datetime.fromisoformat(
-                event.timestamp.replace("Z", "+00:00")
-            ).replace(microsecond=0)
-            if current_second is not None and event_second != current_second:
-                if event_callback is not None:
-                    event_callback(second_batch)
-                second_batch = []
-            current_second = event_second
-            second_batch.append(event)
-        if event_callback is not None and second_batch:
-            event_callback(second_batch)
+        if event_callback is not None and ordered_records:
+            event_callback([
+                event_from_record(record)
+                for _, record in ordered_records
+            ])
         return len(ordered_records)
 
     window_start = session_start

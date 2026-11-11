@@ -2,11 +2,8 @@
 
 import importlib.util
 import math
-import os
-import signal
 import streamlit as st
 import sys
-import threading
 
 from app import database, functions
 from datetime import datetime, timezone, tzinfo
@@ -291,6 +288,27 @@ SAVE_INDICATOR_COMPONENT = st.components.v2.component(
     """,
 )
 
+STOP_BUTTON_FEEDBACK_COMPONENT = st.components.v2.component(
+    name="apache_big_data_lab.stop_button_feedback",
+    html='<span aria-hidden="true"></span>',
+    isolate_styles=False,
+    js="""
+    export default function () {
+        const onClick = (event) => {
+            const button = event.target.closest("button");
+            if (button === null) return;
+            const label = button.innerText || "";
+            if (!label.includes("Detener streaming")) return;
+            const text = button.querySelector("p") || button;
+            text.textContent = "⟳ Deteniendo...";
+            button.disabled = true;
+        };
+        document.addEventListener("click", onClick, true);
+        return () => document.removeEventListener("click", onClick, true);
+    }
+    """,
+)
+
 SYSTEM_THEME_COMPONENT = st.components.v2.component(
     name="apache_big_data_lab.system_theme",
     html='<span class="system-theme-detector"></span>',
@@ -434,19 +452,20 @@ def render_config() -> None:
     active_run_id = snapshot["run_id"] if snapshot["is_active"] else None
     if st.session_state.alpaca_run_id is None and active_run_id is not None:
         st.session_state.alpaca_run_id = active_run_id
+    if snapshot["is_active"] and not st.session_state.stop_pending:
+        STOP_BUTTON_FEEDBACK_COMPONENT(
+            data={},
+            key="stop-button-feedback",
+        )
     pending_stop_operation = st.session_state.stop_operation
     if (
         st.session_state.stop_pending
         and (
             pending_stop_operation is None
             or pending_stop_operation["done"]
-            or (
-                not snapshot["is_active"]
-                and not spark_module.has_active_query()
-            )
+            or not snapshot["is_active"]
         )
         and not snapshot["is_active"]
-        and not spark_module.has_active_query()
     ):
         st.session_state.last_stop_debug = list(
             pending_stop_operation.get("debug", [])
@@ -529,7 +548,6 @@ def render_config() -> None:
                     else "■ Detener streaming",
                     disabled=st.session_state.stop_pending,
                     key="stop-button",
-                    on_click=mark_stop_pending,
                     width="content",
                 )
             else:
@@ -562,52 +580,43 @@ def render_config() -> None:
                     "error": None,
                     "service": None,
                 }
-                start_thread = threading.Thread(
-                    target=start_run_in_background,
-                    args=(
-                        operation,
-                        controller_module,
-                        streaming_module,
-                        symbols,
-                        symbol_ranking,
-                        selected_replay_speed,
-                    ),
-                    daemon=True,
-                    name="start-streaming-run",
+                controller_module.start_run_async(
+                    operation,
+                    streaming_module.ALPACA_API_KEY,
+                    streaming_module.ALPACA_SECRET_KEY,
+                    symbols,
+                    symbol_ranking,
+                    selected_replay_speed,
                 )
-                operation["thread"] = start_thread
                 st.session_state.start_operation = operation
-                start_thread.start()
-            elif not operation["thread"].is_alive():
+            elif operation["done"]:
                 if operation["error"] is not None:
                     st.session_state.start_pending = False
                     st.session_state.start_operation = None
                 else:
                     service = operation["service"]
                     run_id = service.get_snapshot()["run_id"]
-                    try:
-                        st.session_state.alpaca_run_id = run_id
-                        register_heartbeat_for_display(controller_module, run_id)
-                        controller_module.start_pipeline(run_id)
-                        st.session_state.start_pending = False
-                        st.session_state.start_operation = None
-                        snapshot = controller_module.get_run_snapshot()
-                    except Exception as error:
-                        handle_start_error(
-                            error,
-                            controller_module,
-                            spark_module,
-                            run_id,
-                        )
-                        snapshot = controller_module.get_run_snapshot()
+                    st.session_state.alpaca_run_id = run_id
+                    register_heartbeat_for_display(controller_module, run_id)
+                    st.session_state.start_pending = False
+                    st.session_state.start_operation = None
+                    snapshot = controller_module.get_run_snapshot()
 
     if stop_clicked or (
         st.session_state.stop_pending
         and st.session_state.stop_operation is None
     ):
+        st.session_state.stop_pending = True
         st.session_state.manual_stop_status = True
         st.session_state.start_requested = False
         clear_consoles = False
+        stop_placeholder.empty()
+        stop_placeholder.button(
+            "⟳ Deteniendo...",
+            disabled=True,
+            key="stop-button-pending",
+            width="content",
+        )
         run_id = snapshot.get("run_id")
         operation = {
             "done": False,
@@ -615,21 +624,9 @@ def render_config() -> None:
             "error": None,
             "spark_result": None,
         }
-        stop_thread = threading.Thread(
-            target=stop_run_in_background,
-            args=(
-                operation,
-                controller_module,
-                spark_module,
-                run_id,
-            ),
-            daemon=True,
-            name="stop-streaming-run",
-        )
-        operation["thread"] = stop_thread
         st.session_state.stop_operation = operation
         st.session_state.stop_pending = True
-        stop_thread.start()
+        controller_module.stop_run_async(operation, run_id)
 
     stop_operation = st.session_state.stop_operation
     stop_completed = False
@@ -650,10 +647,7 @@ def render_config() -> None:
         and stop_operation is not None
         and (
             stop_operation["done"]
-            or (
-                not snapshot["is_active"]
-                and not spark_module.has_active_query()
-            )
+            or not snapshot["is_active"]
         )
     ):
         st.session_state.last_stop_debug = list(
@@ -785,29 +779,6 @@ def render_config() -> None:
     if last_execution_notice:
         last_execution_placeholder.info(last_execution_notice)
 
-    run_id = None if st.session_state.start_pending else snapshot["run_id"]
-    if (
-        run_id is not None
-        and snapshot["is_active"]
-        and not st.session_state.stop_pending
-    ):
-        try:
-            controller_module.start_pipeline(run_id)
-        except Exception as error:
-            handle_start_error(
-                error,
-                controller_module,
-                spark_module,
-                run_id,
-            )
-            snapshot = controller_module.get_run_snapshot()
-            run_id = None
-    elif run_id is not None and spark_module.has_active_query():
-        spark_module.stop_streaming(
-            run_id,
-            finalize=snapshot.get("status") == "Completado",
-        )
-
 def render_consoles_part1() -> None:
     """Muestro las primeras cuatro consolas del pipeline."""
 
@@ -865,6 +836,8 @@ def render_info() -> None:
         market_date = "-"
         market_time = "-"
         downloaded_count = "-"
+        spark_processed_count = "-"
+        pandas_analyzed_count = "-"
     else:
         elapsed_text = format_elapsed_time(
             snapshot["started_at"],
@@ -880,14 +853,34 @@ def render_info() -> None:
             if presentation_market_timestamp != "-"
             else "-"
         )
-        downloaded_count = get_console_state(
-            "alpaca-log-console",
-            snapshot.get("run_id"),
-        )["line_number"]
+        run_id = snapshot.get("run_id")
+        downloaded_count = snapshot.get("downloaded_event_count", 0)
+        spark_path = (
+            DATA_DIRECTORY / "runs" / f"{run_id}_04_apache_spark_log.txt"
+            if isinstance(run_id, str)
+            else None
+        )
+        pandas_path = (
+            DATA_DIRECTORY / "runs" / f"{run_id}_05_pandas_log.txt"
+            if isinstance(run_id, str)
+            else None
+        )
+        spark_processed_count = get_processed_count(
+            spark_path,
+            "spark",
+            run_id,
+            snapshot["is_active"],
+        )
+        pandas_analyzed_count = get_processed_count(
+            pandas_path,
+            "pandas",
+            run_id,
+            snapshot["is_active"],
+        )
 
     with st.container(border=True):
-        date_col, time_col, elapsed_col, data_col = st.columns(
-            [1, 1, 1, 1],
+        date_col, time_col, elapsed_col, data_col, spark_col, pandas_col = st.columns(
+            [1, 1, 1, 1, 1, 1],
             gap="small",
             vertical_alignment="top",
         )
@@ -898,7 +891,7 @@ def render_info() -> None:
             st.caption("Última hora procesada")
             st.text(market_time)
         with elapsed_col:
-            st.caption("Tiempo de ejecución transcurrido")
+            st.caption("Tiempo transcurrido")
             if snapshot["is_active"] and not st.session_state.start_pending:
                 EXECUTION_TIMER_COMPONENT(
                     data={
@@ -914,8 +907,14 @@ def render_info() -> None:
             else:
                 st.text(elapsed_text)
         with data_col:
-            st.caption("Cantidad de datos descargados")
+            st.caption("Datos descargados (Alpaca)")
             st.text(str(downloaded_count))
+        with spark_col:
+            st.caption("Datos procesados (Spark)")
+            st.text(str(spark_processed_count))
+        with pandas_col:
+            st.caption("Datos analizados (Pandas)")
+            st.text(str(pandas_analyzed_count))
 
 def render_charts() -> None:
     """Muestro los gráficos de la última ejecución."""
@@ -956,11 +955,15 @@ def render_questions() -> None:
     """Muestro las preguntas de investigación y sus tablas."""
 
     render_live_indicator("Preguntas de investigación (lectura de PostgreSQL)", "live-questions",)
+    controller_module = load_page_module("01_python_controller")
+    run_is_active = controller_module.get_run_snapshot().get("is_active", False)
     if st.session_state.start_requested or st.session_state.start_pending:
         analysis_data = {
             "answers": [],
             "metrics": [],
         }
+    elif not run_is_active and "analysis_data" in st.session_state:
+        analysis_data = st.session_state.analysis_data
     else:
         analysis_run_id = st.session_state.alpaca_run_id
         if analysis_run_id is None:
@@ -1067,13 +1070,14 @@ def render_heartbeat() -> None:
 def render_controller_console() -> None:
     """Muestro la consola del Controller."""
 
-    clear_consoles, run_id, execution_path, _, _, _, _, _, _ = _get_consoles_context()
+    clear_consoles, run_id, execution_path, _, _, _, _, _, is_active = _get_consoles_context()
     with st.container(horizontal=True, vertical_alignment="center", gap="small"):
         st.subheader("1. Log del controlador (Python)", width="content")
         render_live_indicator("1. Log del controlador (Python)", "live-controller-log")
     execution_state = get_console_state("execution-log-console", run_id)
     log_lines, _, total_lines, _, _ = get_console_buffer_view(
-        run_id, "controller", execution_path, execution_state, clear_consoles
+        run_id, "controller", execution_path, execution_state, clear_consoles,
+        read_updates=is_active,
     )
     log_display_lines = [
         format_presentation_log_line(line)
@@ -1098,15 +1102,35 @@ def render_controller_console() -> None:
 def get_kafka_confirmed_count(
     kafka_path: Path | None,
     run_id: str | None,
+    active: bool = True,
 ) -> int:
     """Conservo el último total Kafka confirmado observado para el RUN."""
 
-    current_count = functions.count_processed_data(kafka_path, "kafka")
     state_key = f"kafka-confirmed-count-{run_id or 'empty'}"
-    previous_count = int(st.session_state.get(state_key, 0))
-    confirmed_count = max(previous_count, current_count)
-    st.session_state[state_key] = confirmed_count
-    return confirmed_count
+    if active or state_key not in st.session_state:
+        current_count = functions.count_processed_data(
+            kafka_path,
+            "kafka",
+        )
+        previous_count = int(st.session_state.get(state_key, 0))
+        st.session_state[state_key] = max(previous_count, current_count)
+    return int(st.session_state[state_key])
+
+def get_processed_count(
+    path: Path | None,
+    console_name: str,
+    run_id: str | None,
+    active: bool,
+) -> int:
+    """Conservo el último contador confirmado cuando el RUN ya terminó."""
+
+    state_key = f"{console_name}-processed-count-{run_id or 'empty'}"
+    if active or state_key not in st.session_state:
+        st.session_state[state_key] = functions.count_processed_data(
+            path,
+            console_name,
+        )
+    return int(st.session_state[state_key])
 
 def render_alpaca_console() -> None:
     """Muestro la consola de descarga de Alpaca."""
@@ -1118,7 +1142,8 @@ def render_alpaca_console() -> None:
             CONSOLE_ARROW_COMPONENT(key="console-arrow-alpaca", width="stretch")
     alpaca_state = get_console_state("alpaca-log-console", run_id)
     events, _, _, _, _ = get_console_buffer_view(
-        run_id, "alpaca", alpaca_path, alpaca_state, clear_consoles
+        run_id, "alpaca", alpaca_path, alpaca_state, clear_consoles,
+        read_updates=is_active,
     )
     event_lines = [format_presentation_log_line(line) for line in events]
     if not event_lines and alpaca_state["line_number"] == 0:
@@ -1131,7 +1156,7 @@ def render_alpaca_console() -> None:
         else alpaca_state["line_number"]
     )
     with st.container(horizontal=True, horizontal_alignment="distribute", vertical_alignment="center"):
-        sent_count = get_kafka_confirmed_count(kafka_path, run_id)
+        sent_count = get_kafka_confirmed_count(kafka_path, run_id, is_active)
         st.caption(
             f"Datos descargados: **{downloaded_count}**. "
             f"Datos enviados: **{sent_count}**."
@@ -1158,7 +1183,8 @@ def render_kafka_console() -> None:
             CONSOLE_ARROW_COMPONENT(key="console-arrow-kafka", width="stretch")
     kafka_state = get_console_state("kafka-log-console", run_id)
     kafka_records, _, _, _, _ = get_console_buffer_view(
-        run_id, "kafka", kafka_path, kafka_state, clear_consoles
+        run_id, "kafka", kafka_path, kafka_state, clear_consoles,
+        read_updates=is_active,
     )
     kafka_lines = [format_presentation_log_line(line) for line in kafka_records]
     if not kafka_lines and kafka_state["line_number"] == 0:
@@ -1191,7 +1217,8 @@ def render_spark_console() -> None:
             CONSOLE_ARROW_COMPONENT(key="console-arrow-spark", width="stretch")
     spark_state = get_console_state("spark-log-console", run_id)
     spark_records, _, _, _, _ = get_console_buffer_view(
-        run_id, "spark", spark_path, spark_state, clear_consoles
+        run_id, "spark", spark_path, spark_state, clear_consoles,
+        read_updates=is_active,
     )
     spark_lines = [format_presentation_log_line(line) for line in spark_records]
     if not spark_lines and spark_state["line_number"] == 0:
@@ -1199,7 +1226,7 @@ def render_spark_console() -> None:
     with st.container(horizontal=True, horizontal_alignment="distribute", vertical_alignment="center"):
         st.caption(
             f"Eventos recibidos: **{spark_state['line_number']}**. "
-            f"Datos procesados: **{functions.count_processed_data(spark_path, 'spark')}**."
+            f"Datos procesados: **{get_processed_count(spark_path, 'spark', run_id, is_active)}**."
         )
         st.download_button(
             "↓",
@@ -1229,7 +1256,8 @@ def render_pandas_console() -> None:
             CONSOLE_ARROW_COMPONENT(key="console-arrow-pandas", width="stretch")
     pandas_state = get_console_state("pandas-log-console", run_id)
     pandas_records, _, _, _, _ = get_console_buffer_view(
-        run_id, "pandas", pandas_path, pandas_state, clear_consoles
+        run_id, "pandas", pandas_path, pandas_state, clear_consoles,
+        read_updates=is_active,
     )
     pandas_lines = [format_presentation_log_line(line) for line in pandas_records]
     if not pandas_lines and pandas_state["line_number"] == 0:
@@ -1237,7 +1265,7 @@ def render_pandas_console() -> None:
     with st.container(horizontal=True, horizontal_alignment="distribute", vertical_alignment="center"):
         st.caption(
             f"Eventos recibidos: **{pandas_state['line_number']}**. "
-            f"Datos procesados: **{functions.count_processed_data(pandas_path, 'pandas')}**."
+            f"Datos procesados: **{get_processed_count(pandas_path, 'pandas', run_id, is_active)}**."
         )
         st.download_button(
             "↓",
@@ -1254,7 +1282,7 @@ def render_pandas_console() -> None:
 def render_postgresql_console() -> None:
     """Muestro la consola de persistencia de PostgreSQL."""
 
-    clear_consoles, run_id, _, _, _, _, _, postgresql_path, _ = _get_consoles_context()
+    clear_consoles, run_id, _, _, _, _, _, postgresql_path, is_active = _get_consoles_context()
     with st.container(horizontal=True, vertical_alignment="center", gap="small"):
         st.subheader("6. Log de persistencia (PostgreSQL)", width="content")
         render_save_indicator(
@@ -1263,12 +1291,18 @@ def render_postgresql_console() -> None:
         )
     postgresql_state = get_console_state("postgresql-log-console", run_id)
     postgresql_records, _, _, _, _ = get_console_buffer_view(
-        run_id, "postgresql", postgresql_path, postgresql_state, clear_consoles
+        run_id, "postgresql", postgresql_path, postgresql_state, clear_consoles,
+        read_updates=is_active,
     )
     postgresql_lines = [format_presentation_log_line(line) for line in postgresql_records]
     if not postgresql_lines and postgresql_state["line_number"] == 0:
         postgresql_lines = ["PostgreSQL | esperando datos para guardar en la base."]
-    postgresql_counters = functions.get_postgresql_counters(postgresql_path)
+    counters_key = f"postgresql-counters-{run_id or 'empty'}"
+    if is_active or counters_key not in st.session_state:
+        st.session_state[counters_key] = functions.get_postgresql_counters(
+            postgresql_path
+        )
+    postgresql_counters = st.session_state[counters_key]
     with st.container(horizontal=True, horizontal_alignment="distribute", vertical_alignment="center"):
         st.caption(
             f"Eventos recibidos: **{postgresql_counters['events']}**. "
@@ -1413,6 +1447,7 @@ def get_console_buffer_view(
     console_path: Path | None,
     console_state: dict[str, Any],
     clear_consoles: bool,
+    read_updates: bool = True,
 ) -> tuple[list[str], int, int, bool, bool]:
     """Mantengo hasta 200 líneas visibles y leo solo lo nuevo del TXT."""
 
@@ -1421,6 +1456,8 @@ def get_console_buffer_view(
         console_state["buffer"] = []
         console_state["file_position"] = 0
         return [], 0, 0, True, False
+    if not read_updates and "buffer" in console_state:
+        return console_state["buffer"], 0, console_state["line_number"], True, False
     if "buffer" not in console_state:
         lines, file_size, total = functions.read_console_tail(console_path, 200)
         console_state["buffer"] = lines
@@ -1506,28 +1543,6 @@ def get_last_execution_notice(snapshot: dict[str, Any]) -> str | None:
         completion_text = "Detenido manualmente."
     return f"Datos de la **última ejecución:** {last_execution_text}. **Duración:** {elapsed_text}. **{completion_text}** | **Fecha de mercado:** {history_market_date}. | **RUN ID:** {history_run_id}."
 
-def handle_start_error(
-    error: Exception,
-    controller_module: ModuleType,
-    spark_module: ModuleType,
-    run_id: str | None,
-) -> None:
-    """Finalizo el RUN y conservo el error visible tras un fallo de inicio."""
-
-    error_message = " ".join(str(error).split()) or error.__class__.__name__
-    if "NoBrokersAvailable" in error_message:
-        error_message = (
-            "NoBrokersAvailable: El servicio kafka no está "
-            "listo o no responde en kafka:9092. Espere a que Docker lo marque "
-            "como saludable y vuelva a iniciar el RUN. No se procesaron datos."
-        )
-    if run_id is not None:
-        spark_module.stop_streaming(run_id, finalize=False)
-    controller_module.fail_active_run(error_message)
-    st.session_state.start_pending = False
-    st.session_state.start_operation = None
-    st.session_state.alpaca_run_id = None
-
 def load_page_module(module_name: str) -> ModuleType:
     """Cargo un módulo de procesamiento sin construir su interfaz."""
 
@@ -1590,13 +1605,6 @@ def mark_start_pending() -> None:
     st.session_state.start_requested = True
     st.session_state.start_pending = True
     st.rerun()
-
-def mark_stop_pending() -> None:
-    """Envío STOP al servicio antes de que Streamlit vuelva a renderizar."""
-
-    st.session_state.stop_pending = True
-    controller_module = load_page_module("01_python_controller")
-    controller_module.request_stop_active_run("manual_stop")
 
 def register_heartbeat_for_display(controller_module: Any, run_id: str) -> bool:
     """Registro el heartbeat y conservo su instante para mostrarlo en pantalla."""
@@ -1812,67 +1820,6 @@ def render_volume_chart(rows: list[dict[str, Any]]) -> None:
         use_container_width=True,
     )
 
-def start_run_in_background(
-    operation: dict[str, Any],
-    controller_module: ModuleType,
-    streaming_module: ModuleType,
-    symbols: list[str],
-    symbol_ranking: str | None,
-    replay_speed: float,
-) -> None:
-    """Inicio el RUN sin bloquear el refresco visual de Streamlit."""
-
-    try:
-        operation["service"] = controller_module.start_run(
-            streaming_module.ALPACA_API_KEY,
-            streaming_module.ALPACA_SECRET_KEY,
-            symbols,
-            ranking=symbol_ranking,
-            replay_speed=replay_speed,
-        )
-    except Exception as error:
-        operation["error"] = error
-    finally:
-        operation["done"] = True
-
-def stop_run_in_background(
-    operation: dict[str, Any],
-    controller_module: ModuleType,
-    spark_module: ModuleType,
-    run_id: str | None,
-) -> None:
-    """Detengo el RUN y libero sus recursos sin esperar la consolidación."""
-
-    try:
-        active_snapshot = controller_module.get_run_snapshot()
-        stopping_run_id = run_id or active_snapshot.get("run_id")
-        if stopping_run_id:
-            functions.append_console_log(
-                stopping_run_id,
-                "controller",
-                "Python | detención manual solicitada | finalizando proceso",
-            )
-        os.kill(os.getpid(), signal.SIGTERM)
-        active_snapshot = controller_module.get_run_snapshot()
-        run_id = run_id or active_snapshot.get("run_id")
-        operation["debug"].append("solicitando detención del RUN")
-        controller_module.request_stop_active_run("manual_stop")
-        operation["debug"].append("RUN marcado para detener")
-        operation["debug"].append("solicitando cierre de Spark")
-        operation["spark_result"] = spark_module.stop_streaming(
-            run_id,
-            finalize=False,
-        )
-        operation["debug"].append("Spark finalizado")
-        controller_module.stop_active_run("manual_stop")
-        operation["debug"].append("Controller y Kafka finalizados")
-    except Exception as error:
-        operation["error"] = error
-        operation["debug"].append(f"ERROR: {error}")
-    finally:
-        operation["debug"].append("STOP terminado")
-        operation["done"] = True
-
 def _get_consoles_context() -> tuple[Any, ...]:
     """Obtengo el contexto compartido para las seis consolas."""
 
@@ -1960,14 +1907,14 @@ def _refresh_heartbeat_display(
 
 ### Intervalos de refresco.
 
-render_heartbeat = st.fragment(render_heartbeat, run_every="4s")
-render_config = st.fragment(render_config, run_every="4s")
+render_heartbeat = st.fragment(render_heartbeat, run_every="3s")
+render_config = st.fragment(render_config, run_every="3s")
 render_controller_console = st.fragment(render_controller_console, run_every="200ms") # Especial: 200ms.
-render_alpaca_console = st.fragment(render_alpaca_console, run_every="4s")
-render_kafka_console = st.fragment(render_kafka_console, run_every="4s")
-render_spark_console = st.fragment(render_spark_console, run_every="4s")
-render_pandas_console = st.fragment(render_pandas_console, run_every="4s")
-render_postgresql_console = st.fragment(render_postgresql_console, run_every="4s")
-render_info = st.fragment(render_info, run_every="4s")
-render_questions = st.fragment(render_questions, run_every="4s")
-render_charts = st.fragment(render_charts, run_every="4s")
+render_alpaca_console = st.fragment(render_alpaca_console, run_every="3s")
+render_kafka_console = st.fragment(render_kafka_console, run_every="3s")
+render_spark_console = st.fragment(render_spark_console, run_every="3s")
+render_pandas_console = st.fragment(render_pandas_console, run_every="3s")
+render_postgresql_console = st.fragment(render_postgresql_console, run_every="3s")
+render_info = st.fragment(render_info, run_every="3s")
+render_questions = st.fragment(render_questions, run_every="3s")
+render_charts = st.fragment(render_charts, run_every="3s")

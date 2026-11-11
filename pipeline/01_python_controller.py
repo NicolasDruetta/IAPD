@@ -4,6 +4,7 @@ import atexit
 import builtins
 import json
 import os
+import signal
 import sys
 import threading
 import uuid
@@ -69,11 +70,51 @@ def append_run_record(
                 }
             )
         if record_type == "run_finished":
-            functions.append_console_log(
-                run_id,
-                "controller",
-                f"Python | RUN terminado | estado={payload.get('status')} | causa={payload.get('end_reason')}",
-            )
+            status = payload.get("status")
+            end_reason = payload.get("end_reason") or "desconocido"
+            if status == "Completado":
+                functions.append_console_log(
+                    run_id,
+                    "controller",
+                    "Python | RUN completado correctamente",
+                )
+            elif end_reason == "manual_stop":
+                manual_stop_message = "Python | RUN detenido manualmente"
+                controller_log_path = (
+                    DATA_DIRECTORY
+                    / "runs"
+                    / f"{run_id}_01_python_controller_log.txt"
+                )
+                try:
+                    already_logged = manual_stop_message in controller_log_path.read_text(
+                        encoding="utf-8"
+                    )
+                except (OSError, UnicodeDecodeError):
+                    already_logged = False
+                if not already_logged:
+                    functions.append_console_log(
+                        run_id,
+                        "controller",
+                        manual_stop_message,
+                    )
+            elif status == "Error":
+                stage = end_reason.removeprefix("error_") or "Controller"
+                functions.append_console_log(
+                    run_id,
+                    "controller",
+                    f"Python | ERROR | etapa={stage} | causa={payload.get('error') or end_reason}",
+                )
+                functions.append_console_log(
+                    run_id,
+                    "controller",
+                    "Python | RUN finalizado por error",
+                )
+            else:
+                functions.append_console_log(
+                    run_id,
+                    "controller",
+                    f"Python | RUN terminado | estado={status} | causa={end_reason}",
+                )
         run_info_path.parent.mkdir(parents=True, exist_ok=True)
         with run_info_path.open("a", encoding="utf-8") as info_controller_file:
             info_controller_file.write(json.dumps(record, ensure_ascii=False) + "\n")
@@ -125,13 +166,15 @@ def _cancel_pipeline(run_id: str, reason: str) -> None:
         f"Python | cancelando RUN | motivo={reason}",
     )
 
-def _release_run_resources(run_id: str) -> None:
+def _release_run_resources(run_id: str) -> list[str]:
     """Libero Spark y Kafka del RUN sin reemplazar el resultado original."""
 
+    errors: list[str] = []
     if _SPARK_MODULE is not None:
         try:
             _SPARK_MODULE.stop_streaming(run_id, finalize=False)
         except Exception as error:
+            errors.append(f"Spark: {error}")
             functions.append_console_log(
                 run_id,
                 "controller",
@@ -141,11 +184,13 @@ def _release_run_resources(run_id: str) -> None:
         try:
             _KAFKA_MODULE.reset_producer()
         except Exception as error:
+            errors.append(f"Kafka: {error}")
             functions.append_console_log(
                 run_id,
                 "controller",
                 f"Python | error al liberar Kafka | {error}",
             )
+    return errors
 
 def fail_run(run_id: str, error: str, stage: str = "Controller") -> None:
     """Cancelo globalmente un RUN ante un error fatal de cualquier etapa."""
@@ -156,18 +201,8 @@ def fail_run(run_id: str, error: str, stage: str = "Controller") -> None:
         _FAILED_RUNS.add(run_id)
     service = get_active_service()
     if service is not None and service.get_snapshot().get("run_id") == run_id:
-        functions.append_console_log(
-            run_id,
-            "controller",
-            f"Python | error fatal en {stage} | {error}",
-        )
         service.fail(error, f"error_{stage.lower()}")
         return
-    functions.append_console_log(
-        run_id,
-        "controller",
-        f"Python | error fatal en {stage} | {error}",
-    )
     append_run_record(
         run_id,
         "run_finished",
@@ -454,7 +489,25 @@ def release_active_service(service: Any) -> None:
         _KAFKA_PREPARED_RUNS.discard(run_id)
         _SPARK_PENDING_RUNS.discard(run_id)
         _SPARK_STARTED_RUNS.discard(run_id)
-    _release_run_resources(run_id)
+    functions.append_console_log(
+        run_id,
+        "controller",
+        "Python | liberando recursos...",
+    )
+    release_errors = _release_run_resources(run_id)
+    if not release_errors:
+        functions.append_console_log(
+            run_id,
+            "controller",
+            "Python | recursos liberados correctamente",
+        )
+    else:
+        functions.append_console_log(
+            run_id,
+            "controller",
+            "Python | ERROR | etapa=Controller | causa="
+            + "; ".join(release_errors),
+        )
     if snapshot.get("status") == "Error":
         functions.append_console_log(
             run_id,
@@ -732,23 +785,84 @@ def stop_active_run(end_reason: str) -> None:
     service = get_active_service()
     try:
         if service is not None:
-            functions.append_console_log(
-                service.get_snapshot()["run_id"],
-                "controller",
-                "Python | finalizando ejecución",
-            )
             service.stop(end_reason)
             _LAST_STOPPED_SNAPSHOT = service.get_snapshot()
-            functions.append_console_log(
-                service.get_snapshot()["run_id"],
-                "controller",
-                "Python | ejecución finalizada",
-            )
     finally:
         if service is not None:
             release_active_service(service)
         if _KAFKA_MODULE is not None:
             _KAFKA_MODULE.reset_producer()
+
+def start_run_async(
+    operation: dict[str, Any],
+    api_key: str,
+    api_secret: str,
+    symbols: list[str],
+    ranking: str | None,
+    replay_speed: float,
+) -> None:
+    """Inicio y preparo el RUN desde el Controller sin bloquear la interfaz."""
+
+    def run() -> None:
+        try:
+            operation["service"] = start_run(
+                api_key,
+                api_secret,
+                symbols,
+                ranking=ranking,
+                replay_speed=replay_speed,
+            )
+            run_id = operation["service"].get_snapshot()["run_id"]
+            start_pipeline(run_id)
+        except Exception as error:
+            operation["error"] = error
+            service = get_active_service()
+            if service is not None:
+                fail_active_run(str(error))
+        finally:
+            operation["done"] = True
+
+    thread = threading.Thread(
+        target=run,
+        daemon=True,
+        name="controller-start-run",
+    )
+    operation["thread"] = thread
+    thread.start()
+
+def stop_run_async(
+    operation: dict[str, Any],
+    run_id: str | None,
+) -> None:
+    """Solicito STOP y SIGTERM desde el Controller sin esperar a Spark."""
+
+    def run() -> None:
+        try:
+            active_snapshot = get_run_snapshot()
+            stopping_run_id = run_id or active_snapshot.get("run_id")
+            if stopping_run_id:
+                functions.append_console_log(
+                    stopping_run_id,
+                    "controller",
+                    "Python | detención manual solicitada | finalizando proceso",
+                )
+            request_stop_active_run("manual_stop")
+            operation["debug"].append("RUN marcado para detener")
+            os.kill(os.getpid(), signal.SIGTERM)
+        except Exception as error:
+            operation["error"] = error
+            operation["debug"].append(f"ERROR: {error}")
+        finally:
+            operation["debug"].append("STOP terminado")
+            operation["done"] = True
+
+    thread = threading.Thread(
+        target=run,
+        daemon=True,
+        name="controller-stop-run",
+    )
+    operation["thread"] = thread
+    thread.start()
 
 def _require_streaming_module() -> Any:
     """Obtengo el módulo Alpaca configurado para el controlador."""
