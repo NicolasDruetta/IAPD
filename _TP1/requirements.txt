@@ -1,0 +1,7 @@
+ipykernel
+ipython
+matplotlib
+notebook
+pandas
+plotly
+yfinance
