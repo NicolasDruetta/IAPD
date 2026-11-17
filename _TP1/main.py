@@ -8,12 +8,13 @@ def main():
     file_path = project_path / "data" / "indices_bursatiles.csv"
 
     df_bronze = extract_data(file_path)
-    df_silver, df_silver_indices, df_silver_ordenado = transform_data(df_bronze)
+    df_silver, df_silver_indices, df_silver_ordenado, df_silver_nulos = transform_data(df_bronze)
     load_data(
         df_bronze,
         df_silver,
         df_silver_indices,
         df_silver_ordenado,
+        df_silver_nulos,
         "data/indices_bursatiles.csv"
     )
 

@@ -1,4 +1,4 @@
-def load_data(df_bronze, df_silver, df_silver_indices, df_silver_ordenado, file_path):
+def load_data(df_bronze, df_silver, df_silver_indices, df_silver_ordenado, df_silver_nulos, file_path):
     print()
     print("-------------------------------")
     print("Bronze: datos en formato ancho:")
@@ -46,4 +46,15 @@ def load_data(df_bronze, df_silver, df_silver_indices, df_silver_ordenado, file_
     print("Silver: vista previa ordenada por país y fecha:")
     print("-----------------------------------------------")
     print(df_silver_ordenado.to_string(max_rows=10, min_rows=10))
+    print()
+    print("----------------------------------")
+    print("Silver: análisis de valores nulos:")
+    print("----------------------------------")
+    print(f"Filas: {df_silver_nulos.shape[0]}.")
+    print(f"Columnas: {df_silver_nulos.shape[1]}.")
+    print()
+    print("--------------------------------------")
+    print("Silver: vista previa de valores nulos:")
+    print("--------------------------------------")
+    print(df_silver_nulos.to_string(index=False))
     print()

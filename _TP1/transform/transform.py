@@ -48,4 +48,11 @@ def transform_data(df_bronze):
     # Organizo las columnas sin modificar el DataFrame anterior.
     df_silver_ordenado = df_silver_ordenado[columnas].sort_values(["País", "Date"]).copy()
 
-    return df_silver, df_silver_indices, df_silver_ordenado
+    # Reviso cuántos valores nulos tiene cada columna.
+    df_silver_nulos = df_silver_ordenado.isnull().sum().reset_index()
+    df_silver_nulos.columns = ["Columna", "Nulos"]
+
+    # Calculo el porcentaje de valores nulos sobre el total de registros.
+    df_silver_nulos["Porcentaje (%)"] = (df_silver_nulos["Nulos"] / len(df_silver_ordenado) * 100).round(2)
+
+    return df_silver, df_silver_indices, df_silver_ordenado, df_silver_nulos
