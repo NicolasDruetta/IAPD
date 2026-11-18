@@ -1,7 +1,13 @@
+import time
+
 from app.functions import print_title
 
 def run_gold(df_silver):
     df_gold = load_gold(df_silver)
+    time.sleep(0.3)
+
+    df_cierres_anuales = load_gold_cierres_anuales(df_gold)
+    
     return df_gold
 
 def load_gold(df_silver):
@@ -21,3 +27,22 @@ def load_gold(df_silver):
     print(flush=True)
 
     return df_gold
+
+def load_gold_cierres_anuales(df_gold):
+    # Calculo el último precio de cierre disponible de cada índice por año.
+    df_cierres_anuales = df_gold.groupby(
+        ["País", "Índice", "Ticker", "Año"], as_index=False
+    ).agg({
+        "Close": "last"
+    })
+
+    # Calculo el rendimiento anual de cada índice bursátil.
+    df_cierres_anuales["Rendimiento anual (%)"] = (
+        df_cierres_anuales.groupby("Ticker")["Close"].pct_change(fill_method=None) * 100
+    ).round(2)
+
+    print_title("[Gold] Rendimiento anual de los índices bursátiles:")
+    print(df_cierres_anuales.sort_values(["País", "Año"]).to_string(max_rows=10, min_rows=10))
+    print(flush=True)
+
+    return df_cierres_anuales
