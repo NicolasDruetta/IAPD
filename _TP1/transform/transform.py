@@ -251,3 +251,31 @@ def transform_silver_validacion_final(df_silver_depurado):
     print(f"Registros con valores nulos: {nulos_restantes}")
     print(f"Fechas duplicadas por índice: {fechas_duplicadas}")
     print(flush=True)
+
+    # Defino las columnas de precios que voy a validar.
+    columnas_precios = ["Adj Close", "Close", "High", "Low", "Open"]
+
+    # Compruebo que los precios sean positivos y que el volumen no sea negativo.
+    precios_invalidos = (df_silver_depurado[columnas_precios] <= 0).any(axis=1).sum()
+    volumen_invalido = (df_silver_depurado["Volume"] < 0).sum()
+
+    # Compruebo que los precios máximos y mínimos sean coherentes.
+    maximos_invalidos = (df_silver_depurado["High"] < df_silver_depurado[["Close", "Low", "Open"]].max(axis=1)).sum()
+    minimos_invalidos = (df_silver_depurado["Low"] > df_silver_depurado[["Close", "High", "Open"]].min(axis=1)).sum()
+
+    print()
+    print_title("[Silver] Validación de precios y volumen:")
+    print(f"Registros con precios no válidos: {precios_invalidos}")
+    print(f"Registros con volumen negativo: {volumen_invalido}")
+    print(f"Registros con máximos inconsistentes: {maximos_invalidos}")
+    print(f"Registros con mínimos inconsistentes: {minimos_invalidos}")
+    print(flush=True)
+
+    # Compruebo el formato de las fechas y el período disponible.
+    print()
+    print_title("[Silver] Validación del formato de fechas:")
+    print(f"Tipo de dato: {df_silver_depurado['Date'].dtype}")
+    print(f"Fechas no válidas: {df_silver_depurado['Date'].isna().sum()}")
+    print(f"Fecha mínima: {df_silver_depurado['Date'].min().date()}")
+    print(f"Fecha máxima: {df_silver_depurado['Date'].max().date()}")
+    print(flush=True)
