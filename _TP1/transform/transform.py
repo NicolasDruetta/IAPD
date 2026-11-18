@@ -94,3 +94,42 @@ def transform_silver_dias_nulos(df_silver_ordenado):
     df_silver_dias_nulos["Total"] = df_silver_dias_nulos.sum(axis=1)
 
     return df_silver_dias_nulos
+
+def transform_silver_sin_cotizacion(df_silver_ordenado):
+    # Defino las columnas bursátiles que voy a revisar.
+    columnas_precios = ["Adj Close", "Close", "High", "Low", "Open", "Volume"]
+
+    # Defino los nombres de los días de la semana.
+    dias = {
+        0: "Lunes",
+        1: "Martes",
+        2: "Miércoles",
+        3: "Jueves",
+        4: "Viernes"
+    }
+
+    # Identifico los días de semana que no tienen ningún dato bursátil.
+    df_silver_sin_cotizacion = df_silver_ordenado[
+        df_silver_ordenado[columnas_precios].isna().all(axis=1)
+    ].copy()
+
+    # Agrego el día de la semana después de la fecha.
+    df_silver_sin_cotizacion.insert(
+        1,
+        "Día",
+        df_silver_sin_cotizacion["Date"].dt.day_of_week.map(dias)
+    )
+
+    return df_silver_sin_cotizacion
+
+def transform_silver_incompletos(df_silver_ordenado):
+    # Defino las columnas bursátiles que voy a revisar.
+    columnas_precios = ["Adj Close", "Close", "High", "Low", "Open", "Volume"]
+
+    # Identifico los días de semana que tienen algunos datos faltantes.
+    df_silver_incompletos = df_silver_ordenado[
+        df_silver_ordenado[columnas_precios].isna().any(axis=1)
+        & ~df_silver_ordenado[columnas_precios].isna().all(axis=1)
+    ].copy()
+
+    return df_silver_incompletos

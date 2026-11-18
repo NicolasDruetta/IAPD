@@ -73,3 +73,16 @@ def load_silver_dias_nulos(df_silver_dias_nulos):
     print("-----------------------------------------------------------")
     print(df_silver_dias_nulos.sort_index().to_string())
     print(flush=True)
+
+def load_silver_validacion(df_silver_sin_cotizacion, df_silver_incompletos):
+    print("----------------------------------------")
+    print("[Silver] Validación de datos bursátiles:")
+    print("----------------------------------------")
+    print(f"Registros con todos los datos vacíos: {len(df_silver_sin_cotizacion)}")
+    print(f"Registros con algunos datos faltantes: {len(df_silver_incompletos)}")
+    print()
+    print("----------------------------------------------")
+    print("[Silver] Registros con todos los datos vacíos:")
+    print("----------------------------------------------")
+    print(df_silver_sin_cotizacion.to_string(max_rows=10, min_rows=10))
+    print(flush=True)
