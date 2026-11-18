@@ -133,3 +133,12 @@ def transform_silver_incompletos(df_silver_ordenado):
     ].copy()
 
     return df_silver_incompletos
+
+def transform_silver_depurado(df_silver_ordenado):
+    # Defino las columnas bursátiles que voy a revisar.
+    columnas_precios = ["Adj Close", "Close", "High", "Low", "Open", "Volume"]
+
+    # Creo una copia sin los registros que tienen todos los datos bursátiles vacíos.
+    df_silver_depurado = df_silver_ordenado.dropna(subset=columnas_precios, how="all").copy()
+
+    return df_silver_depurado

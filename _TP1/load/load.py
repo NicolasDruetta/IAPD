@@ -86,3 +86,17 @@ def load_silver_validacion(df_silver_sin_cotizacion, df_silver_incompletos):
     print("----------------------------------------------")
     print(df_silver_sin_cotizacion.to_string(max_rows=10, min_rows=10))
     print(flush=True)
+
+def load_silver_depurado(df_silver_ordenado, df_silver_depurado):
+    print("----------------------------------------")
+    print("[Silver] Depuración de registros vacíos:")
+    print("----------------------------------------")
+    print(f"Registros originales: {len(df_silver_ordenado)}")
+    print(f"Registros eliminados: {len(df_silver_ordenado) - len(df_silver_depurado)}")
+    print(f"Registros conservados: {len(df_silver_depurado)}")
+    print()
+    print("-------------------------")
+    print("[Silver] Datos depurados:")
+    print("-------------------------")
+    print(df_silver_depurado.to_string(max_rows=10, min_rows=10))
+    print(flush=True)
