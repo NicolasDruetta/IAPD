@@ -27,6 +27,12 @@ def run_silver(df_bronze):
     time.sleep(0.3)
 
     transform_silver_validacion_final(df_silver_depurado)
+    time.sleep(0.3)
+
+    df_silver_fechas = transform_silver_fechas(df_silver_depurado)
+    time.sleep(0.3)
+
+    df_silver_cobertura_anual = transform_silver_cobertura_anual(df_silver_fechas)
 
     return (
         df_silver,
@@ -37,6 +43,8 @@ def run_silver(df_bronze):
         df_silver_sin_cotizacion,
         df_silver_incompletos,
         df_silver_depurado,
+        df_silver_fechas,
+        df_silver_cobertura_anual,
     )
 
 def transform_silver(df_bronze):
@@ -50,7 +58,7 @@ def transform_silver(df_bronze):
     print(f"Filas: {df_silver.shape[0]}.")
     print(f"Columnas: {df_silver.shape[1]}.")
     print(f"Formato largo: {df_silver.shape[1]} columnas en Silver.")
-    print()
+
     print_title("[Silver] Vista previa en formato largo:")
     print(df_silver.to_string(max_rows=10, min_rows=10))
     print(flush=True)
@@ -95,7 +103,7 @@ def transform_silver_indices(df_silver):
     print_title("[Silver] Datos con país e índice:")
     print(f"Filas: {df_silver_indices.shape[0]}.")
     print(f"Columnas: {df_silver_indices.shape[1]}.")
-    print()
+
     print_title("[Silver] Vista previa con país e índice:")
     print(df_silver_indices.to_string(max_rows=10, min_rows=10))
     print(flush=True)
@@ -115,7 +123,7 @@ def transform_silver_ordenado(df_silver_indices):
     print_title("[Silver] Datos ordenados por país y fecha:")
     print(f"Filas: {df_silver_ordenado.shape[0]}.")
     print(f"Columnas: {df_silver_ordenado.shape[1]}.")
-    print()
+
     print_title("[Silver] Vista previa ordenada por país y fecha:")
     print(df_silver_ordenado.to_string(max_rows=10, min_rows=10))
     print(flush=True)
@@ -133,7 +141,7 @@ def transform_silver_cols_nulas(df_silver_ordenado):
     print_title("[Silver] Análisis de valores nulos:")
     print(f"Filas: {df_silver_cols_nulas.shape[0]}.")
     print(f"Columnas: {df_silver_cols_nulas.shape[1]}.")
-    print()
+
     print_title("[Silver] Vista previa de valores nulos:")
     print(df_silver_cols_nulas.to_string(index=False))
     print(flush=True)
@@ -213,10 +221,11 @@ def transform_silver_incompletos(df_silver_ordenado):
     return df_silver_incompletos
 
 def transform_silver_validacion(df_silver_sin_cotizacion, df_silver_incompletos):
+    # Valido la cantidad de registros sin cotización y con datos incompletos.
     print_title("[Silver] Validación de datos bursátiles:")
     print(f"Registros con todos los datos vacíos: {len(df_silver_sin_cotizacion)}")
     print(f"Registros con algunos datos faltantes: {len(df_silver_incompletos)}")
-    print()
+
     print_title("[Silver] Registros con todos los datos vacíos:")
     print(df_silver_sin_cotizacion.to_string(max_rows=10, min_rows=10))
     print(flush=True)
@@ -232,7 +241,7 @@ def transform_silver_depurado(df_silver_ordenado):
     print(f"Registros originales: {len(df_silver_ordenado)}")
     print(f"Registros eliminados: {len(df_silver_ordenado) - len(df_silver_depurado)}")
     print(f"Registros conservados: {len(df_silver_depurado)}")
-    print()
+
     print_title("[Silver] Datos depurados:")
     print(df_silver_depurado.to_string(max_rows=10, min_rows=10))
     print(flush=True)
@@ -263,7 +272,6 @@ def transform_silver_validacion_final(df_silver_depurado):
     maximos_invalidos = (df_silver_depurado["High"] < df_silver_depurado[["Close", "Low", "Open"]].max(axis=1)).sum()
     minimos_invalidos = (df_silver_depurado["Low"] > df_silver_depurado[["Close", "High", "Open"]].min(axis=1)).sum()
 
-    print()
     print_title("[Silver] Validación de precios y volumen:")
     print(f"Registros con precios no válidos: {precios_invalidos}")
     print(f"Registros con volumen negativo: {volumen_invalido}")
@@ -272,10 +280,40 @@ def transform_silver_validacion_final(df_silver_depurado):
     print(flush=True)
 
     # Compruebo el formato de las fechas y el período disponible.
-    print()
+
     print_title("[Silver] Validación del formato de fechas:")
     print(f"Tipo de dato: {df_silver_depurado['Date'].dtype}")
     print(f"Fechas no válidas: {df_silver_depurado['Date'].isna().sum()}")
     print(f"Fecha mínima: {df_silver_depurado['Date'].min().date()}")
     print(f"Fecha máxima: {df_silver_depurado['Date'].max().date()}")
     print(flush=True)
+
+def transform_silver_fechas(df_silver_depurado):
+    # Creo una copia para incorporar las variables temporales.
+    df_silver_fechas = df_silver_depurado.copy()
+
+    # Agrego las columnas de año y mes a partir de la fecha.
+    df_silver_fechas["Año"] = df_silver_fechas["Date"].dt.year
+    df_silver_fechas["Mes"] = df_silver_fechas["Date"].dt.month
+
+    # Muestro los datos con las nuevas columnas.
+
+    print_title("[Silver] Variables temporales:")
+    print(df_silver_fechas.to_string(max_rows=10, min_rows=10))
+    print(flush=True)
+
+    return df_silver_fechas
+
+def transform_silver_cobertura_anual(df_silver_fechas):
+    # Calculo cuántas cotizaciones tengo por país, índice y año.
+    df_silver_cobertura_anual = df_silver_fechas.groupby(
+        ["País", "Índice", "Año"]
+    ).size().reset_index(name="Registros")
+
+    # Muestro la cobertura anual ordenada por país y año.
+
+    print_title("[Silver] Cobertura anual de los índices bursátiles:")
+    print(df_silver_cobertura_anual.sort_values(["País", "Año"]).to_string(max_rows=10, min_rows=10))
+    print(flush=True)
+
+    return df_silver_cobertura_anual

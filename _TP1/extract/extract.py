@@ -19,13 +19,12 @@ def extract_bronze(file_path):
         parse_dates=[0]
     )
 
-    print() # Un primer print() vacío para separar.
     print_title("[Bronze] Datos en formato ancho:")
     print(f"Archivo cargado: {file_path.relative_to(Path(__file__).resolve().parent.parent)}.")
     print(f"Filas: {df_bronze.shape[0]}.")
     print(f"Columnas: {df_bronze.shape[1]}.")
     print(f"Formato ancho: {df_bronze.shape[1]} columnas en Bronze.")
-    print()
+
     print_title("[Bronze] Vista previa en formato ancho:")
     print(df_bronze.to_string(max_rows=10, min_rows=10, max_cols=6))
     print(flush=True)
