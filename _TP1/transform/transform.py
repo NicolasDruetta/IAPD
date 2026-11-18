@@ -56,12 +56,41 @@ def transform_silver_ordenado(df_silver_indices):
 
     return df_silver_ordenado
 
-def transform_silver_nulos(df_silver_ordenado):
+def transform_silver_cols_nulas(df_silver_ordenado):
     # Reviso cuántos valores nulos tiene cada columna.
-    df_silver_nulos = df_silver_ordenado.isnull().sum().reset_index()
-    df_silver_nulos.columns = ["Columna", "Nulos"]
+    df_silver_cols_nulas = df_silver_ordenado.isnull().sum().reset_index()
+    df_silver_cols_nulas.columns = ["Columna", "Nulos"]
 
     # Calculo el porcentaje de valores nulos sobre el total de registros.
-    df_silver_nulos["Porcentaje (%)"] = (df_silver_nulos["Nulos"] / len(df_silver_ordenado) * 100).round(2)
+    df_silver_cols_nulas["Porcentaje (%)"] = (df_silver_cols_nulas["Nulos"] / len(df_silver_ordenado) * 100).round(2)
 
-    return df_silver_nulos
+    return df_silver_cols_nulas
+
+def transform_silver_dias_nulos(df_silver_ordenado):
+    # Creo una copia con los registros que no tienen precio de cierre.
+    df_silver_dias_nulos = df_silver_ordenado[df_silver_ordenado["Close"].isna()].copy()
+
+    # Defino los nombres de los días de lunes a viernes.
+    dias = {
+        0: "Lunes",
+        1: "Martes",
+        2: "Miércoles",
+        3: "Jueves",
+        4: "Viernes"
+    }
+
+    # Identifico el día de la semana de cada registro.
+    df_silver_dias_nulos["Día"] = df_silver_dias_nulos["Date"].dt.day_of_week.map(dias)
+
+    # Agrupo los registros sin cotización por país y día de la semana.
+    df_silver_dias_nulos = df_silver_dias_nulos.groupby(
+        ["País", "Día"]
+    ).size().unstack(fill_value=0)
+
+    # Ordeno las columnas de lunes a viernes.
+    df_silver_dias_nulos = df_silver_dias_nulos.reindex(columns=list(dias.values()), fill_value=0)
+
+    # Calculo el total de registros sin cotización por país.
+    df_silver_dias_nulos["Total"] = df_silver_dias_nulos.sum(axis=1)
+
+    return df_silver_dias_nulos

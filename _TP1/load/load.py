@@ -54,15 +54,22 @@ def load_silver_ordenado(df_silver_ordenado):
     print(df_silver_ordenado.to_string(max_rows=10, min_rows=10))
     print(flush=True)
 
-def load_silver_nulos(df_silver_nulos):
+def load_silver_cols_nulas(df_silver_cols_nulas):
     print("----------------------------------")
     print("[Silver] Análisis de valores nulos:")
     print("----------------------------------")
-    print(f"Filas: {df_silver_nulos.shape[0]}.")
-    print(f"Columnas: {df_silver_nulos.shape[1]}.")
+    print(f"Filas: {df_silver_cols_nulas.shape[0]}.")
+    print(f"Columnas: {df_silver_cols_nulas.shape[1]}.")
     print()
     print("---------------------------------------")
     print("[Silver] Vista previa de valores nulos:")
     print("---------------------------------------")
-    print(df_silver_nulos.to_string(index=False))
+    print(df_silver_cols_nulas.to_string(index=False))
+    print(flush=True)
+
+def load_silver_dias_nulos(df_silver_dias_nulos):
+    print("-----------------------------------------------------------")
+    print("[Silver] Registros sin cotización por país y día de semana:")
+    print("-----------------------------------------------------------")
+    print(df_silver_dias_nulos.sort_index().to_string())
     print(flush=True)

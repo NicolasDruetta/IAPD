@@ -4,4 +4,3 @@ matplotlib
 notebook
 pandas
 plotly
-yfinance
