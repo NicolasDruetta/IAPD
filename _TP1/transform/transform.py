@@ -1,9 +1,63 @@
+import time
+
+def run_silver(df_bronze):
+    df_silver = transform_silver(df_bronze)
+    time.sleep(0.3)
+
+    df_silver_indices = transform_silver_indices(df_silver)
+    time.sleep(0.3)
+
+    df_silver_ordenado = transform_silver_ordenado(df_silver_indices)
+    time.sleep(0.3)
+
+    df_silver_cols_nulas = transform_silver_cols_nulas(df_silver_ordenado)
+    time.sleep(0.3)
+
+    df_silver_dias_nulos = transform_silver_dias_nulos(df_silver_ordenado)
+    time.sleep(0.3)
+
+    df_silver_sin_cotizacion = transform_silver_sin_cotizacion(df_silver_ordenado)
+    df_silver_incompletos = transform_silver_incompletos(df_silver_ordenado)
+    transform_silver_validacion(df_silver_sin_cotizacion, df_silver_incompletos)
+    time.sleep(0.3)
+
+    df_silver_depurado = transform_silver_depurado(df_silver_ordenado)
+    time.sleep(0.3)
+
+    nulos_restantes, fechas_duplicadas = transform_silver_validacion_final(df_silver_depurado)
+
+    return (
+        df_silver,
+        df_silver_indices,
+        df_silver_ordenado,
+        df_silver_cols_nulas,
+        df_silver_dias_nulos,
+        df_silver_sin_cotizacion,
+        df_silver_incompletos,
+        df_silver_depurado,
+        nulos_restantes,
+        fechas_duplicadas,
+    )
+
 def transform_silver(df_bronze):
     # Convierto los datos de Bronze de formato ancho a largo, sin modificar el original.
     df_silver = df_bronze.stack(level=1, future_stack=True).reset_index()
 
     # Quito el nombre del eje de columnas.
     df_silver.columns.name = None
+
+    print("--------------------------------")
+    print("[Silver] Datos en formato largo:")
+    print("--------------------------------")
+    print(f"Filas: {df_silver.shape[0]}.")
+    print(f"Columnas: {df_silver.shape[1]}.")
+    print(f"Formato largo: {df_silver.shape[1]} columnas en Silver.")
+    print()
+    print("---------------------------------------")
+    print("[Silver] Vista previa en formato largo:")
+    print("---------------------------------------")
+    print(df_silver.to_string(max_rows=10, min_rows=10))
+    print(flush=True)
 
     return df_silver
 
@@ -42,6 +96,18 @@ def transform_silver_indices(df_silver):
     df_silver_indices["País"] = df_silver_indices["Ticker"].map(lambda ticker: datos_indices[ticker][0])
     df_silver_indices["Índice"] = df_silver_indices["Ticker"].map(lambda ticker: datos_indices[ticker][1])
 
+    print("---------------------------------")
+    print("[Silver] Datos con país e índice:")
+    print("---------------------------------")
+    print(f"Filas: {df_silver_indices.shape[0]}.")
+    print(f"Columnas: {df_silver_indices.shape[1]}.")
+    print()
+    print("----------------------------------------")
+    print("[Silver] Vista previa con país e índice:")
+    print("----------------------------------------")
+    print(df_silver_indices.to_string(max_rows=10, min_rows=10))
+    print(flush=True)
+
     return df_silver_indices
 
 def transform_silver_ordenado(df_silver_indices):
@@ -54,6 +120,18 @@ def transform_silver_ordenado(df_silver_indices):
     # Organizo las columnas sin modificar el DataFrame anterior.
     df_silver_ordenado = df_silver_ordenado[columnas].sort_values(["País", "Date"]).copy()
 
+    print("------------------------------------------")
+    print("[Silver] Datos ordenados por país y fecha:")
+    print("------------------------------------------")
+    print(f"Filas: {df_silver_ordenado.shape[0]}.")
+    print(f"Columnas: {df_silver_ordenado.shape[1]}.")
+    print()
+    print("------------------------------------------------")
+    print("[Silver] Vista previa ordenada por país y fecha:")
+    print("------------------------------------------------")
+    print(df_silver_ordenado.to_string(max_rows=10, min_rows=10))
+    print(flush=True)
+
     return df_silver_ordenado
 
 def transform_silver_cols_nulas(df_silver_ordenado):
@@ -63,6 +141,18 @@ def transform_silver_cols_nulas(df_silver_ordenado):
 
     # Calculo el porcentaje de valores nulos sobre el total de registros.
     df_silver_cols_nulas["Porcentaje (%)"] = (df_silver_cols_nulas["Nulos"] / len(df_silver_ordenado) * 100).round(2)
+
+    print("----------------------------------")
+    print("[Silver] Análisis de valores nulos:")
+    print("----------------------------------")
+    print(f"Filas: {df_silver_cols_nulas.shape[0]}.")
+    print(f"Columnas: {df_silver_cols_nulas.shape[1]}.")
+    print()
+    print("---------------------------------------")
+    print("[Silver] Vista previa de valores nulos:")
+    print("---------------------------------------")
+    print(df_silver_cols_nulas.to_string(index=False))
+    print(flush=True)
 
     return df_silver_cols_nulas
 
@@ -92,6 +182,12 @@ def transform_silver_dias_nulos(df_silver_ordenado):
 
     # Calculo el total de registros sin cotización por país.
     df_silver_dias_nulos["Total"] = df_silver_dias_nulos.sum(axis=1)
+
+    print("-----------------------------------------------------------")
+    print("[Silver] Registros sin cotización por país y día de semana:")
+    print("-----------------------------------------------------------")
+    print(df_silver_dias_nulos.sort_index().to_string())
+    print(flush=True)
 
     return df_silver_dias_nulos
 
@@ -134,6 +230,19 @@ def transform_silver_incompletos(df_silver_ordenado):
 
     return df_silver_incompletos
 
+def transform_silver_validacion(df_silver_sin_cotizacion, df_silver_incompletos):
+    print("----------------------------------------")
+    print("[Silver] Validación de datos bursátiles:")
+    print("----------------------------------------")
+    print(f"Registros con todos los datos vacíos: {len(df_silver_sin_cotizacion)}")
+    print(f"Registros con algunos datos faltantes: {len(df_silver_incompletos)}")
+    print()
+    print("----------------------------------------------")
+    print("[Silver] Registros con todos los datos vacíos:")
+    print("----------------------------------------------")
+    print(df_silver_sin_cotizacion.to_string(max_rows=10, min_rows=10))
+    print(flush=True)
+
 def transform_silver_depurado(df_silver_ordenado):
     # Defino las columnas bursátiles que voy a revisar.
     columnas_precios = ["Adj Close", "Close", "High", "Low", "Open", "Volume"]
@@ -141,13 +250,34 @@ def transform_silver_depurado(df_silver_ordenado):
     # Creo una copia sin los registros que tienen todos los datos bursátiles vacíos.
     df_silver_depurado = df_silver_ordenado.dropna(subset=columnas_precios, how="all").copy()
 
+    print("----------------------------------------")
+    print("[Silver] Depuración de registros vacíos:")
+    print("----------------------------------------")
+    print(f"Registros originales: {len(df_silver_ordenado)}")
+    print(f"Registros eliminados: {len(df_silver_ordenado) - len(df_silver_depurado)}")
+    print(f"Registros conservados: {len(df_silver_depurado)}")
+    print()
+    print("-------------------------")
+    print("[Silver] Datos depurados:")
+    print("-------------------------")
+    print(df_silver_depurado.to_string(max_rows=10, min_rows=10))
+    print(flush=True)
+
     return df_silver_depurado
 
 def transform_silver_validacion_final(df_silver_depurado):
     # Compruebo si quedaron valores nulos después de la limpieza.
-    nulos = df_silver_depurado.isna().sum().sum()
+    nulos_restantes = df_silver_depurado.isna().sum().sum()
 
     # Compruebo si hay fechas duplicadas para un mismo índice bursátil.
-    duplicados = df_silver_depurado.duplicated(subset=["Date", "Ticker"]).sum()
+    fechas_duplicadas = df_silver_depurado.duplicated(subset=["Date", "Ticker"]).sum()
 
-    return nulos, duplicados
+    print("-------------------------------------------------")
+    print("[Silver] Validación final de los datos depurados:")
+    print("-------------------------------------------------")
+    print(f"Registros conservados: {len(df_silver_depurado)}")
+    print(f"Valores nulos restantes: {nulos_restantes}")
+    print(f"Fechas duplicadas por índice: {fechas_duplicadas}")
+    print(flush=True)
+
+    return nulos_restantes, fechas_duplicadas
