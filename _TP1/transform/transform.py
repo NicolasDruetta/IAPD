@@ -1,10 +1,13 @@
-def transform_data(df_bronze):
+def transform_silver(df_bronze):
     # Convierto los datos de Bronze de formato ancho a largo, sin modificar el original.
     df_silver = df_bronze.stack(level=1, future_stack=True).reset_index()
 
     # Quito el nombre del eje de columnas.
     df_silver.columns.name = None
 
+    return df_silver
+
+def transform_silver_indices(df_silver):
     indices = {
         "Alemania": ("DAX 40", "^GDAXI"),
         "Australia": ("S&P/ASX 200", "^AXJO"),
@@ -39,6 +42,9 @@ def transform_data(df_bronze):
     df_silver_indices["País"] = df_silver_indices["Ticker"].map(lambda ticker: datos_indices[ticker][0])
     df_silver_indices["Índice"] = df_silver_indices["Ticker"].map(lambda ticker: datos_indices[ticker][1])
 
+    return df_silver_indices
+
+def transform_silver_ordenado(df_silver_indices):
     # Creo una copia para ordenar las columnas del dataset.
     df_silver_ordenado = df_silver_indices.copy()
 
@@ -48,6 +54,9 @@ def transform_data(df_bronze):
     # Organizo las columnas sin modificar el DataFrame anterior.
     df_silver_ordenado = df_silver_ordenado[columnas].sort_values(["País", "Date"]).copy()
 
+    return df_silver_ordenado
+
+def transform_silver_nulos(df_silver_ordenado):
     # Reviso cuántos valores nulos tiene cada columna.
     df_silver_nulos = df_silver_ordenado.isnull().sum().reset_index()
     df_silver_nulos.columns = ["Columna", "Nulos"]
@@ -55,4 +64,4 @@ def transform_data(df_bronze):
     # Calculo el porcentaje de valores nulos sobre el total de registros.
     df_silver_nulos["Porcentaje (%)"] = (df_silver_nulos["Nulos"] / len(df_silver_ordenado) * 100).round(2)
 
-    return df_silver, df_silver_indices, df_silver_ordenado, df_silver_nulos
+    return df_silver_nulos

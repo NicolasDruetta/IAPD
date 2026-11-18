@@ -1,6 +1,6 @@
 import pandas as pd
 
-def extract_data(file_path):
+def extract_bronze(file_path):
     # Cargo los datos históricos desde el archivo local.
     df_bronze = pd.read_csv(
         file_path,
