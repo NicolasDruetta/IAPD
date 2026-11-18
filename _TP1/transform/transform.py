@@ -26,7 +26,7 @@ def run_silver(df_bronze):
     df_silver_depurado = transform_silver_depurado(df_silver_ordenado)
     time.sleep(0.3)
 
-    nulos_restantes, fechas_duplicadas = transform_silver_validacion_final(df_silver_depurado)
+    transform_silver_validacion_final(df_silver_depurado)
 
     return (
         df_silver,
@@ -37,8 +37,6 @@ def run_silver(df_bronze):
         df_silver_sin_cotizacion,
         df_silver_incompletos,
         df_silver_depurado,
-        nulos_restantes,
-        fechas_duplicadas,
     )
 
 def transform_silver(df_bronze):
@@ -253,5 +251,3 @@ def transform_silver_validacion_final(df_silver_depurado):
     print(f"Registros con valores nulos: {nulos_restantes}")
     print(f"Fechas duplicadas por índice: {fechas_duplicadas}")
     print(flush=True)
-
-    return nulos_restantes, fechas_duplicadas
