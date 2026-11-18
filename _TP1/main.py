@@ -2,8 +2,28 @@ import time
 
 from pathlib import Path
 from extract.extract import extract_bronze
-from transform.transform import transform_silver, transform_silver_indices, transform_silver_ordenado, transform_silver_cols_nulas, transform_silver_dias_nulos, transform_silver_sin_cotizacion, transform_silver_incompletos, transform_silver_depurado
-from load.load import load_bronze, load_silver, load_silver_indices, load_silver_ordenado, load_silver_cols_nulas, load_silver_dias_nulos, load_silver_validacion, load_silver_depurado
+from transform.transform import (
+    transform_silver,
+    transform_silver_indices,
+    transform_silver_ordenado,
+    transform_silver_cols_nulas,
+    transform_silver_dias_nulos,
+    transform_silver_sin_cotizacion,
+    transform_silver_incompletos,
+    transform_silver_depurado,
+    transform_silver_validacion_final,
+)
+from load.load import (
+    load_bronze,
+    load_silver,
+    load_silver_indices,
+    load_silver_ordenado,
+    load_silver_cols_nulas,
+    load_silver_dias_nulos,
+    load_silver_validacion,
+    load_silver_depurado,
+    load_silver_validacion_final,
+)
 
 def main():
     file_path = Path("data/indices_bursatiles.csv")
@@ -40,6 +60,10 @@ def main():
 
     df_silver_depurado = transform_silver_depurado(df_silver_ordenado)
     load_silver_depurado(df_silver_ordenado, df_silver_depurado)
+    time.sleep(0.3)
+
+    nulos, duplicados = transform_silver_validacion_final(df_silver_depurado)
+    load_silver_validacion_final(df_silver_depurado, nulos, duplicados)
 
 if __name__ == "__main__":
     main()

@@ -100,3 +100,12 @@ def load_silver_depurado(df_silver_ordenado, df_silver_depurado):
     print("-------------------------")
     print(df_silver_depurado.to_string(max_rows=10, min_rows=10))
     print(flush=True)
+
+def load_silver_validacion_final(df_silver_depurado, nulos, duplicados):
+    print("-------------------------------------------------")
+    print("[Silver] Validación final de los datos depurados:")
+    print("-------------------------------------------------")
+    print(f"Registros conservados: {len(df_silver_depurado)}")
+    print(f"Valores nulos restantes: {nulos}")
+    print(f"Fechas duplicadas por índice: {duplicados}")
+    print(flush=True)

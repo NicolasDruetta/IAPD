@@ -142,3 +142,12 @@ def transform_silver_depurado(df_silver_ordenado):
     df_silver_depurado = df_silver_ordenado.dropna(subset=columnas_precios, how="all").copy()
 
     return df_silver_depurado
+
+def transform_silver_validacion_final(df_silver_depurado):
+    # Compruebo si quedaron valores nulos después de la limpieza.
+    nulos = df_silver_depurado.isna().sum().sum()
+
+    # Compruebo si hay fechas duplicadas para un mismo índice bursátil.
+    duplicados = df_silver_depurado.duplicated(subset=["Date", "Ticker"]).sum()
+
+    return nulos, duplicados
