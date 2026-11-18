@@ -34,18 +34,7 @@ def run_silver(df_bronze):
 
     df_silver_cobertura_anual = transform_silver_cobertura_anual(df_silver_fechas)
 
-    return (
-        df_silver,
-        df_silver_indices,
-        df_silver_ordenado,
-        df_silver_cols_nulas,
-        df_silver_dias_nulos,
-        df_silver_sin_cotizacion,
-        df_silver_incompletos,
-        df_silver_depurado,
-        df_silver_fechas,
-        df_silver_cobertura_anual,
-    )
+    return df_silver_fechas
 
 def transform_silver(df_bronze):
     # Convierto los datos de Bronze de formato ancho a largo, sin modificar el original.
