@@ -1,6 +1,7 @@
 import pandas as pd
 import time
 
+from app.functions import print_title
 from pathlib import Path
 
 def run_bronze():
@@ -18,18 +19,14 @@ def extract_bronze(file_path):
         parse_dates=[0]
     )
 
-    print(flush=True) # Aseguro que se impriman los mensajes antes de cargar el archivo.
-    print("--------------------------------")
-    print("[Bronze] Datos en formato ancho:")
-    print("--------------------------------")
+    print() # Un primer print() vacío para separar.
+    print_title("[Bronze] Datos en formato ancho:")
     print(f"Archivo cargado: {file_path.relative_to(Path(__file__).resolve().parent.parent)}.")
     print(f"Filas: {df_bronze.shape[0]}.")
     print(f"Columnas: {df_bronze.shape[1]}.")
     print(f"Formato ancho: {df_bronze.shape[1]} columnas en Bronze.")
     print()
-    print("---------------------------------------")
-    print("[Bronze] Vista previa en formato ancho:")
-    print("---------------------------------------")
+    print_title("[Bronze] Vista previa en formato ancho:")
     print(df_bronze.to_string(max_rows=10, min_rows=10, max_cols=6))
     print(flush=True)
 
