@@ -1,5 +1,6 @@
 ipykernel
 ipython
+kaleido
 matplotlib
 notebook
 pandas
