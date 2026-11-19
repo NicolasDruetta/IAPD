@@ -1342,7 +1342,7 @@ def render_postgresql_console() -> None:
             f"Eventos recibidos: **{postgresql_counters['events']}**. "
             f"Registros nuevos: **{postgresql_counters['total']}** "
             f"({postgresql_counters['metrics']} métricas, {postgresql_counters['answers']} respuestas). "
-            f"Actualizaciones realizadas: **{postgresql_counters['updates']}**."
+            f"Actualizaciones hechas: **{postgresql_counters['updates']}**."
         )
         st.download_button(
             "↓",
