@@ -1,6 +1,7 @@
 import time
 
-from app.functions import NOMBRES_DIAS, configure_pandas, print_title
+from app.constants import NOMBRES_DIAS
+from app.functions import configure_pandas, print_title
 
 def run_silver(df_bronze):
     configure_pandas()

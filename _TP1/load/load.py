@@ -1,7 +1,8 @@
 import plotly.graph_objects as go
 import time
 
-from app.functions import NOMBRES_MESES, configure_pandas, print_title
+from app.constants import CODIGOS_PAISES, CONTINENTES, NOMBRES_MESES
+from app.functions import configure_pandas, print_title
 from pathlib import Path
 
 def run_gold(df_silver):
@@ -264,28 +265,6 @@ def load_gold_correlaciones(df_gold):
     return df_correlaciones
 
 def load_gold_correlaciones_grafico(df_correlaciones):
-    # Defino el continente de cada país.
-    continentes = {
-        "Alemania": "Europa",
-        "Australia": "Oceanía",
-        "Brasil": "América",
-        "Canadá": "América",
-        "China": "Asia",
-        "Corea del Sur": "Asia",
-        "España": "Europa",
-        "Estados Unidos": "América",
-        "Francia": "Europa",
-        "Hong Kong": "Asia",
-        "India": "Asia",
-        "Japón": "Asia",
-        "México": "América",
-        "Nueva Zelanda": "Oceanía",
-        "Países Bajos": "Europa",
-        "Reino Unido": "Europa",
-        "Suiza": "Europa",
-        "Taiwán": "Asia"
-    }
-
     # Creo una copia de las correlaciones calculadas en Gold.
     df_correlaciones_continentes = df_correlaciones.copy()
 
@@ -299,11 +278,11 @@ def load_gold_correlaciones_grafico(df_correlaciones):
         for region_2 in regiones:
             paises_1 = [
                 pais for pais in df_correlaciones_continentes.index
-                if continentes[pais] == region_1
+                if CONTINENTES[pais] == region_1
             ]
             paises_2 = [
                 pais for pais in df_correlaciones_continentes.columns
-                if continentes[pais] == region_2
+                if CONTINENTES[pais] == region_2
             ]
 
             valores = [
@@ -459,28 +438,6 @@ def load_gold_tendencia(df_rendimientos_anuales):
     return df_tendencia_reciente
 
 def load_gold_tendencia_grafico(df_tendencia_reciente):
-    # Defino los códigos internacionales de los 18 países.
-    codigos_paises = {
-        "Alemania": "DEU",
-        "Australia": "AUS",
-        "Brasil": "BRA",
-        "Canadá": "CAN",
-        "China": "CHN",
-        "Corea del Sur": "KOR",
-        "España": "ESP",
-        "Estados Unidos": "USA",
-        "Francia": "FRA",
-        "Hong Kong": "HKG",
-        "India": "IND",
-        "Japón": "JPN",
-        "México": "MEX",
-        "Nueva Zelanda": "NZL",
-        "Países Bajos": "NLD",
-        "Reino Unido": "GBR",
-        "Suiza": "CHE",
-        "Taiwán": "TWN"
-    }
-
     # Creo una copia y ordeno los países por rendimiento ponderado.
     df_ranking_ponderado = df_tendencia_reciente.copy()
     df_ranking_ponderado = df_ranking_ponderado.sort_values(
@@ -489,7 +446,7 @@ def load_gold_tendencia_grafico(df_tendencia_reciente):
 
     # Creo el planisferio con el rendimiento ponderado de cada país.
     fig = go.Figure(go.Choropleth(
-        locations=df_ranking_ponderado["País"].map(codigos_paises),
+        locations=df_ranking_ponderado["País"].map(CODIGOS_PAISES),
         z=df_ranking_ponderado["Rendimiento ponderado (%)"],
         customdata=df_ranking_ponderado["País"],
         locationmode="ISO-3",
