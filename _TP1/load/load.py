@@ -174,6 +174,11 @@ def load_gold_rendimientos_anuales_grafico(df_rendimientos_anuales):
         xaxis_categoryarray=df_resumen_anual["País"].tolist()
     )
 
+    fig.update_traces(
+        textfont_size=9,
+        constraintext="none"
+    )
+
     ruta_png = "outputs/grafico_anual.png"
     fig.write_image(ruta_png, format="png", scale=2)
     print(f'* Gráfico generado correctamente: "{ruta_png}".', flush=True)
@@ -466,13 +471,14 @@ def load_gold_tendencia_grafico(df_tendencia_reciente):
         countrycolor="white",
         showland=True,
         landcolor="lightgray",
-        showframe=False
+        showframe=False,
+        domain=dict(y=[0.25, 1.0])
     )
 
     # Agrego el ranking en el espacio izquierdo del gráfico.
     fig.add_annotation(
         x=0.40,
-        y=0.50,
+        y=0.60,
         xref="paper",
         yref="paper",
         text="<b>Ranking:</b><br><br>" + "<br>".join(
@@ -489,7 +495,7 @@ def load_gold_tendencia_grafico(df_tendencia_reciente):
     fig.update_layout(
         title="Rendimiento anual promedio ponderado por país (2007-2025)",
         title_x=0.5,
-        height=650,
+        height=550,
         dragmode=False,
         margin=dict(b=10, l=10, r=10, t=80),
         template="plotly_white"
