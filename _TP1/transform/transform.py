@@ -1,9 +1,10 @@
 import time
 
-from app.functions import configure_pandas, print_title
+from app.functions import NOMBRES_DIAS, configure_pandas, print_title
 
 def run_silver(df_bronze):
     configure_pandas()
+
     df_silver = transform_silver(df_bronze)
     time.sleep(0.3)
 
@@ -143,16 +144,8 @@ def transform_silver_dias_nulos(df_silver_ordenado):
     df_silver_dias_nulos = df_silver_ordenado[df_silver_ordenado["Close"].isna()].copy()
 
     # Defino los nombres de los días de lunes a viernes.
-    dias = {
-        0: "Lunes",
-        1: "Martes",
-        2: "Miércoles",
-        3: "Jueves",
-        4: "Viernes"
-    }
-
     # Identifico el día de la semana de cada registro.
-    df_silver_dias_nulos["Día"] = df_silver_dias_nulos["Date"].dt.day_of_week.map(dias)
+    df_silver_dias_nulos["Día"] = df_silver_dias_nulos["Date"].dt.day_of_week.map(NOMBRES_DIAS)
 
     # Agrupo los registros sin cotización por país y día de la semana.
     df_silver_dias_nulos = df_silver_dias_nulos.groupby(
@@ -160,7 +153,9 @@ def transform_silver_dias_nulos(df_silver_ordenado):
     ).size().unstack(fill_value=0)
 
     # Ordeno las columnas de lunes a viernes.
-    df_silver_dias_nulos = df_silver_dias_nulos.reindex(columns=list(dias.values()), fill_value=0)
+    df_silver_dias_nulos = df_silver_dias_nulos.reindex(
+        columns=[NOMBRES_DIAS[dia] for dia in range(5)], fill_value=0
+    )
 
     # Calculo el total de registros sin cotización por país.
     df_silver_dias_nulos["Total"] = df_silver_dias_nulos.sum(axis=1)
@@ -176,14 +171,6 @@ def transform_silver_sin_cotizacion(df_silver_ordenado):
     columnas_precios = ["Adj Close", "Close", "High", "Low", "Open", "Volume"]
 
     # Defino los nombres de los días de la semana.
-    dias = {
-        0: "Lunes",
-        1: "Martes",
-        2: "Miércoles",
-        3: "Jueves",
-        4: "Viernes"
-    }
-
     # Identifico los días de semana que no tienen ningún dato bursátil.
     df_silver_sin_cotizacion = df_silver_ordenado[
         df_silver_ordenado[columnas_precios].isna().all(axis=1)
@@ -193,7 +180,7 @@ def transform_silver_sin_cotizacion(df_silver_ordenado):
     df_silver_sin_cotizacion.insert(
         1,
         "Día",
-        df_silver_sin_cotizacion["Date"].dt.day_of_week.map(dias)
+        df_silver_sin_cotizacion["Date"].dt.day_of_week.map(NOMBRES_DIAS)
     )
 
     return df_silver_sin_cotizacion
