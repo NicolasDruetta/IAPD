@@ -1,3 +1,4 @@
+import plotly.graph_objects as go
 import time
 
 from app.functions import NOMBRES_MESES, configure_pandas, print_title
@@ -39,6 +40,27 @@ def run_gold(df_silver):
     time.sleep(0.3)
 
     df_cobertura_volumen = load_gold_cobertura_volumen(df_gold)
+    time.sleep(0.3)
+
+    load_gold_grafico_anual(df_rendimientos_anuales)
+    time.sleep(0.3)
+
+    load_gold_grafico_acumulado(df_rendimiento_acumulado)
+    time.sleep(0.3)
+
+    load_gold_grafico_correlaciones(df_correlaciones)
+    time.sleep(0.3)
+
+    load_gold_grafico_mercados(df_resumen_mercados)
+    time.sleep(0.3)
+
+    load_gold_grafico_tendencia(df_tendencia_reciente)
+    time.sleep(0.3)
+
+    load_gold_grafico_volumen(
+        df_resumen_volumen,
+        df_resumen_frecuencia_volumen
+    )
 
     return df_gold
 
@@ -326,3 +348,351 @@ def load_gold_cobertura_volumen(df_gold):
     print(flush=True)
 
     return df_cobertura_volumen
+
+def load_gold_grafico_anual(df_rendimientos_anuales):
+    # Creo una copia de los rendimientos anuales.
+    df_grafico_anual = df_rendimientos_anuales.copy()
+
+    # Identifico los mejores y peores años de cada índice bursátil.
+    df_mejores_anios = df_grafico_anual.loc[
+        df_grafico_anual.groupby("Ticker")["Rendim. anual (%)"].idxmax()
+    ].copy()
+
+    df_peores_anios = df_grafico_anual.loc[
+        df_grafico_anual.groupby("Ticker")["Rendim. anual (%)"].idxmin()
+    ].copy()
+
+    # Creo un resumen para el gráfico.
+    df_resumen_anual = df_mejores_anios[
+        ["País", "Índice", "Año", "Rendim. anual (%)"]
+    ].merge(
+        df_peores_anios[
+            ["País", "Índice", "Año", "Rendim. anual (%)"]
+        ],
+        on=["País", "Índice"],
+        suffixes=("_mejor", "_peor")
+    ).sort_values("País")
+
+    # Creo un gráfico comparativo de los mejores y peores años.
+    fig = go.Figure()
+
+    fig.add_trace(go.Bar(
+        name="Mejor año",
+        x=df_resumen_anual["País"],
+        y=df_resumen_anual["Rendim. anual (%)_mejor"],
+        text=df_resumen_anual["Año_mejor"],
+        textposition="outside",
+        marker_color="green",
+        hovertemplate="%{x}<br>Año: %{text}<br>Rendimiento: %{y:.2f}%<extra></extra>"
+    ))
+
+    fig.add_trace(go.Bar(
+        name="Peor año",
+        x=df_resumen_anual["País"],
+        y=df_resumen_anual["Rendim. anual (%)_peor"],
+        text=df_resumen_anual["Año_peor"],
+        textposition="outside",
+        marker_color="red",
+        hovertemplate="%{x}<br>Año: %{text}<br>Rendimiento: %{y:.2f}%<extra></extra>"
+    ))
+
+    fig.update_layout(
+        title="Mejores y peores años de los índices bursátiles (2007-2025)",
+        title_x=0.5,
+        xaxis_title="País",
+        yaxis_title="Rendimiento anual (%)",
+        barmode="group",
+        height=600,
+        template="plotly_white",
+        xaxis_tickangle=-45,
+        xaxis_categoryorder="array",
+        xaxis_categoryarray=df_resumen_anual["País"].tolist()
+    )
+
+    fig.show()
+
+def load_gold_grafico_acumulado(df_rendimiento_acumulado):
+    # Creo una copia de los rendimientos acumulados para el gráfico.
+    df_grafico_acumulado = df_rendimiento_acumulado.copy()
+
+    # Ordeno los países de mayor a menor rendimiento acumulado.
+    df_grafico_acumulado = df_grafico_acumulado.sort_values(
+        "Rendim. acumulado (%)", ascending=False
+    )
+
+    # Creo el gráfico comparativo del rendimiento acumulado.
+    fig = go.Figure()
+
+    fig.add_trace(go.Bar(
+        x=df_grafico_acumulado["Rendim. acumulado (%)"],
+        y=df_grafico_acumulado["País"],
+        orientation="h",
+        marker_color=[
+            "green" if valor >= 0 else "red"
+            for valor in df_grafico_acumulado["Rendim. acumulado (%)"]
+        ],
+        text=df_grafico_acumulado["Rendim. acumulado (%)"].map(
+            lambda valor: f"{valor:.2f}%"
+        ),
+        textposition="outside",
+        cliponaxis=False,
+        hovertemplate="%{y}<br>Rendimiento acumulado: %{x:.2f}%<extra></extra>"
+    ))
+
+    fig.update_layout(
+        title="Rendimiento acumulado de los índices bursátiles (2007-2025)",
+        title_x=0.5,
+        xaxis_title="Rendimiento acumulado (%)",
+        yaxis_title="País",
+        height=700,
+        template="plotly_white",
+        yaxis_autorange="reversed",
+        showlegend=False
+    )
+
+    fig.show()
+
+def load_gold_grafico_correlaciones(df_correlaciones):
+    # Defino el continente de cada país.
+    continentes = {
+        "Alemania": "Europa",
+        "Australia": "Oceanía",
+        "Brasil": "América",
+        "Canadá": "América",
+        "China": "Asia",
+        "Corea del Sur": "Asia",
+        "España": "Europa",
+        "Estados Unidos": "América",
+        "Francia": "Europa",
+        "Hong Kong": "Asia",
+        "India": "Asia",
+        "Japón": "Asia",
+        "México": "América",
+        "Nueva Zelanda": "Oceanía",
+        "Países Bajos": "Europa",
+        "Reino Unido": "Europa",
+        "Suiza": "Europa",
+        "Taiwán": "Asia"
+    }
+
+    # Creo una copia de las correlaciones calculadas en Gold.
+    df_correlaciones_continentes = df_correlaciones.copy()
+
+    # Calculo la correlación promedio dentro de cada continente y entre continentes.
+    regiones = ["América", "Asia", "Europa", "Oceanía"]
+    matriz = []
+
+    for region_1 in regiones:
+        fila = []
+
+        for region_2 in regiones:
+            paises_1 = [
+                pais for pais in df_correlaciones_continentes.index
+                if continentes[pais] == region_1
+            ]
+            paises_2 = [
+                pais for pais in df_correlaciones_continentes.columns
+                if continentes[pais] == region_2
+            ]
+
+            valores = [
+                df_correlaciones_continentes.loc[pais_1, pais_2]
+                for pais_1 in paises_1
+                for pais_2 in paises_2
+                if pais_1 != pais_2
+            ]
+
+            fila.append(round(sum(valores) / len(valores), 2))
+
+        matriz.append(fila)
+
+    # Creo el mapa de calor con tonos verdes según la correlación.
+    fig = go.Figure(go.Heatmap(
+        z=matriz,
+        x=regiones,
+        y=regiones,
+        colorscale="Greens",
+        zmin=0,
+        zmax=1,
+        text=matriz,
+        texttemplate="%{text:.2f}",
+        textfont=dict(size=18),
+        colorbar=dict(title="Correlación"),
+        hovertemplate="%{y} / %{x}<br>Correlación: %{z:.2f}<extra></extra>"
+    ))
+
+    fig.update_layout(
+        title="Correlación promedio entre continentes (2007-2025)",
+        title_x=0.5,
+        xaxis_title="Continente",
+        yaxis_title="Continente",
+        height=550,
+        template="plotly_white",
+        yaxis_autorange="reversed"
+    )
+
+    fig.show()
+
+def load_gold_grafico_mercados(df_resumen_mercados):
+    # Creo una copia de los indicadores de mercados desarrollados y emergentes.
+    df_grafico_mercados = df_resumen_mercados.copy()
+
+    # Creo un gráfico para comparar el rendimiento y la volatilidad.
+    fig = go.Figure()
+
+    fig.add_trace(go.Bar(
+        name="Rendimiento anual promedio",
+        x=df_grafico_mercados["Mercado"],
+        y=df_grafico_mercados["Rendimiento anual promedio (%)"],
+        marker_color="green",
+        text=df_grafico_mercados["Rendimiento anual promedio (%)"].map(
+            lambda valor: f"{valor:.2f}%"
+        ),
+        textposition="outside"
+    ))
+
+    fig.add_trace(go.Bar(
+        name="Volatilidad anual",
+        x=df_grafico_mercados["Mercado"],
+        y=df_grafico_mercados["Volatilidad anual promedio (%)"],
+        marker_color="orange",
+        text=df_grafico_mercados["Volatilidad anual promedio (%)"].map(
+            lambda valor: f"{valor:.2f}%"
+        ),
+        textposition="outside"
+    ))
+
+    fig.update_layout(
+        title="Rendimiento y volatilidad por tipo de mercado (2007-2025)",
+        title_x=0.5,
+        xaxis_title="Tipo de mercado",
+        yaxis_title="Porcentaje (%)",
+        barmode="group",
+        height=500,
+        template="plotly_white"
+    )
+
+    fig.show()
+
+def load_gold_grafico_tendencia(df_tendencia_reciente):
+    # Defino los códigos internacionales de los 18 países.
+    codigos_paises = {
+        "Alemania": "DEU",
+        "Australia": "AUS",
+        "Brasil": "BRA",
+        "Canadá": "CAN",
+        "China": "CHN",
+        "Corea del Sur": "KOR",
+        "España": "ESP",
+        "Estados Unidos": "USA",
+        "Francia": "FRA",
+        "Hong Kong": "HKG",
+        "India": "IND",
+        "Japón": "JPN",
+        "México": "MEX",
+        "Nueva Zelanda": "NZL",
+        "Países Bajos": "NLD",
+        "Reino Unido": "GBR",
+        "Suiza": "CHE",
+        "Taiwán": "TWN"
+    }
+
+    # Creo una copia y ordeno los países por rendimiento ponderado.
+    df_ranking_ponderado = df_tendencia_reciente.copy()
+    df_ranking_ponderado = df_ranking_ponderado.sort_values(
+        "Rendimiento ponderado (%)", ascending=False
+    ).reset_index(drop=True)
+
+    # Creo el planisferio con el rendimiento ponderado de cada país.
+    fig = go.Figure(go.Choropleth(
+        locations=df_ranking_ponderado["País"].map(codigos_paises),
+        z=df_ranking_ponderado["Rendimiento ponderado (%)"],
+        customdata=df_ranking_ponderado["País"],
+        locationmode="ISO-3",
+        colorscale=[[0, "blue"], [1, "green"]],
+        zmin=0,
+        zmax=df_ranking_ponderado["Rendimiento ponderado (%)"].max(),
+        marker_line_color="white",
+        marker_line_width=0.5,
+        colorbar_title="Rendimiento (%)",
+        hovertemplate="País: %{customdata}<br>Rendimiento anual promedio ponderado: %{z:.2f}%<extra></extra>"
+    ))
+
+    fig.update_geos(
+        projection_type="natural earth",
+        showcoastlines=False,
+        showcountries=True,
+        countrycolor="white",
+        showland=True,
+        landcolor="lightgray",
+        showframe=False
+    )
+
+    # Agrego el ranking en el espacio izquierdo del gráfico.
+    fig.add_annotation(
+        x=0.40,
+        y=0.55,
+        xref="paper",
+        yref="paper",
+        text="<b>Ranking:</b><br><br>" + "<br>".join(
+            f"{posicion + 1}. {fila['País']}: {fila['Rendimiento ponderado (%)']:.2f}%"
+            for posicion, fila in df_ranking_ponderado.iterrows()
+        ),
+        showarrow=False,
+        xanchor="left",
+        yanchor="top",
+        align="left",
+        font=dict(size=11)
+    )
+
+    fig.update_layout(
+        title="Rendimiento anual promedio ponderado por país (2007-2025)",
+        title_x=0.5,
+        height=650,
+        dragmode=False,
+        margin=dict(b=10, l=10, r=10, t=80),
+        template="plotly_white"
+    )
+
+    fig.show(config={
+        "scrollZoom": False,
+        "modeBarButtonsToRemove": ["zoomInGeo", "zoomOutGeo", "resetGeo"]
+    })
+
+def load_gold_grafico_volumen(
+    df_resumen_volumen,
+    df_resumen_frecuencia_volumen
+):
+    # Creo un gráfico de barras con la variación mensual del volumen de operaciones.
+    fig = go.Figure()
+
+    fig.add_trace(go.Bar(
+        x=df_resumen_volumen["Mes"],
+        y=df_resumen_volumen["Variación del volumen (%)"],
+        marker_color=[
+            "green" if valor >= 0 else "red"
+            for valor in df_resumen_volumen["Variación del volumen (%)"]
+        ],
+        text=df_resumen_volumen["Variación del volumen (%)"].map(
+            lambda valor: f"{valor:.2f}%"
+        ),
+        textposition="outside",
+        customdata=df_resumen_frecuencia_volumen[
+            "Frecuencia de menor actividad (%)"
+        ],
+        hovertemplate="Mes: %{x}<br>Variación del volumen: %{y:.2f}%<br>Frecuencia de menor actividad: %{customdata:.2f}%<extra></extra>"
+    ))
+
+    fig.update_layout(
+        title="Variación mensual del volumen bursátil respecto del promedio anual (2007-2025)",
+        title_x=0.5,
+        xaxis_title="Mes",
+        yaxis_title="Variación del volumen (%)",
+        height=550,
+        template="plotly_white",
+        showlegend=False,
+        yaxis_zeroline=True,
+        yaxis_zerolinecolor="black"
+    )
+
+    fig.show()
