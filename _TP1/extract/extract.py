@@ -1,10 +1,11 @@
 import pandas as pd
 import time
 
-from app.functions import print_title
+from app.functions import configure_pandas, print_title
 from pathlib import Path
 
 def run_bronze():
+    configure_pandas()
     file_path = Path(__file__).resolve().parent.parent / "data/indices_bursatiles.csv"
     df_bronze = extract_bronze(file_path)
     time.sleep(0.3)

@@ -1,13 +1,14 @@
 import time
 
-from app.functions import print_title
+from app.functions import configure_pandas, print_title
 
 def run_gold(df_silver):
+    configure_pandas()
     df_gold = load_gold(df_silver)
     time.sleep(0.3)
 
     df_cierres_anuales = load_gold_cierres_anuales(df_gold)
-    
+
     return df_gold
 
 def load_gold(df_silver):
@@ -18,7 +19,7 @@ def load_gold(df_silver):
     df_gold = df_gold.sort_values(["País", "Date"]).reset_index(drop=True).copy()
 
     # Calculo el rendimiento diario de cada índice bursátil.
-    df_gold["Rendimiento diario (%)"] = (
+    df_gold["Rendim. diario (%)"] = (
         df_gold.groupby("Ticker")["Close"].pct_change(fill_method=None) * 100
     ).round(2)
 
@@ -37,7 +38,7 @@ def load_gold_cierres_anuales(df_gold):
     })
 
     # Calculo el rendimiento anual de cada índice bursátil.
-    df_cierres_anuales["Rendimiento anual (%)"] = (
+    df_cierres_anuales["Rendim. anual (%)"] = (
         df_cierres_anuales.groupby("Ticker")["Close"].pct_change(fill_method=None) * 100
     ).round(2)
 

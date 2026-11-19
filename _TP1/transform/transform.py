@@ -1,8 +1,9 @@
 import time
 
-from app.functions import print_title
+from app.functions import configure_pandas, print_title
 
 def run_silver(df_bronze):
+    configure_pandas()
     df_silver = transform_silver(df_bronze)
     time.sleep(0.3)
 
