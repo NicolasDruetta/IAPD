@@ -511,7 +511,11 @@ def render_config() -> None:
             ),
             default_option,
         )
-    if snapshot.get("run_id") and not st.session_state.start_pending:
+    if (
+        snapshot.get("run_id")
+        and not st.session_state.start_pending
+        and "symbol-universe" not in st.session_state
+    ):
         st.session_state["symbol-universe"] = default_option
 
     st.write(f"**Empresas a analizar:**")

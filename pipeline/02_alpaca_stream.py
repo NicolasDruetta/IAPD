@@ -769,6 +769,16 @@ def download_historical_dataset(
                 else:
                     time.sleep(min(delay, 60))
             except urllib.error.URLError as error:
+                if attempt < HTTP_MAX_RETRIES - 1:
+                    delay = 2**attempt
+                    if stop_event is not None:
+                        if stop_event.wait(min(delay, 60)):
+                            raise InterruptedError(
+                                "Descarga histórica detenida."
+                            )
+                    else:
+                        time.sleep(min(delay, 60))
+                    continue
                 try:
                     url_parts = urllib.parse.urlsplit(url)
                     safe_query = urllib.parse.urlencode(
