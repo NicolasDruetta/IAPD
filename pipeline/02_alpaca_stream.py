@@ -1,6 +1,7 @@
 # Autor: Nicolás Druetta.
 
 import certifi
+import csv
 import json
 import os
 import queue
@@ -767,6 +768,45 @@ def download_historical_dataset(
                         )
                 else:
                     time.sleep(min(delay, 60))
+            except urllib.error.URLError as error:
+                try:
+                    url_parts = urllib.parse.urlsplit(url)
+                    safe_query = urllib.parse.urlencode(
+                        [
+                            (
+                                key,
+                                "[REDACTED]"
+                                if key.lower() in {
+                                    "api_key",
+                                    "key",
+                                    "page_token",
+                                    "password",
+                                    "secret",
+                                    "token",
+                                }
+                                else value,
+                            )
+                            for key, value in urllib.parse.parse_qsl(
+                                url_parts.query,
+                                keep_blank_values=True,
+                            )
+                        ]
+                    )
+                    safe_url = urllib.parse.urlunsplit(
+                        (
+                            url_parts.scheme,
+                            url_parts.netloc,
+                            url_parts.path,
+                            safe_query,
+                            url_parts.fragment,
+                        )
+                    )
+                except Exception:
+                    safe_url = "<URL no disponible>"
+                raise RuntimeError(
+                    f"Error HTTP | URL: {safe_url} | "
+                    f"Excepción: {type(error).__name__} | Motivo: {error}"
+                ) from error
         raise RuntimeError("Alpaca agotó los reintentos del histórico.")
 
     def download_group(
@@ -1268,6 +1308,15 @@ def get_sp500_ranked_symbols(
 def get_sp500_components() -> tuple[list[str], str]:
     """Obtengo los componentes actuales del S&P 500 desde su tabla pública."""
 
+    components_path = functions.DATA_DIRECTORY / "sp500_components.csv"
+    if components_path.exists():
+        with components_path.open(newline="", encoding="utf-8") as csv_file:
+            components = [
+                row["symbol"]
+                for row in csv.DictReader(csv_file)
+            ]
+        return components, "CSV local"
+
     request = urllib.request.Request(
         SP500_COMPONENTS_URL,
         headers={"User-Agent": "Apache-Big-Data-Lab/1.0"},
@@ -1305,6 +1354,19 @@ def get_sp500_components() -> tuple[list[str], str]:
                 }
             )
             if components:
+                if not components_path.exists():
+                    functions.DATA_DIRECTORY.mkdir(parents=True, exist_ok=True)
+                    try:
+                        with components_path.open(
+                            "x",
+                            newline="",
+                            encoding="utf-8",
+                        ) as csv_file:
+                            writer = csv.writer(csv_file)
+                            writer.writerow(["symbol"])
+                            writer.writerows((symbol,) for symbol in components)
+                    except FileExistsError:
+                        pass
                 return components, source_updated_at
     raise RuntimeError(
         "La fuente del S&P 500 no devolvió una tabla de símbolos válida."
